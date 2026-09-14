@@ -1548,7 +1548,49 @@ void host_wifi_connected_reboot() {
 // ----------------------------- configuration web --------------------------------
 static WebServer g_web(80);
 
+// The Orb's own front page at http://theorb.local/. What a person should find here: what
+// this Orb is running and wearing, and the two things the browser can do for it that the
+// knob cannot (install a downloaded theme file, update the firmware over WiFi). The page
+// that used to be here was Capsule Radar's configuration form, renamed, with a map to
+// drag, a palette picker and a dozen radar knobs that Orb Studio and the Settings screen
+// now own; the first stranger to build one found it and asked, reasonably, whether it was
+// meant to be there (CanadianAvenger, 2026-09-14). It is not gone, because its endpoints
+// are still what the Settings screen calls and Zion still uses the form to poke at a
+// device: it lives at /legacy, unadvertised.
 static void handleRoot() {
+    String html;
+    html.reserve(2600);
+    html += "<!DOCTYPE html><html><head><meta charset=utf-8>"
+            "<meta name=viewport content='width=device-width,initial-scale=1'>"
+            "<title>The Orb</title><style>"
+            "body{background:#f5f5f4;color:#2a2622;font-family:system-ui,-apple-system,sans-serif;margin:0 auto;padding:28px 20px;max-width:520px}"
+            "h1{font-size:26px;margin:0 0 4px;letter-spacing:-.02em}.sub{color:#7a7570;margin:0 0 22px}"
+            ".card{background:#fff;border:1px solid #e0e0df;border-radius:14px;padding:16px 18px;margin-bottom:14px}"
+            "dl{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;margin:0;font-size:15px}dt{color:#7a7570}dd{margin:0}"
+            "a.b{display:block;padding:12px 14px;border:1px solid #e0e0df;border-radius:10px;color:#2a2622;text-decoration:none;margin-top:8px;font-weight:500}"
+            "a.b:hover{border-color:#a65e3f;color:#a65e3f}small{color:#7a7570;display:block;margin-top:14px;line-height:1.5}"
+            "</style></head><body>"
+            "<h1>The Orb</h1><p class=sub>This Orb, over your WiFi</p>"
+            "<div class=card><dl>";
+    char row[200];
+    snprintf(row, sizeof(row), "<dt>Firmware</dt><dd>%s</dd><dt>Wearing</dt><dd>%s</dd><dt>Address</dt><dd>%s</dd>",
+             FW_VERSION, theme_style::themeLabel(), WiFi.localIP().toString().c_str());
+    html += row;
+    html += "</dl></div>"
+            "<div class=card>"
+            "<a class=b href='/install'>Install a theme file</a>"
+            "<a class=b href='/update'>Update the firmware over WiFi</a>"
+            "<a class=b href='/health'>Health readout</a>"
+            "</div>"
+            "<small>Everything else is set on the Orb itself, with the knob, under Settings: location, "
+            "units, range, brightness, when the screen dims, sound, WiFi. What the screens look like is "
+            "designed in Orb Studio and installed from there over the cable, or as a file through the "
+            "link above.</small>"
+            "</body></html>";
+    g_web.send(200, "text/html", html);
+}
+
+static void handleLegacyConfig() {
     const int th = radar::theme();
     const int ranges[] = {10, 15, 25, 30, 50, 100, 150, 250};
     // The value submitted stays in km (the device works in km); only the label is shown in
@@ -2929,6 +2971,7 @@ void setup() {
         g_web.send(200, "text/plain", "ok");
     });
     g_web.on("/", handleRoot);
+    g_web.on("/legacy", handleLegacyConfig);   // the old configuration form, unadvertised
     g_web.on("/save", HTTP_POST, handleSave);
     g_web.on("/wifi", HTTP_POST, handleWifi);
     g_web.on("/bright", handleBright);
