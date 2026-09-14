@@ -612,7 +612,7 @@ namespace {
         lv_label_set_text(s_sndItems[SND_RADAR], b);
         snprintf(b, sizeof(b), "Clock chime   %s", host_sound_chime() ? "ON" : "OFF");
         lv_label_set_text(s_sndItems[SND_CHIME], b);
-        snprintf(b, sizeof(b), "Chime sound   %s", host_chime_name(host_chime_index()));
+        snprintf(b, sizeof(b), "Audio: %s", host_chime_name(host_chime_index()));
         lv_label_set_text(s_sndItems[SND_CHIME_SEL], b);
         snprintf(b, sizeof(b), "Volume   %d%%", host_get_volume());
         lv_label_set_text(s_sndItems[SND_VOLUME], b);
