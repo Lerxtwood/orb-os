@@ -86,3 +86,6 @@ if [ "$DIST_VERSION" != "$VERSION" ]; then
   echo "   cd $(dirname "$STUDIO")/.. && npx vite build && npx wrangler deploy --name buildtheorb"
   echo "=============================================================="
 fi
+echo
+echo " Then, once the commit is made: tools/release-firmware.sh"
+echo " (pushes and cuts the GitHub release for v$VERSION from these same files)"
