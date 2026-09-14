@@ -293,11 +293,12 @@ void firmware_incoming() {
 }
 
 void bake_begin(int totalAssets) {
-    {
-        char b[64];
-        snprintf(b, sizeof(b), "Preparing theme, 0 of %d", totalAssets);
-        if (ui_splash_status(b)) return;   // splash is up: narrate there, no overlay
-    }
+    // Always the panel, never a line on the splash. This used to check whether the boot
+    // splash was up and narrate "Preparing theme, k of n" along its bottom edge instead,
+    // and after a theme push that is exactly what the user saw: the new theme's title card,
+    // apparently finished, with small text under it saying it was not. The splash now goes
+    // up after the bake (main.cpp), so during the bake this plain panel is the only thing
+    // on the glass, and the title card's first appearance means the install is done.
     ensure();
     s_lastActivity = millis();
     // "Installing update, Step 3 of 3" was the language of a Studio install, which really
@@ -318,11 +319,6 @@ void bake_begin(int totalAssets) {
 }
 
 void bake_progress(const char *assetName, int done, int totalAssets) {
-    {
-        char b[64];
-        snprintf(b, sizeof(b), "Preparing theme, %d of %d", done, totalAssets);
-        if (ui_splash_status(b)) return;
-    }
     if (!s_panel) return;
     s_lastActivity = millis();
     char b[128];
@@ -333,10 +329,13 @@ void bake_progress(const char *assetName, int done, int totalAssets) {
 }
 
 void bake_done() {
-    ui_splash_status("");   // clears the line if it was on the splash; harmless otherwise
+    // main.cpp shows the splash BEFORE calling this, so the repaint destroy() forces finds
+    // the title card already covering the screen and never shows the Flight Tracker
+    // underneath for a frame. Safe to call when no bake ran: destroy() does nothing then.
+    const bool had = s_panel != nullptr;
     destroy();
 #ifdef ARDUINO
-    Serial.println("[update_ui] install finished — update overlay down, boot continues");
+    if (had) Serial.println("[update_ui] install finished — update overlay down, boot continues");
 #endif
 }
 

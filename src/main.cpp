@@ -2473,14 +2473,25 @@ void setup() {
         Serial.println("[!] display::begin() failed — check QSPI pins / power.");
     }
     // The bake, now that there is a screen to narrate it on. Only does real work on the
-    // first boot after a theme push; the progress callback puts "Installing update…
-    // preparing artwork k of n" on the panel while it grinds, which is the second-restart
-    // leg of an update the user was previously left to guess about.
+    // first boot after a theme push; the progress callback puts "Preparing theme, k of n"
+    // on update_ui's plain panel while it grinds, which is the second-restart leg of an
+    // update the user was previously left to guess about.
+    //
+    // The panel is still dark here: ui_create() no longer raises the splash, so nothing has
+    // painted yet. The order below is the one Zion asked for after watching an install:
+    // the title card must not appear until the theme is installed, and then it holds for
+    // three seconds and gives way to the clock. It used to go up first and carry the bake
+    // progress in small type along its bottom edge, which read as "finished, but not".
+    // So: bake behind the plain panel, THEN the splash, THEN the panel comes down under
+    // it (bake_done repaints, and with the splash already over everything that repaint
+    // never shows the Flight Tracker for a frame).
     theme_art::set_progress([](const char *name, int done, int total) {
         if (done == 0 && !name) update_ui::bake_begin(total);
         else update_ui::bake_progress(name, done, total);
     });
-    if (theme_art::bake_active_theme()) update_ui::bake_done();
+    theme_art::bake_active_theme();
+    ui_splash_show();          // the theme's title card, clean, with the install behind it
+    update_ui::bake_done();    // no-op on an ordinary boot
     // After the bake and after lv_init(): the font loader reads the freshly baked fonts,
     // and every view built below gets the theme's typography on its first label.
     theme_font::begin();

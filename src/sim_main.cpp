@@ -874,6 +874,7 @@ int main(int argc, char **argv) {
     lv_indev_drv_register(&indev_drv);
 
     ui_create();
+    ui_splash_show();   // ui_create() stopped raising the splash itself; the device shows it after its bake
     lv_obj_t *radarScreen = lv_scr_act();   // captured now, before anything else switches the active screen
     mock_init();
     radar::update(g_mockAcs, g_set);

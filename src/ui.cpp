@@ -1534,9 +1534,14 @@ void ui_create(void) {
 
     umark("after weather tile");
     lv_obj_set_tile_id(s_tv, 0, 0, LV_ANIM_OFF);
-
-    ui_splash_show();   // branded boot splash on top (auto-fades)
-    umark("after splash");
+    // No splash here any more. It used to go up at the end of this function, which is
+    // before main.cpp runs the theme bake, so the first boot after a theme push showed the
+    // title card with "Preparing theme, 3 of 12" in small type along its bottom edge for
+    // the whole conversion. Zion: the splash should not show until the install is finished,
+    // then hold three seconds, then the clock. main.cpp calls ui_splash_show() once the bake
+    // is behind it; the bake itself gets update_ui's plain panel. Nothing paints between the
+    // end of this function and one of those two, so the panel stays dark rather than
+    // flashing the Flight Tracker underneath.
 }
 
 // The weather map's artwork, on the same take-on-enter / release-on-exit contract every
