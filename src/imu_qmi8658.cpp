@@ -9,6 +9,7 @@
 #define QMI_CTRL1   0x02   // serial interface / addr auto-increment
 #define QMI_CTRL2   0x03   // accel: full-scale + ODR
 #define QMI_CTRL7   0x08   // sensor enable
+#define QMI_AX_L    0x35   // accel X low byte; X, Y, Z run to 0x3A with auto-increment
 #define QMI_AZ_L    0x39   // accel Z low byte (high byte at 0x3A)
 
 // ±2g full scale -> 16384 LSB/g.
@@ -59,6 +60,28 @@ bool imu_begin() {
     Serial.println("[imu] QMI8658 not found");
     s_ok = false;
     return false;
+}
+
+// The jolt detector behind waking the dimmed screen. Reads all three axes and compares
+// with the previous read; the sum of the three deltas is the "how much did it move" number.
+// Gravity cancels out of a difference, so the resting orientation does not matter and no
+// baseline has to settle. Sensor noise at ±2 g is a few LSB per axis, so the threshold in
+// config.h is far above it and still well under a fingertip's tap on the desk.
+int imu_motion() {
+    if (!s_ok) return -1;
+    uint8_t b[6];
+    if (!rd(QMI_AX_L, b, 6)) return -1;
+    const int16_t ax = (int16_t)((b[1] << 8) | b[0]);
+    const int16_t ay = (int16_t)((b[3] << 8) | b[2]);
+    const int16_t az = (int16_t)((b[5] << 8) | b[4]);
+    static int16_t px = 0, py = 0, pz = 0; static bool have = false;
+    int moved = 0;
+    if (have) {
+        const int32_t d = abs((int32_t)ax - px) + abs((int32_t)ay - py) + abs((int32_t)az - pz);
+        moved = d >= MOTION_WAKE_LSB ? 1 : 0;
+    }
+    px = ax; py = ay; pz = az; have = true;
+    return moved;
 }
 
 // 1 = face-down, 0 = not, -1 = couldn't read (shared I2C bus is noisy — a failed read

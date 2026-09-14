@@ -3014,7 +3014,15 @@ void loop() {
     {
         int32_t kd = knob::takeDelta();
         bool pressed = knob::takePress();
-        if (kd != 0 || pressed) display::noteActivity();    // knob use keeps the screen awake
+        if (kd != 0 || pressed) {
+            display::noteActivity();    // knob use keeps the screen awake
+            // And brings it back NOW. The idle check below runs on the IMU's 400 ms tick,
+            // and the first stranger to build one reported that a twist or a press did not
+            // wake the dimmed screen while a rock did; whatever the panel was doing with the
+            // deferred write, the knob is the one thing that must never fail to wake it, so
+            // the brightness goes back on the same loop as the detent.
+            if (g_idle) { g_idle = false; applyBrightness(); }
+        }
         if (pressed) diag::log("push (app %s, browsing=%d, captured=%d)",
                                app_shell::name(), app_shell::browsing(), app_shell::captured());
         input_router::dispatch((int)kd, pressed);           // same 3-mode routing the sim uses
@@ -3297,6 +3305,23 @@ void loop() {
         // The live re-centre this block performed was worth keeping, and it did not go: it
         // is apply_location_live() below, which is what the boot-time lookup uses to move
         // the scope without a reboot.
+    }
+
+    // Movement wakes the screen. Read fast, because a knock is short; only while the
+    // screen is up (face-down sleep is deliberate and flipping the Orb back is what ends
+    // it). Motion also counts as activity while awake, so a desk that is being used does
+    // not dim the Orb sitting on it.
+    static uint32_t lastMotion = 0;
+    if (!g_asleep && millis() - lastMotion > 50) {
+        lastMotion = millis();
+        if (imu_motion() > 0) {
+            display::noteActivity();
+            if (g_idle) {
+                g_idle = false;
+                applyBrightness();
+                Serial.println("[imu] motion woke the screen");
+            }
+        }
     }
 
     // face-down -> screen off (IMU); flip face-up to wake

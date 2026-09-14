@@ -7,7 +7,7 @@
 // "1.4.2", said "up to date", and left an Orb missing everything in that list. THEME_CAPS
 // exists because this stopped moving; it covers theme settings and nothing else, so a new
 // command or a deleted screen is invisible to it. Move this too.
-#define FW_VERSION "2.16.3"   // shown on the web config page + Stats screen
+#define FW_VERSION "2.16.4"   // shown on the web config page + Stats screen
 // Edit pins below: replace every -1 with the value from the Waveshare factory demo
 // (see docs/HARDWARE.md and docs/SETUP.md). Do NOT guess them.
 
@@ -134,6 +134,13 @@ static const float RANGE_STEPS_KM[] = {10.0f, 20.0f, 30.0f, 50.0f, 100.0f};
                                                           // web config; this is just the out-of-box value.
 #define BRIGHTNESS_IDLE     25             // dimmed after no touch for IDLE_DIM_MS
 #define IDLE_DIM_MS         3600000UL      // default: dim the screen after 1 hour idle (Settings > Display)
+// Waking a dimmed screen by moving it. The accelerometer is read every 50 ms and the sum
+// of the three axis deltas between reads is compared with this, in LSB at ±2 g (16384
+// per g). 500 is about 30 mg: a knuckle on the desk, a hand on the arm, a mug set down
+// hard enough to feel. Sensor noise sits around 10 to 20. Raise it if a rattling desk
+// keeps the screen awake, lower it if a tap does not wake it. Zion, 2026-09-14: "if
+// somebody is working at their desk, it'll just wake up because it'll feel the vibration."
+#define MOTION_WAKE_LSB     500
 
 // ---------- ADS-B API (free, non-commercial) ----------
 // Plain HTTP on purpose, and it is what makes the radar work at all.
