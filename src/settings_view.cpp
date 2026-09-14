@@ -93,7 +93,13 @@ namespace {
     const int RANGE_N = (int)(sizeof(RANGE_STEPS_KM) / sizeof(RANGE_STEPS_KM[0]));
 
     // --- display submenu (screen timeout + brightness) ---
-    enum { DSP_SCREEN = 0, DSP_BRIGHT, DSP_THEME, DSP_BACK, DSP_COUNT };
+    // No "Theme" row here any more. It picked between the two palettes compiled into the
+    // firmware (Default, Office), which was the whole of theming before Orb Studio existed
+    // and is now a faint "THEME DEFAULT" at the foot of the wheel that means nothing to a
+    // person whose themes come from Studio (Zion, 2026-09-14). The palettes themselves
+    // stay compiled in as the fallback; only the control is gone. The main menu's Theme
+    // entry, which switches between installed designs, is the real one.
+    enum { DSP_SCREEN = 0, DSP_BRIGHT, DSP_BACK, DSP_COUNT };
     const uint32_t IDLE_MS[] = { 0, 28800000UL, 14400000UL, 7200000UL, 3600000UL, 1800000UL, 600000UL, 120000UL };
     const char *IDLE_LABELS[] = { "Always on", "8 hours", "4 hours", "2 hours", "1 hour", "30 min", "10 min", "2 min" };
     const int IDLE_N = (int)(sizeof(IDLE_MS) / sizeof(IDLE_MS[0]));
@@ -570,8 +576,6 @@ namespace {
         snprintf(b, sizeof(b), "Screen   %s", IDLE_LABELS[idle_index()]);
         lv_label_set_text(s_dspItems[DSP_SCREEN], b);
         lv_label_set_text(s_dspItems[DSP_BRIGHT], "Brightness");
-        snprintf(b, sizeof(b), "Theme   %s", app_theme::name(app_theme::get()));
-        lv_label_set_text(s_dspItems[DSP_THEME], b);
         lv_label_set_text(s_dspItems[DSP_BACK], "Back");
         wheel_layout(s_dspItems, DSP_COUNT, s_dspSel, s_dspHl);
     }
@@ -1322,9 +1326,6 @@ void settingsview::onPress() {
         } else if (s_dspSel == DSP_BRIGHT) {
             s_bri = host_get_brightness();
             show_page(MODE_BRIGHT);
-        } else if (s_dspSel == DSP_THEME) {
-            s_themeSel = app_theme::get();
-            show_page(MODE_THEME_SELECT);
         } else {                                        // Back -> exit Settings to the app switcher
             app_shell::setCaptured(false);
             app_shell::openSwitcher();
