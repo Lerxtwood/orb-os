@@ -152,19 +152,43 @@ void begin_frame() {
 #endif
 }
 
-void draw_item(const char *str, float x, float y, lv_color_t color, lv_opa_t opa,
-               int glow, lv_color_t glowCol, const lv_font_t *font) {
+void draw_item(const char *strIn, float x, float y, lv_color_t color, lv_opa_t opa,
+               int glow, lv_color_t glowCol, const lv_font_t *font, float maxW) {
 #if CUSTOM_HAS_SETTINGS
-    if (!s_canvas || !str || !str[0] || opa == 0) return;
+    if (!s_canvas || !strIn || !strIn[0] || opa == 0) return;
     // The face is the caller's now: the selected row may be a different WEIGHT, which is a
     // different converted file, and only the caller knows which row this is.
     if (!font) font = theme_font::settings_item();
-    const int n = (int)strlen(str), cap = n < 40 ? n : 40;
-    float w[40], total = 0.0f;
-    for (int i = 0; i < cap; ++i) {
+    // A row that would run past maxW is cut to fit and ends in "...", the same rule the
+    // WiFi list has always used. The screen is round and the wheel's rows sit at different
+    // heights, so the caller knows the chord and this only knows the string. Nothing
+    // wraps: a wheel row is one line by definition, and a second line would land on the
+    // neighbour. Zion found "Chime sound   Westminster" in Steam Punk's face running off
+    // the glass (2026-09-14), and Studio had no way to show him.
+    char buf[44];
+    const char *str = strIn;
+    const int n0 = (int)strlen(strIn), cap0 = n0 < 40 ? n0 : 40;
+    float w[44], total = 0.0f;
+    int cap = cap0;
+    for (int i = 0; i < cap0; ++i) {
         lv_font_glyph_dsc_t g;
-        w[i] = lv_font_get_glyph_dsc(font, &g, (uint32_t)(uint8_t)str[i], 0) ? (float)g.adv_w : 0.0f;
+        w[i] = lv_font_get_glyph_dsc(font, &g, (uint32_t)(uint8_t)strIn[i], 0) ? (float)g.adv_w : 0.0f;
         total += w[i];
+    }
+    if (maxW > 0.0f && total > maxW) {
+        lv_font_glyph_dsc_t gd;
+        const float dot = lv_font_get_glyph_dsc(font, &gd, (uint32_t)'.', 0) ? (float)gd.adv_w : 4.0f;
+        int keep = cap0;
+        float kept = total;
+        while (keep > 1 && kept + 3.0f * dot > maxW) { --keep; kept -= w[keep]; }
+        // Do not end on a space: "Chime sound ..." reads worse than "Chime sound..."
+        while (keep > 1 && strIn[keep - 1] == ' ') { --keep; kept -= w[keep]; }
+        memcpy(buf, strIn, (size_t)keep);
+        buf[keep] = '.'; buf[keep + 1] = '.'; buf[keep + 2] = '.'; buf[keep + 3] = '\0';
+        str = buf;
+        cap = keep + 3;
+        for (int i = keep; i < cap; ++i) w[i] = dot;
+        total = kept + 3.0f * dot;
     }
     const float startX = x - total / 2.0f;
     const float lineH = (float)lv_font_get_line_height(font), desc = (float)font->base_line;

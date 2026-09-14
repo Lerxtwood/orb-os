@@ -29,8 +29,11 @@ void begin_frame();
 // `glow` and `glowCol` are the caller's now rather than read from the theme in here: the
 // selected row and the rest carry their own, and this renderer draws both. Passing them in
 // also means the one place that knows which row is which is the one place that decides.
+// maxW, when above zero, is the widest the row may draw: a string that would run past it is
+// cut short and ends in "..." (three full stops, since the themed faces are converted
+// without U+2026). Centred on x either way.
 void draw_item(const char *str, float x, float y, lv_color_t color, lv_opa_t opa,
-               int glow, lv_color_t glowCol, const lv_font_t *font);
+               int glow, lv_color_t glowCol, const lv_font_t *font, float maxW = 0.0f);
 
 // False when the canvas could not be allocated (PSRAM pressure). Callers must then keep
 // the plain labels visible, or Settings becomes unreadable and unnavigable.

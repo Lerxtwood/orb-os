@@ -500,6 +500,23 @@ namespace {
             const float sy = WHEEL_CY + (d < 0 ? -1.0f : 1.0f) * WHEEL_R * sinf(angleRad);
             const float sx = WHEEL_RX * (1.0f - cosf(angleRad));
             lv_obj_align(items[i], LV_ALIGN_CENTER, (lv_coord_t)lroundf(sx), (lv_coord_t)lroundf(sy));
+            // HOW WIDE THIS ROW MAY BE. The screen is round, so a row's room depends on its
+            // height: the chord of the 233 px circle at sy, less the sideways lean sx the
+            // wheel gives it, less a margin for the bezel and the black frame round the
+            // glass. A row that does not fit is cut with "..." (the themed painter and the
+            // plain label both do this below), never wrapped, because a wheel row is one
+            // line and a second would land on its neighbour. This is the rule the WiFi
+            // list has had since it was built, applied to every wheel; until now the other
+            // pages simply drew off the glass, which a big themed face made easy to do.
+            constexpr float ROW_MARGIN = 26.0f;
+            const float chord = 2.0f * sqrtf(fmaxf(0.0f, 233.0f * 233.0f - sy * sy));
+            const float rowMaxW = fmaxf(80.0f, chord - 2.0f * fabsf(sx) - 2.0f * ROW_MARGIN);
+            // The plain-label path (stock look, or a theme without glow): a fixed width and
+            // an end-dot long mode. The themed painter below takes the same number instead.
+            lv_obj_set_width(items[i], (lv_coord_t)lroundf(rowMaxW));
+            lv_obj_set_style_text_align(items[i], LV_TEXT_ALIGN_CENTER, 0);
+            lv_label_set_long_mode(items[i], LV_LABEL_LONG_DOT);
+            lv_obj_align(items[i], LV_ALIGN_CENTER, (lv_coord_t)lroundf(sx), (lv_coord_t)lroundf(sy));
 
             // Continuous falloff off the same angle used for position — cos(angle)
             // raised to 2*WHEEL_FADE — rather than a fixed per-row table, so Fade
@@ -540,7 +557,8 @@ namespace {
                                      lv_color_hex(i == sel ? ch.selColor : ch.itemColor), rowOpa,
                                      i == sel ? ch.selGlow : ch.itemGlow,
                                      lv_color_hex(i == sel ? ch.selGlowColor : ch.itemGlowColor),
-                                     i == sel ? theme_font::settings_sel() : theme_font::settings_item());
+                                     i == sel ? theme_font::settings_sel() : theme_font::settings_item(),
+                                     rowMaxW);
           } else {
             // No canvas (either it could not be allocated, or the theme asks for no glow
             // so we deliberately skipped it). Draw with plain labels, but still using the
