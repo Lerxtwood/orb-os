@@ -130,14 +130,25 @@ static void IRAM_ATTR on_detent(int dir) {
     // what actually stopped ordinary browsing from qualifying, the gap window at both ends,
     // and the fact that input_router does not test for a rock at all while the menu is
     // already open, so a false positive can only ever happen inside an app.
-    if (s_isrLastDir != 0 && dir != s_isrLastDir && s_isrRunLen <= ROCK_MAX_RUN) {
+    //
+    // A PAUSE ENDS A RUN. The run length used to accumulate for as long as the direction
+    // held, with no notion of time, so five detents of browsing the menu to the right
+    // followed by a press, a minute of reading, and then a right-first rock counted that
+    // rock's opening detent as the sixth of the run and refused it. A left-first rock after
+    // the same browsing started a fresh run and worked. That is the whole of "it only
+    // recognises counter-clockwise then clockwise", reported by the first stranger to build
+    // one (CanadianAvenger, 2026-09-13), and it favoured one direction only because people
+    // browse the menu clockwise. A detent that arrives after longer than the rock window is
+    // the start of something new, whichever way it goes.
+    const bool fresh = (now - s_isrLastDirMs) > ROCK_MAX_GAP_MS;
+    if (!fresh && s_isrLastDir != 0 && dir != s_isrLastDir && s_isrRunLen <= ROCK_MAX_RUN) {
         const uint32_t gap = now - s_isrLastDirMs;
-        if (gap >= ROCK_MIN_GAP_MS && gap <= ROCK_MAX_GAP_MS) {
+        if (gap >= ROCK_MIN_GAP_MS) {
             s_rockGapMs = gap;
             s_rockMs    = now ? now : 1;   // never 0, which means "never happened"
         }
     }
-    s_isrRunLen    = (dir == s_isrLastDir) ? s_isrRunLen + 1 : 1;
+    s_isrRunLen    = (!fresh && dir == s_isrLastDir) ? s_isrRunLen + 1 : 1;
     s_isrLastDir   = dir;
     s_isrLastDirMs = now;
 }
