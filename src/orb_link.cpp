@@ -15,6 +15,7 @@
 #include "sdcard.h"
 #include "clock_view.h"
 #include "theme_select.h"
+#include "theme_pull.h"
 #include "chime_library.h"
 #include "theme_style.h"
 #include "update_ui.h"
@@ -518,6 +519,33 @@ bool root_ok(const char *slug, bool *isRoads) {
 // flight all refuse. The reasons are returned as text because the browser shows them to a
 // person, and "cannot delete the theme you are wearing" is an instruction, while a bare
 // failure is a puzzle.
+// ---------------- themes over WiFi (theme_pull) ----------------
+//
+// "claim <token>" hands the Orb the account it belongs to; "sync" asks it to fetch that
+// account's themes over WiFi; "sync-status" is what Studio polls while it does. The
+// fetch itself runs from loop() (theme_pull::step), so these three return at once.
+void cmd_claim(const char *token) {
+    if (!theme_pull::claim(token)) { reply_error("bad token"); return; }
+    out_reset(); out_str("{\"ok\":true,\"claimed\":true}"); out_send();
+}
+
+void cmd_sync() {
+    if (s_putOpen) { reply_error("install in progress"); return; }
+    if (!theme_pull::start()) { reply_error(theme_pull::lastError()); return; }
+    out_reset(); out_str("{\"ok\":true,\"started\":true}"); out_send();
+}
+
+void cmd_sync_status() {
+    out_reset();
+    out_fmt("{\"ok\":true,\"state\":\"%s\",\"done\":%d,\"total\":%d,\"bytesDone\":%lu,\"bytesTotal\":%lu,\"claimed\":%s,\"error\":",
+            theme_pull::status(), theme_pull::done(), theme_pull::total(),
+            (unsigned long)theme_pull::bytesDone(), (unsigned long)theme_pull::bytesTotal(),
+            theme_pull::claimed() ? "true" : "false");
+    out_json_string(theme_pull::lastError());
+    out_ch('}');
+    out_send();
+}
+
 void cmd_delete(const char *slug) {
     if (!slug || !*slug)             { reply_error("missing slug");    return; }
     if (!sdcard::mounted())          { reply_error("no SD card");      return; }
@@ -694,6 +722,9 @@ void dispatch(char *line) {
     else if (!strcmp(line, "put-begin")) cmd_put_begin(arg);
     else if (!strcmp(line, "put-data"))  cmd_put_data(arg);
     else if (!strcmp(line, "put-end"))   cmd_put_end();
+    else if (!strcmp(line, "claim"))     cmd_claim(arg);
+    else if (!strcmp(line, "sync"))      cmd_sync();
+    else if (!strcmp(line, "sync-status")) cmd_sync_status();
     else                                 reply_error("unknown command");
 }
 

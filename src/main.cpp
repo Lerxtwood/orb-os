@@ -30,7 +30,8 @@
 #include "theme_art.h"     // pre-baked RGB565 art in flash: no SD read, no decode, no PSRAM
 #include "theme_font.h"    // per-theme fonts, loaded from that same partition
 #include "update_ui.h"     // on-screen "updating…" status, so mid-update never looks like broken
-#include "orb_link.h"      // USB serial command channel: how a browser (Orb Studio) talks to this device
+#include "orb_link.h"
+#include "theme_pull.h"      // USB serial command channel: how a browser (Orb Studio) talks to this device
 #include "custom_weld.h"   // CUSTOM_WELD_HASH — lets a push tell whether new firmware is needed
 #include "theme_style.h"   // per-theme app roster (theme_style::apps())
 #include "clock_wind.h"    // the clock's virtual mainspring, THEME_CAPS 37
@@ -2433,6 +2434,8 @@ void setup() {
     Serial.println("\nThe Orb OS boot");
     orb_link::begin();
     orb_link::setThemeRequestHook(request_theme_switch);
+    theme_pull::begin();
+    theme_pull::setSwitchHook(request_theme_switch);
     diag::boot();   // print + continue the RTC-memory event history across this reboot
 
     // RTC_NOINIT holds whatever was in it, including rubbish after a real power cycle, so it
@@ -3120,6 +3123,11 @@ void loop() {
         const uint32_t until = millis() + 40;
         while (orb_link::transferActive() && (int32_t)(millis() - until) < 0) orb_link::poll();
     }
+
+    // Themes arriving over WiFi: one file per pass, from here because the card is only
+    // ever touched from this task. The update panel is up throughout, so the frames this
+    // costs are frames of a screen nobody is looking at.
+    if (theme_pull::active()) theme_pull::step();
 
     // scheduled reboot after a fresh WiFi config (see setSaveConfigCallback)
     if (g_rebootAtMs && (int32_t)(millis() - g_rebootAtMs) >= 0) { delay(50); ESP.restart(); }
