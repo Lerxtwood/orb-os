@@ -27,6 +27,8 @@
 void host_set_poll_override(uint32_t ms);   // main.cpp
 void host_location_reset();                 // main.cpp
 void host_wifi_saved_ssid(char *out, size_t n);   // main.cpp — NAME only, never the password
+void host_wifi_scan_start();                                                     // main.cpp
+int  host_wifi_scan_result(char names[][33], int8_t *rssi, bool *isOpen, int maxN);   // main.cpp
 void host_wifi_restore_saved();                   // main.cpp — put the backed-up network back
 
 namespace orb_link {
@@ -43,6 +45,8 @@ size_t s_len      = 0;
 bool   s_overflow = false;
 
 bool (*s_themeHook)(const char *) = nullptr;
+bool (*s_wifiStart)(const char *, const char *) = nullptr;
+int  (*s_wifiStatus)(const char **) = nullptr;
 
 // A reply is assembled in full here and written to the port in ONE call.
 //
@@ -519,6 +523,67 @@ bool root_ok(const char *slug, bool *isRoads) {
 // flight all refuse. The reasons are returned as text because the browser shows them to a
 // person, and "cannot delete the theme you are wearing" is an instruction, while a bare
 // failure is a puzzle.
+// ---------------- WiFi setup over the cable ----------------
+//
+// "wifi-scan" starts a scan; "wifi-networks" answers with what it found (or that it is
+// still running); "wifi-join <ssid-b64> <pass-b64>" tries a network the way the Settings
+// screen does, and "wifi-join-status" says how that went. Base64 on the way in so a name or
+// a password with a space in it survives the line parser. The password lives in the
+// firmware's attempt buffer for the length of the attempt and nowhere else.
+static bool b64_field(const char *in, char *out, size_t cap) {
+    if (!in) { out[0] = '\0'; return true; }
+    size_t n = 0;
+    if (mbedtls_base64_decode((unsigned char *)out, cap - 1, &n, (const unsigned char *)in, strlen(in)) != 0) return false;
+    out[n] = '\0';
+    return true;
+}
+
+void cmd_wifi_scan() {
+    host_wifi_scan_start();
+    out_reset(); out_str("{\"ok\":true,\"scanning\":true}"); out_send();
+}
+
+void cmd_wifi_networks() {
+    static char names[16][33];
+    static int8_t rssi[16];
+    static bool open[16];
+    const int n = host_wifi_scan_result(names, rssi, open, 16);
+    out_reset();
+    if (n == -1) { out_str("{\"ok\":true,\"scanning\":true,\"networks\":[]}"); out_send(); return; }
+    out_str("{\"ok\":true,\"scanning\":false,\"networks\":[");
+    for (int i = 0; i < n; ++i) {
+        if (i) out_ch(',');
+        out_str("{\"ssid\":"); out_json_string(names[i]);
+        out_fmt(",\"rssi\":%d,\"open\":%s}", (int)rssi[i], open[i] ? "true" : "false");
+    }
+    out_str("]}");
+    out_send();
+}
+
+void cmd_wifi_join(char *args) {
+    if (!s_wifiStart) { reply_error("joining unavailable"); return; }
+    char *ssidB64 = args;
+    char *passB64 = args ? strchr(args, ' ') : nullptr;
+    if (passB64) { *passB64++ = '\0'; while (*passB64 == ' ') ++passB64; }
+    char ssid[33], pass[65];
+    if (!ssidB64 || !b64_field(ssidB64, ssid, sizeof(ssid)) || !ssid[0]) { reply_error("bad network name"); return; }
+    if (!b64_field(passB64, pass, sizeof(pass))) { reply_error("bad password"); return; }
+    const bool ok = s_wifiStart(ssid, pass);
+    memset(pass, 0, sizeof(pass));
+    if (!ok) { reply_error("a join is already running, or the name is too long"); return; }
+    out_reset(); out_str("{\"ok\":true,\"joining\":true}"); out_send();
+}
+
+void cmd_wifi_join_status() {
+    const char *why = "";
+    const int st = s_wifiStatus ? s_wifiStatus(&why) : 2;
+    out_reset();
+    out_fmt("{\"ok\":true,\"state\":\"%s\",\"why\":", st == 0 ? "joining" : st == 1 ? "joined" : "failed");
+    out_json_string(why ? why : "");
+    out_ch('}');
+    out_send();
+}
+
 // ---------------- themes over WiFi (theme_pull) ----------------
 //
 // "claim <token>" hands the Orb the account it belongs to; "sync" asks it to fetch that
@@ -722,6 +787,10 @@ void dispatch(char *line) {
     else if (!strcmp(line, "put-begin")) cmd_put_begin(arg);
     else if (!strcmp(line, "put-data"))  cmd_put_data(arg);
     else if (!strcmp(line, "put-end"))   cmd_put_end();
+    else if (!strcmp(line, "wifi-scan"))     cmd_wifi_scan();
+    else if (!strcmp(line, "wifi-networks")) cmd_wifi_networks();
+    else if (!strcmp(line, "wifi-join"))     cmd_wifi_join(arg);
+    else if (!strcmp(line, "wifi-join-status")) cmd_wifi_join_status();
     else if (!strcmp(line, "claim"))     cmd_claim(arg);
     else if (!strcmp(line, "sync"))      cmd_sync();
     else if (!strcmp(line, "sync-status")) cmd_sync_status();
@@ -731,6 +800,7 @@ void dispatch(char *line) {
 }   // namespace
 
 void setThemeRequestHook(bool (*hook)(const char *)) { s_themeHook = hook; }
+void setWifiJoinHooks(bool (*start)(const char *, const char *), int (*status)(const char **)) { s_wifiStart = start; s_wifiStatus = status; }
 
 void begin() { s_len = 0; s_overflow = false; }
 

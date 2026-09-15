@@ -1561,6 +1561,56 @@ void host_wifi_connected_reboot() {
     g_rebootAtMs = millis() + 1500;
 }
 
+// ----------------------------- WiFi setup over the cable ------------------------
+//
+// The same join the Settings screen runs with the knob, driven from Orb Studio instead:
+// the owner is sitting at a computer with the cable in, so the network name and password
+// come off a keyboard. Same protection as the knob path: the candidate is tried with
+// persistence off, the previous network is backed up first, and only an association that
+// actually happened is written. On success the Orb finds its location and restarts, which
+// is what the first-boot prompt does. Polled by orb_link's "wifi-join-status".
+static bool     g_sjActive = false;
+static uint32_t g_sjStartMs = 0;
+static char     g_sjSsid[33] = "";
+static char     g_sjPass[65] = "";
+static int      g_sjResult = 0;   // 0 joining, 1 joined (restart coming), 2 failed
+static char     g_sjWhy[48] = "";
+
+static bool serial_wifi_join(const char *ssid, const char *pass) {
+    if (!ssid || !*ssid || strlen(ssid) > 32 || (pass && strlen(pass) > 64)) return false;
+    if (g_sjActive) return false;
+    snprintf(g_sjSsid, sizeof(g_sjSsid), "%s", ssid);
+    snprintf(g_sjPass, sizeof(g_sjPass), "%s", pass ? pass : "");
+    g_sjActive = true; g_sjResult = 0; g_sjWhy[0] = '\0';
+    g_sjStartMs = millis();
+    host_wifi_connect(g_sjSsid, g_sjPass);
+    Serial.printf("[wifi] joining '%s' by request over the cable\n", g_sjSsid);
+    return true;
+}
+static int serial_wifi_join_status(const char **why) { *why = g_sjWhy; return g_sjActive ? 0 : g_sjResult; }
+
+static void serial_wifi_join_tick() {
+    if (!g_sjActive) return;
+    int st = host_wifi_connect_status();
+    if (st == 0 && millis() - g_sjStartMs > 20000) st = 2;   // the knob path's own bound
+    if (st == 0) return;
+    g_sjActive = false;
+    if (st == 1) {
+        host_wifi_commit_credentials(g_sjSsid, g_sjPass);
+        g_sjResult = 1;
+        Serial.printf("[wifi] joined '%s' over the cable; locating, then restarting\n", g_sjSsid);
+        // Location first, the way the first-boot prompt does it; that call restarts the
+        // Orb itself on success and only returns when the lookup failed.
+        if (!host_locate_current()) host_wifi_connected_reboot();
+    } else {
+        host_wifi_restore_saved();
+        g_sjResult = 2;
+        snprintf(g_sjWhy, sizeof(g_sjWhy), "could not join, check the password");
+        Serial.printf("[wifi] join of '%s' failed; previous network restored\n", g_sjSsid);
+    }
+    g_sjPass[0] = '\0';   // never kept longer than the attempt
+}
+
 // ----------------------------- configuration web --------------------------------
 static WebServer g_web(80);
 
@@ -2434,6 +2484,7 @@ void setup() {
     Serial.println("\nThe Orb OS boot");
     orb_link::begin();
     orb_link::setThemeRequestHook(request_theme_switch);
+    orb_link::setWifiJoinHooks(serial_wifi_join, serial_wifi_join_status);
     theme_pull::begin();
     theme_pull::setSwitchHook(request_theme_switch);
     diag::boot();   // print + continue the RTC-memory event history across this reboot
@@ -3128,6 +3179,7 @@ void loop() {
     // ever touched from this task. The update panel is up throughout, so the frames this
     // costs are frames of a screen nobody is looking at.
     if (theme_pull::active()) theme_pull::step();
+    serial_wifi_join_tick();   // a join asked for over the cable; a no-op otherwise
 
     // scheduled reboot after a fresh WiFi config (see setSaveConfigCallback)
     if (g_rebootAtMs && (int32_t)(millis() - g_rebootAtMs) >= 0) { delay(50); ESP.restart(); }

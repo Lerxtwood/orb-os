@@ -46,6 +46,10 @@ constexpr const char *PRODUCT_NAME = "The Orb";
 // switch is now pending. Supplied by main.cpp so this module stays out of the reboot
 // sequencing, which has to be deferred past the reply or the host never sees it.
 void setThemeRequestHook(bool (*hook)(const char *slug));
+// WiFi setup over the cable: start a join (name and password, already decoded), and read
+// its state (0 joining, 1 joined and restarting, 2 failed with a reason). main.cpp owns the
+// attempt; see serial_wifi_join there.
+void setWifiJoinHooks(bool (*start)(const char *ssid, const char *pass), int (*status)(const char **why));
 
 void begin();
 
