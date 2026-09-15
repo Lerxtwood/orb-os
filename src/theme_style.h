@@ -336,16 +336,24 @@ namespace theme_style {
 //      below this level draws no picture and no crank, and shows the gauge and all three
 //      lines whatever the design says.
 //  49  the News screen's briefing gets a typeface and size of its own (font_intel_brief.bin,
-//      Intel.briefSize) and a Back button at the foot of the band (Intel.briefBackOn). It
-//      read in the source credit's face at the credit's size, which is a caption size, and
-//      Zion could neither see the story screen in Orb Studio nor change how it read. The
-//      Back button answers the other thing he asked for: a press has always closed the
-//      story, and nothing on the screen said so. Also at this level, though it needs no
-//      key: the bake now carries every font slot, so the Headlines, Ticker, Weather and
-//      wind screens draw the theme's typeface on the device for the first time (see
-//      theme_art_bake.cpp). An Orb below this level reads the story in the credit's face,
-//      shows no Back button, and closes on a press exactly as before.
-constexpr int THEME_CAPS = 49;
+//      Intel.briefSize) and a Back button at the foot of the band. It read in the source
+//      credit's face at the credit's size, which is a caption size, and Zion could neither
+//      see the story screen in Orb Studio nor change how it read. The Back button answers
+//      the other thing he asked for: a press has always closed the story, and nothing on
+//      the screen said so. Also at this level, though it needs no key: the bake now carries
+//      every font slot, so the Headlines, Ticker, Weather and wind screens draw the theme's
+//      typeface on the device for the first time (see theme_art_bake.cpp). An Orb below
+//      this level reads the story in the credit's face, shows no Back button, and closes on
+//      a press exactly as before. (49 shipped a briefBackOn switch for a day; 50 removed
+//      it. Zion: "wouldn't you always want to have the back button?" Yes.)
+//  50  the News screen's marks are placeable: the "more below" chevron under the headlines
+//      (Intel.morePlace/moreX/moreY), the Back button on the story (backPlace/backX/backY)
+//      and the story's own "more below" chevron (briefMorePlace/briefMoreX/briefMoreY),
+//      each either worked out from the band as before or set to a screen coordinate. The
+//      story also gained the chevrons the list already had: a long story scrolls, and
+//      nothing said so. An Orb below this level places all three itself and draws no
+//      chevrons on the story.
+constexpr int THEME_CAPS = 50;
 
 struct ClockText {
     bool     show   = false;
@@ -1183,9 +1191,21 @@ struct Intel {
     int      briefGap     = 18;     // between the heading and the body
     // THEME_CAPS 49. The body's own size from the compiled ladder, read only when the theme
     // shipped no font_intel_brief.bin; 0 means the credit's face and size, which is what
-    // every theme before this level gets. And whether the band ends in a Back button.
+    // every theme before this level gets.
     int      briefSize    = 0;
-    bool     briefBackOn  = true;
+    // THEME_CAPS 50. Where the marks go. Each pair is read only when its *Place is true;
+    // false is the worked-out spot: the list's chevron under the last row shown, the Back
+    // button at the foot of the band, the story's chevron between the story and the button.
+    // Screen coordinates, the centre of the thing, like every other placed element here.
+    bool     morePlace      = false;
+    int      moreX          = 233;
+    int      moreY          = 400;
+    bool     backPlace      = false;
+    int      backX          = 233;
+    int      backY          = 370;
+    bool     briefMorePlace = false;
+    int      briefMoreX     = 233;
+    int      briefMoreY     = 340;
     // How many headlines to FETCH, 1..INTEL_MAX_ITEMS (20). Not the same question as how
     // many are on screen: the surplus is what the knob scrolls through.
     int      count       = 3;

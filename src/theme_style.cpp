@@ -991,7 +991,20 @@ void load() {
                 const int v = doc["briefSize"].as<int>();
                 s_intel.briefSize = fontSizeOk(v) ? v : 0;
             }
-            if (doc["briefBackOn"].is<bool>()) s_intel.briefBackOn = doc["briefBackOn"].as<bool>();
+            // THEME_CAPS 50. Placement pairs, clamped to the panel like titleX/titleY.
+            {
+                struct P { const char *on; const char *x; const char *y; bool &place; int &px; int &py; };
+                P pairs[] = {
+                    { "morePlace",      "moreX",      "moreY",      s_intel.morePlace,      s_intel.moreX,      s_intel.moreY      },
+                    { "backPlace",      "backX",      "backY",      s_intel.backPlace,      s_intel.backX,      s_intel.backY      },
+                    { "briefMorePlace", "briefMoreX", "briefMoreY", s_intel.briefMorePlace, s_intel.briefMoreX, s_intel.briefMoreY },
+                };
+                for (P &q : pairs) {
+                    if (doc[q.on].is<bool>()) q.place = doc[q.on].as<bool>();
+                    if (doc[q.x].is<int>()) { const int v = doc[q.x].as<int>(); q.px = v < 0 ? 0 : (v > 466 ? 466 : v); }
+                    if (doc[q.y].is<int>()) { const int v = doc[q.y].as<int>(); q.py = v < 0 ? 0 : (v > 466 ? 466 : v); }
+                }
+            }
             if (doc["ageFmt"].is<const char *>())
                 snprintf(s_intel.ageFmt, sizeof(s_intel.ageFmt), "%s", doc["ageFmt"].as<const char *>());
             if (doc["blockOffsetY"].is<int>()) {

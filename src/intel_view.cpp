@@ -361,8 +361,11 @@ void style_chevrons(int count, int lastRowBottom, int firstRowTop, int cxLast, i
     if (s_chevDown) {
         show(s_chevDown, more);
         if (more) {
+            const theme_style::Intel &cfg = theme_style::intel();
             lv_obj_set_style_line_color(s_chevDown, c_source(), 0);
-            lv_obj_align(s_chevDown, LV_ALIGN_CENTER, cxLast, lastRowBottom + CHEV_GAP);
+            // THEME_CAPS 50: where the theme put it, else under the last row shown.
+            if (cfg.morePlace) lv_obj_align(s_chevDown, LV_ALIGN_CENTER, cfg.moreX - 233, cfg.moreY - 233);
+            else               lv_obj_align(s_chevDown, LV_ALIGN_CENTER, cxLast, lastRowBottom + CHEV_GAP);
         }
     }
     if (s_chevUp) {
@@ -423,6 +426,7 @@ void render() {
         show(s_selBar, false);
         lv_label_set_text(s_age, "");
         show(s_briefPanel, false);
+        show(s_briefBack, false);
         exit_scroll_mode();
         return;
     }
@@ -543,6 +547,7 @@ void render() {
         return;
     }
     show(s_briefPanel, false);
+    show(s_briefBack, false);
 
     IntelItem win[INTEL_MAX_ROWS];
     int dummy = 0;
@@ -747,33 +752,44 @@ void render_brief() {
     lv_obj_set_size(s_briefPanel, s_band.w, bandH > 0 ? bandH : 1);
     lv_obj_align(s_briefPanel, LV_ALIGN_CENTER, s_band.cx, (s_band.top + s_band.bottom) / 2);
 
-    // The Back button takes the foot of the band and the story scrolls in what is left
-    // above it, in a clip of its own, so a long paragraph slides under the button rather
-    // than through it. Sized from the credit's face plus the band's own padding, which is
-    // the same arithmetic the highlight behind a headline uses.
-    int backH = 0;
+    // The Back button and the "more below" mark take the foot of the band and the story
+    // scrolls in what is left above them, in a clip of its own, so a long paragraph slides
+    // under the button rather than through it. The button is sized from the credit's face
+    // plus the band's own padding, the same arithmetic the highlight behind a headline
+    // uses. THEME_CAPS 50: either may instead be placed by the theme anywhere on the
+    // screen (they are children of the screen, not of the band, so a placed one is never
+    // clipped by it), and then the band keeps that room for the story.
+    int reserved = 0;
+    int backRowH = 0;
     if (s_briefBack) {
-        show(s_briefBack, cfg.briefBackOn);
-        if (cfg.briefBackOn) {
-            const lv_font_t *f = slot_font(2, cfg.sourceSize);
-            const int padX = cfg.selBarOn ? cfg.selBarPadX : 0;
-            const int padY = cfg.selBarOn ? cfg.selBarPadY : 0;
-            lv_point_t sz;
-            lv_txt_get_size(&sz, "Back", f, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
-            const int lineH = lv_font_get_line_height(f);
-            backH = lineH + 2 * padY;
-            const int w = padX + CHEV_H + BACK_CHEV_TO_TEXT + sz.x + padX;
-            lv_obj_set_size(s_briefBack, w, backH);
-            lv_obj_align(s_briefBack,
-                cfg.textAlign == theme_style::Intel::ALIGN_LEFT  ? LV_ALIGN_BOTTOM_LEFT
-              : cfg.textAlign == theme_style::Intel::ALIGN_RIGHT ? LV_ALIGN_BOTTOM_RIGHT
-              : LV_ALIGN_BOTTOM_MID, 0, 0);
-            lv_obj_align(s_briefBackChev, LV_ALIGN_LEFT_MID, padX, 0);
-            lv_obj_align(s_briefBackLbl,  LV_ALIGN_LEFT_MID, padX + CHEV_H + BACK_CHEV_TO_TEXT, 0);
-            backH += BACK_GAP;
+        const lv_font_t *f = slot_font(2, cfg.sourceSize);
+        const int padX = cfg.selBarOn ? cfg.selBarPadX : 0;
+        const int padY = cfg.selBarOn ? cfg.selBarPadY : 0;
+        lv_point_t sz;
+        lv_txt_get_size(&sz, "Back", f, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+        backRowH = lv_font_get_line_height(f) + 2 * padY;
+        const int w = padX + CHEV_H + BACK_CHEV_TO_TEXT + sz.x + padX;
+        lv_obj_set_size(s_briefBack, w, backRowH);
+        lv_obj_align(s_briefBackChev, LV_ALIGN_LEFT_MID, padX, 0);
+        lv_obj_align(s_briefBackLbl,  LV_ALIGN_LEFT_MID, padX + CHEV_H + BACK_CHEV_TO_TEXT, 0);
+        if (cfg.backPlace) {
+            lv_obj_align(s_briefBack, LV_ALIGN_CENTER, cfg.backX - 233, cfg.backY - 233);
+        } else {
+            // The foot of the band, on the edge the headlines line up on.
+            const int cx = cfg.textAlign == theme_style::Intel::ALIGN_LEFT  ? s_band.cx - s_band.w / 2 + w / 2
+                         : cfg.textAlign == theme_style::Intel::ALIGN_RIGHT ? s_band.cx + s_band.w / 2 - w / 2
+                         : s_band.cx;
+            lv_obj_align(s_briefBack, LV_ALIGN_CENTER, cx, s_band.bottom - backRowH / 2);
+            reserved += backRowH + BACK_GAP;
         }
+        show(s_briefBack, true);
     }
-    const int h = bandH - backH;
+    // Room for the story's own "more below" mark, between the story and the button, kept
+    // whether or not the story is long enough to need it: a clip that changed height with
+    // the story's length would make the words jump on every scroll.
+    const bool chevAuto = !cfg.briefMorePlace;
+    if (chevAuto) reserved += CHEV_H + 2 * CHEV_GAP;
+    const int h = bandH - reserved;
     lv_obj_set_size(s_briefText, s_band.w, h > 0 ? h : 1);
     lv_obj_align(s_briefText, LV_ALIGN_TOP_MID, 0, 0);
 
@@ -834,6 +850,27 @@ void render_brief() {
     lv_obj_align(s_briefHead, LV_ALIGN_TOP_MID, 0, -s_briefScroll);
     lv_obj_align_to(s_briefFoot, s_briefHead, LV_ALIGN_OUT_BOTTOM_MID, 0, cfg.sourceGap);
     lv_obj_align_to(s_briefBody, s_briefFoot, LV_ALIGN_OUT_BOTTOM_MID, 0, cfg.briefGap);
+
+    // The same two marks the list has, THEME_CAPS 50: "there is more below" once the story
+    // outruns its clip, "you can go back up" once it has been scrolled. The list's own
+    // objects, re-placed: below the clip (or where the theme put it) and above the band.
+    const bool more   = s_briefScroll < s_briefMaxScroll;
+    const bool before = s_briefScroll > 0;
+    if (s_chevDown) {
+        show(s_chevDown, more);
+        if (more) {
+            lv_obj_set_style_line_color(s_chevDown, c_source(), 0);
+            if (cfg.briefMorePlace) lv_obj_align(s_chevDown, LV_ALIGN_CENTER, cfg.briefMoreX - 233, cfg.briefMoreY - 233);
+            else lv_obj_align(s_chevDown, LV_ALIGN_CENTER, s_band.cx, s_band.top + h + CHEV_GAP + CHEV_H / 2);
+        }
+    }
+    if (s_chevUp) {
+        show(s_chevUp, before);
+        if (before) {
+            lv_obj_set_style_line_color(s_chevUp, c_source(), 0);
+            lv_obj_align(s_chevUp, LV_ALIGN_CENTER, s_band.cx, s_band.top - CHEV_GAP);
+        }
+    }
 }
 
 void open_brief() {
@@ -861,6 +898,7 @@ void close_brief() {
     s_briefOpen = false;
     intel_brief_release();
     show(s_briefPanel, false);
+    show(s_briefBack, false);
     render();
 }
 
@@ -1234,9 +1272,10 @@ void intelview::init() {
         lv_obj_set_style_text_align(*slot, LV_TEXT_ALIGN_CENTER, 0);
         lv_label_set_text(*slot, "");
     }
-    // The Back button, THEME_CAPS 49. Built always, shown when the theme asks (the default)
-    // and the story is open; styled by brief_style() from the browsing marks.
-    s_briefBack = lv_obj_create(s_briefPanel);
+    // The Back button, THEME_CAPS 49. A child of the SCREEN rather than of the band, since
+    // 50: a theme may place it anywhere, and a child of the band would be clipped to it.
+    // Shown only while a story is open; styled by brief_style() from the browsing marks.
+    s_briefBack = lv_obj_create(s_screen);
     lv_obj_remove_style_all(s_briefBack);
     lv_obj_clear_flag(s_briefBack, LV_OBJ_FLAG_SCROLLABLE);
     show(s_briefBack, false);
