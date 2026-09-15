@@ -335,7 +335,17 @@ namespace theme_style {
 //      made it a design and 42 gave it type; this is the rest of what a screen has. An Orb
 //      below this level draws no picture and no crank, and shows the gauge and all three
 //      lines whatever the design says.
-constexpr int THEME_CAPS = 48;
+//  49  the News screen's briefing gets a typeface and size of its own (font_intel_brief.bin,
+//      Intel.briefSize) and a Back button at the foot of the band (Intel.briefBackOn). It
+//      read in the source credit's face at the credit's size, which is a caption size, and
+//      Zion could neither see the story screen in Orb Studio nor change how it read. The
+//      Back button answers the other thing he asked for: a press has always closed the
+//      story, and nothing on the screen said so. Also at this level, though it needs no
+//      key: the bake now carries every font slot, so the Headlines, Ticker, Weather and
+//      wind screens draw the theme's typeface on the device for the first time (see
+//      theme_art_bake.cpp). An Orb below this level reads the story in the credit's face,
+//      shows no Back button, and closes on a press exactly as before.
+constexpr int THEME_CAPS = 49;
 
 struct ClockText {
     bool     show   = false;
@@ -1171,6 +1181,11 @@ struct Intel {
     uint32_t briefColor   = 0xE8ECF1;
     int      briefOpa     = 255;
     int      briefGap     = 18;     // between the heading and the body
+    // THEME_CAPS 49. The body's own size from the compiled ladder, read only when the theme
+    // shipped no font_intel_brief.bin; 0 means the credit's face and size, which is what
+    // every theme before this level gets. And whether the band ends in a Back button.
+    int      briefSize    = 0;
+    bool     briefBackOn  = true;
     // How many headlines to FETCH, 1..INTEL_MAX_ITEMS (20). Not the same question as how
     // many are on screen: the surplus is what the knob scrolls through.
     int      count       = 3;

@@ -6,6 +6,7 @@
 // through. Everything here is best-effort: an asset that fails to read, fails to decode,
 // or does not fit simply stays on the SD path, which still works exactly as before.
 #include "theme_art.h"
+#include "theme_font.h"   // slot_files(): the fonts a theme may ship
 
 #ifdef ARDUINO
 #include <Arduino.h>
@@ -30,14 +31,15 @@ struct Asset { const char *name; bool alpha; };
 // Fonts, stored byte-for-byte rather than decoded. They are lv_font_conv binaries that
 // LVGL parses itself (see theme_font.cpp), so there is nothing to convert here — the
 // point is only that they live in the same fast, memory-mapped cache as the artwork.
-// Listed first in the bake so typography never loses the space race to a background.
-const char *FONT_ASSETS[] = {
-    "font_menu_current.bin", "font_menu_prev.bin", "font_menu_next.bin",
-    "font_clock1.bin", "font_clock2.bin",
-    "font_settings.bin", "font_settings_sel.bin",
-    "font_radar1.bin", "font_radar2.bin", "font_radar3.bin", "font_radar4.bin",
-};
-constexpr size_t FONT_ASSET_N = sizeof(FONT_ASSETS) / sizeof(FONT_ASSETS[0]);
+// Baked first so typography never loses the space race to a background.
+//
+// The list is theme_font's own slot table, not a copy. A copy is what sat here from the
+// day fonts were baked at all: eleven names, written when there were eleven slots, and
+// never touched as the Headlines, Ticker, Weather and wind screens each gained slots of
+// their own. theme_font loads ONLY from this bake, so those fifteen fonts were shipped,
+// declared, written to the card and then never read, and every one of those screens drew
+// the compiled face whatever typeface the design chose. theme_art's cache VERSION went up
+// with this so an already-baked theme is baked again, fonts included.
 const Asset ASSETS[] = {
     { "menu_plate.png",        false },   // every menu open — the whole reason for this
     { "settings_plate.png",    false },
@@ -144,7 +146,9 @@ bool bake_active_theme() {
     int baked = 0;
     // Count what will actually be attempted so the on-screen progress has a real total.
     int totalPlanned = 0;
-    for (size_t i = 0; i < FONT_ASSET_N; ++i) if (theme_style::hasAsset(FONT_ASSETS[i])) ++totalPlanned;
+    size_t fontN = 0;
+    const char *const *FONT_ASSETS = theme_font::slot_files(fontN);
+    for (size_t i = 0; i < fontN; ++i) if (theme_style::hasAsset(FONT_ASSETS[i])) ++totalPlanned;
     for (size_t i = 0; i < ASSET_N; ++i) if (theme_style::hasAsset(ASSETS[i].name)) ++totalPlanned;
     if (s_progress) s_progress(nullptr, 0, totalPlanned);
     int attempted = 0;
@@ -152,7 +156,7 @@ bool bake_active_theme() {
     // Fonts first: they are small (tens of KB) next to a 636 KB layer, and a theme that
     // spilled its font would silently fall back to the previous theme's typography, which
     // is the exact confusion this whole change exists to remove.
-    for (size_t i = 0; i < FONT_ASSET_N; ++i) {
+    for (size_t i = 0; i < fontN; ++i) {
         if (!theme_style::hasAsset(FONT_ASSETS[i])) continue;
         if (s_progress) s_progress(FONT_ASSETS[i], ++attempted, totalPlanned);
         char path[80];

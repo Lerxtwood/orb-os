@@ -60,7 +60,11 @@ const lv_font_t *intel_title();
 const lv_font_t *intel_text();
 const lv_font_t *intel_source();
 const lv_font_t *intel_age();
-bool intel_has_font(int slot);   // 0 title, 1 text, 2 source, 3 age
+// The briefing's body, THEME_CAPS 49. Optional: a theme that gives the story no face of
+// its own ships no file, and intel_view then draws the body in the source credit's face,
+// which is what it always did.
+const lv_font_t *intel_brief();
+bool intel_has_font(int slot);   // 0 title, 1 text, 2 source, 3 age, 4 brief
 
 // The Stock Ticker's four. Same contract: check ticker_has_font() before honouring a size
 // slider, because a theme's face is baked at one size and cannot be scaled afterwards.
@@ -69,6 +73,14 @@ const lv_font_t *ticker_price();
 const lv_font_t *ticker_change();
 const lv_font_t *ticker_strip();
 bool ticker_has_font(int slot);  // 0 name, 1 price, 2 change, 3 strip
+
+// Every font file a theme can ship, in slot order, for the bake. theme_art_bake used to
+// keep a list of its own with eleven names on it, written when there were eleven slots;
+// the fifteen added since (Headlines, Ticker, Weather, wind screen) were shipped by Studio,
+// declared by the theme, written to the card, and never baked, and this loader reads only
+// the bake. Every one of those screens drew the compiled face whatever the design said.
+// One list, owned here, is the fix.
+const char *const *slot_files(size_t &count);
 
 // How many of this theme's fonts actually loaded from flash. 0 means everything is
 // running on compiled fallbacks, which is the honest "nothing changed yet" state rather

@@ -985,6 +985,13 @@ void load() {
             }
             if (doc["sourceSize"].is<int>() && fontSizeOk(doc["sourceSize"].as<int>()))
                 s_intel.sourceSize = doc["sourceSize"].as<int>();
+            // THEME_CAPS 49. 0 keeps the credit's face; anything off the ladder is refused
+            // back to that rather than snapped, same rule textSize follows.
+            if (doc["briefSize"].is<int>()) {
+                const int v = doc["briefSize"].as<int>();
+                s_intel.briefSize = fontSizeOk(v) ? v : 0;
+            }
+            if (doc["briefBackOn"].is<bool>()) s_intel.briefBackOn = doc["briefBackOn"].as<bool>();
             if (doc["ageFmt"].is<const char *>())
                 snprintf(s_intel.ageFmt, sizeof(s_intel.ageFmt), "%s", doc["ageFmt"].as<const char *>());
             if (doc["blockOffsetY"].is<int>()) {

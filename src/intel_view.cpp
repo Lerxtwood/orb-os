@@ -292,11 +292,19 @@ lv_align_t credit_side_for(int a) {
 int      s_sel        = 0;
 lv_obj_t *s_selBar    = nullptr;   // the optional bar behind the selected headline
 
-// The briefing, over the list.
+// The briefing, over the list. The panel is the band; s_briefText is the part of it the
+// story scrolls in, and the Back button (THEME_CAPS 49) sits under that, pinned.
 lv_obj_t *s_briefPanel = nullptr;
+lv_obj_t *s_briefText  = nullptr;
 lv_obj_t *s_briefHead  = nullptr;
 lv_obj_t *s_briefBody  = nullptr;
 lv_obj_t *s_briefFoot  = nullptr;
+lv_obj_t *s_briefBack     = nullptr;   // the button: a bar in the highlight band's colours
+lv_obj_t *s_briefBackLbl  = nullptr;   // "Back", in the credit's face
+lv_obj_t *s_briefBackChev = nullptr;   // a chevron pointing the way out, drawn like the others
+lv_point_t s_backChevPts[3] = { {CHEV_H, 0}, {0, CHEV_W / 2}, {CHEV_H, CHEV_W} };
+constexpr int BACK_GAP     = 8;    // between the story's clip and the button
+constexpr int BACK_CHEV_TO_TEXT = 8;   // between the chevron and the word
 bool     s_briefOpen      = false;
 int      s_briefScroll    = 0;
 int      s_briefMaxScroll = 0;
@@ -663,12 +671,24 @@ void render() {
 // arbitrary feed text.
 constexpr int BRIEF_STEP_PX = 22;   // one detent's worth of scroll through a long brief
 
+// The story's face. THEME_CAPS 49: its own file when the theme shipped one, else the
+// compiled ladder at the theme's briefSize, else the credit's face and size, which is what
+// every theme before that level reads in. The credit's face is the fallback rather than
+// LV_FONT_DEFAULT because "the story reads like the credit" was the promise those themes
+// were made, and a theme that never heard of this slot must not change on the glass.
+const lv_font_t *brief_body_font(const theme_style::Intel &cfg) {
+    if (theme_font::intel_has_font(4)) return theme_font::intel_brief();
+    if (cfg.briefSize > 0)             return font_for(cfg.briefSize);
+    return slot_font(2, cfg.sourceSize);
+}
+
 void brief_style() {
     if (!s_briefPanel) return;
     const theme_style::Intel &cfg = theme_style::intel();
     const lv_font_t *headFont = theme_font::intel_has_font(1) ? theme_font::intel_text()
                                                               : &lv_font_montserrat_16;
-    const lv_font_t *bodyFont = slot_font(2, cfg.sourceSize);
+    const lv_font_t *creditFont = slot_font(2, cfg.sourceSize);
+    const lv_font_t *bodyFont   = brief_body_font(cfg);
 
     lv_obj_set_style_text_font(s_briefHead, headFont, 0);
     lv_obj_set_style_text_color(s_briefHead, c_text(), 0);
@@ -677,7 +697,7 @@ void brief_style() {
 
     // The credit sits under the heading exactly where it sits under a headline in the list,
     // in the same face and the same colour, because "the same formatting" is the point.
-    lv_obj_set_style_text_font(s_briefFoot, bodyFont, 0);
+    lv_obj_set_style_text_font(s_briefFoot, creditFont, 0);
     lv_obj_set_style_text_color(s_briefFoot, c_source(), 0);
     lv_obj_set_style_text_opa(s_briefFoot, (lv_opa_t)cfg.sourceOpa, 0);
 
@@ -686,6 +706,29 @@ void brief_style() {
         cfg.briefColorOn ? lv_color_hex(cfg.briefColor) : c_text(), 0);
     lv_obj_set_style_text_opa(s_briefBody, (lv_opa_t)cfg.briefOpa, 0);
     lv_obj_set_style_text_line_space(s_briefBody, cfg.lineGap, 0);
+    // The list's own alignments, THEME_CAPS 49. These three were centred at creation and
+    // never revisited, so a design set flush left against a drawn page edge opened a story
+    // that jumped to the middle of the dial.
+    lv_obj_set_style_text_align(s_briefHead, text_align_for(cfg.textAlign), 0);
+    lv_obj_set_style_text_align(s_briefBody, text_align_for(cfg.textAlign), 0);
+    lv_obj_set_style_text_align(s_briefFoot, text_align_for(cfg.sourceAlign), 0);
+
+    // The Back button wears the list's browsing marks: the highlight band's colour, corner
+    // and padding behind the word, and the selected headline's colour on it. A press is
+    // what it answers, and the band is what this screen already uses to say "a press acts
+    // here", so a theme that dressed its highlight has dressed this. With no band the word
+    // and its chevron stand alone in the headline colour.
+    if (s_briefBack) {
+        const lv_color_t ink = cfg.selColorOn ? lv_color_hex(cfg.selColor) : c_text();
+        lv_obj_set_style_text_font(s_briefBackLbl, creditFont, 0);
+        lv_obj_set_style_text_color(s_briefBackLbl, ink, 0);
+        lv_obj_set_style_text_opa(s_briefBackLbl, (lv_opa_t)cfg.textOpa, 0);
+        lv_obj_set_style_line_color(s_briefBackChev, ink, 0);
+        lv_obj_set_style_line_opa(s_briefBackChev, (lv_opa_t)cfg.textOpa, 0);
+        lv_obj_set_style_bg_color(s_briefBack, lv_color_hex(cfg.selBarColor), 0);
+        lv_obj_set_style_bg_opa(s_briefBack, cfg.selBarOn ? (lv_opa_t)cfg.selBarOpa : LV_OPA_TRANSP, 0);
+        lv_obj_set_style_radius(s_briefBack, cfg.selBarRadius, 0);
+    }
 }
 
 // Fill and lay out the briefing inside the band render() just measured.
@@ -700,9 +743,39 @@ void render_brief() {
     // behind it, untouched, which is the whole point of this being a mode rather than a
     // screen. Clipping is what lets a long brief scroll under the band's edge instead of
     // drawing over the title above it.
-    const int h = s_band.bottom - s_band.top;
-    lv_obj_set_size(s_briefPanel, s_band.w, h > 0 ? h : 1);
+    const int bandH = s_band.bottom - s_band.top;
+    lv_obj_set_size(s_briefPanel, s_band.w, bandH > 0 ? bandH : 1);
     lv_obj_align(s_briefPanel, LV_ALIGN_CENTER, s_band.cx, (s_band.top + s_band.bottom) / 2);
+
+    // The Back button takes the foot of the band and the story scrolls in what is left
+    // above it, in a clip of its own, so a long paragraph slides under the button rather
+    // than through it. Sized from the credit's face plus the band's own padding, which is
+    // the same arithmetic the highlight behind a headline uses.
+    int backH = 0;
+    if (s_briefBack) {
+        show(s_briefBack, cfg.briefBackOn);
+        if (cfg.briefBackOn) {
+            const lv_font_t *f = slot_font(2, cfg.sourceSize);
+            const int padX = cfg.selBarOn ? cfg.selBarPadX : 0;
+            const int padY = cfg.selBarOn ? cfg.selBarPadY : 0;
+            lv_point_t sz;
+            lv_txt_get_size(&sz, "Back", f, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+            const int lineH = lv_font_get_line_height(f);
+            backH = lineH + 2 * padY;
+            const int w = padX + CHEV_H + BACK_CHEV_TO_TEXT + sz.x + padX;
+            lv_obj_set_size(s_briefBack, w, backH);
+            lv_obj_align(s_briefBack,
+                cfg.textAlign == theme_style::Intel::ALIGN_LEFT  ? LV_ALIGN_BOTTOM_LEFT
+              : cfg.textAlign == theme_style::Intel::ALIGN_RIGHT ? LV_ALIGN_BOTTOM_RIGHT
+              : LV_ALIGN_BOTTOM_MID, 0, 0);
+            lv_obj_align(s_briefBackChev, LV_ALIGN_LEFT_MID, padX, 0);
+            lv_obj_align(s_briefBackLbl,  LV_ALIGN_LEFT_MID, padX + CHEV_H + BACK_CHEV_TO_TEXT, 0);
+            backH += BACK_GAP;
+        }
+    }
+    const int h = bandH - backH;
+    lv_obj_set_size(s_briefText, s_band.w, h > 0 ? h : 1);
+    lv_obj_align(s_briefText, LV_ALIGN_TOP_MID, 0, 0);
 
     lv_obj_set_width(s_briefHead, s_band.w);
     lv_obj_set_width(s_briefFoot, s_band.w);
@@ -743,12 +816,12 @@ void render_brief() {
     // Headline, its credit, then the summary: the same order and the same spacings a row in
     // the list uses, so the two read as one design. sourceGap under the heading and briefGap
     // under the credit are the theme's own numbers, not new ones invented here.
-    lv_obj_update_layout(s_briefPanel);
+    lv_obj_update_layout(s_briefText);
     lv_obj_align(s_briefHead, LV_ALIGN_TOP_MID, 0, -s_briefScroll);
     lv_obj_align_to(s_briefFoot, s_briefHead, LV_ALIGN_OUT_BOTTOM_MID, 0, cfg.sourceGap);
     lv_obj_align_to(s_briefBody, s_briefFoot, LV_ALIGN_OUT_BOTTOM_MID, 0, cfg.briefGap);
 
-    lv_obj_update_layout(s_briefPanel);
+    lv_obj_update_layout(s_briefText);
     // Clamped here rather than in onTurn, because how far it CAN scroll depends on the text
     // that just arrived. Turning past the end holds there; wrapping a paragraph back to its
     // own top reads as a fault.
@@ -1150,12 +1223,29 @@ void intelview::init() {
     lv_obj_remove_style_all(s_briefPanel);
     lv_obj_clear_flag(s_briefPanel, LV_OBJ_FLAG_SCROLLABLE);
     show(s_briefPanel, false);
+    // The story's own clip inside the band, so that what scrolls is the story and the Back
+    // button under it stays put. Sized by render_brief().
+    s_briefText = lv_obj_create(s_briefPanel);
+    lv_obj_remove_style_all(s_briefText);
+    lv_obj_clear_flag(s_briefText, LV_OBJ_FLAG_SCROLLABLE);
     for (lv_obj_t **slot : { &s_briefHead, &s_briefBody, &s_briefFoot }) {
-        *slot = lv_label_create(s_briefPanel);
+        *slot = lv_label_create(s_briefText);
         lv_label_set_long_mode(*slot, LV_LABEL_LONG_WRAP);
         lv_obj_set_style_text_align(*slot, LV_TEXT_ALIGN_CENTER, 0);
         lv_label_set_text(*slot, "");
     }
+    // The Back button, THEME_CAPS 49. Built always, shown when the theme asks (the default)
+    // and the story is open; styled by brief_style() from the browsing marks.
+    s_briefBack = lv_obj_create(s_briefPanel);
+    lv_obj_remove_style_all(s_briefBack);
+    lv_obj_clear_flag(s_briefBack, LV_OBJ_FLAG_SCROLLABLE);
+    show(s_briefBack, false);
+    s_briefBackChev = lv_line_create(s_briefBack);
+    lv_line_set_points(s_briefBackChev, s_backChevPts, 3);
+    lv_obj_set_style_line_width(s_briefBackChev, 2, 0);
+    lv_obj_set_style_line_rounded(s_briefBackChev, true, 0);
+    s_briefBackLbl = lv_label_create(s_briefBack);
+    lv_label_set_text(s_briefBackLbl, "Back");
 
     // Drawn rather than set in a font: LVGL's built-in symbols are a fixed weight and size
     // that would not follow the theme's own line work, and two lines cost nothing.

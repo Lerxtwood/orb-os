@@ -72,7 +72,7 @@ int         s_loaded = 0;
 // One slot per place a theme can style text. Order matches the accessors below.
 enum Slot { S_CLOCK1, S_CLOCK2, S_MENU_CUR, S_MENU_PREV, S_MENU_NEXT, S_SETTINGS, S_SETTINGS_SEL,
             S_RADAR1, S_RADAR2, S_RADAR3, S_RADAR4,
-            S_INTEL_TITLE, S_INTEL_TEXT, S_INTEL_SOURCE, S_INTEL_AGE,
+            S_INTEL_TITLE, S_INTEL_TEXT, S_INTEL_SOURCE, S_INTEL_AGE, S_INTEL_BRIEF,
             S_TICK_NAME, S_TICK_PRICE, S_TICK_CHANGE, S_TICK_STRIP,
             S_WX1, S_WX2, S_WX3, S_WX4,
             S_WIND_TITLE, S_WIND_ASK, S_WIND_TURNS, S_COUNT };
@@ -85,6 +85,8 @@ const char *SLOT_FILE[S_COUNT] = {
     "font_settings.bin", "font_settings_sel.bin",
     "font_radar1.bin", "font_radar2.bin", "font_radar3.bin", "font_radar4.bin",
     "font_intel_title.bin", "font_intel_text.bin", "font_intel_source.bin", "font_intel_age.bin",
+    // The briefing's own face, THEME_CAPS 49. Absent from most themes: see intel_brief().
+    "font_intel_brief.bin",
     "font_ticker_name.bin", "font_ticker_price.bin", "font_ticker_change.bin", "font_ticker_strip.bin",
     // The Weather map's four, added with THEME_CAPS 28. Same four-slot shape as the Flight
     // Tracker, because the screens now offer the same four text lines and a designer moving
@@ -225,9 +227,12 @@ bool intel_has_font(int slot) {
         case 1: return s_font[S_INTEL_TEXT]   != nullptr;
         case 2: return s_font[S_INTEL_SOURCE] != nullptr;
         case 3: return s_font[S_INTEL_AGE]    != nullptr;
+        case 4: return s_font[S_INTEL_BRIEF]  != nullptr;
         default: return false;
     }
 }
+
+const char *const *slot_files(size_t &count) { count = S_COUNT; return SLOT_FILE; }
 
 const lv_font_t *ticker_name()   { return get(S_TICK_NAME);   }
 const lv_font_t *ticker_price()  { return get(S_TICK_PRICE);  }
@@ -252,6 +257,10 @@ const lv_font_t *intel_title()  { return get(S_INTEL_TITLE); }
 const lv_font_t *intel_text()   { return get(S_INTEL_TEXT); }
 const lv_font_t *intel_source() { return get(S_INTEL_SOURCE); }
 const lv_font_t *intel_age()    { return get(S_INTEL_AGE); }
+// Through the source slot when the theme shipped nothing here, not through get(): the
+// compiled fallback would be LV_FONT_DEFAULT, and "the story reads in the credit's face"
+// is the promise every theme built before this slot existed was made.
+const lv_font_t *intel_brief()  { return s_font[S_INTEL_BRIEF] ? s_font[S_INTEL_BRIEF] : intel_source(); }
 
 const lv_font_t *radar_text(int idx) {
     if (idx < 0) idx = 0;

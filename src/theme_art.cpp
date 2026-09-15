@@ -20,7 +20,9 @@ constexpr uint32_t MAGIC       = 0x4F524254;   // 'ORBT'
 // makes the cache look empty, which makes the next boot re-bake from the card. That is
 // the only safe way to retire bad data: v1 packed blobs tightly and let each erase clip
 // the previous blob's tail, leaving white bands baked into the artwork.
-constexpr uint32_t VERSION     = 5;
+// 6: the bake now includes every font slot (theme_art_bake.cpp), so a v5 cache is one with
+// most of its theme's typography missing and has to be rebuilt.
+constexpr uint32_t VERSION     = 6;
 constexpr size_t   INDEX_BYTES = 8192;         // two 4 KB sectors
 constexpr size_t   SECTOR      = 4096;
 
