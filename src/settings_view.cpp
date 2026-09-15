@@ -141,6 +141,17 @@ namespace {
         bool     themed;   // false on the setup path; see mode_is_system_chrome()
     };
     bool s_systemChromeFwd();   // defined with the flag below
+    // The stock chrome on the wheel pages: the small page title at the top ("Display",
+    // "Theme") and the one-line knob hint at the foot ("turn to browse, push to select").
+    // Compiled grey Montserrat, so on a themed Orb they are the one thing on the page the
+    // design did not dress, they land on whatever the plate has painted there, and Orb
+    // Studio's settings preview shows neither. Zion, on a Steam Punk Orb: "why is it giving
+    // me that notification now?" They stay on the setup path, where a stranger meets the
+    // knob for the first time, and go with the theme everywhere else; the main wheel never
+    // had either. Registered as they are built, shown or hidden in show_page().
+    lv_obj_t *s_hints[24] = { nullptr };
+    int       s_hintN = 0;
+    void reg_hint(lv_obj_t *h) { if (h && s_hintN < 24) s_hints[s_hintN++] = h; }
     const Chrome &chrome() {
         // Fixed, and deliberately the stock values rather than a copy of any theme's.
         static const Chrome SYSTEM = {
@@ -511,9 +522,29 @@ namespace {
             constexpr float ROW_MARGIN = 26.0f;
             const float chord = 2.0f * sqrtf(fmaxf(0.0f, 233.0f * 233.0f - sy * sy));
             const float rowMaxW = fmaxf(80.0f, chord - 2.0f * fabsf(sx) - 2.0f * ROW_MARGIN);
-            // The plain-label path (stock look, or a theme without glow): a fixed width and
-            // an end-dot long mode. The themed painter below takes the same number instead.
-            lv_obj_set_width(items[i], (lv_coord_t)lroundf(rowMaxW));
+            // The plain-label path (stock look, or a theme without glow): a fixed ONE-LINE
+            // box and LVGL's end-dot long mode. The themed painter below takes the same
+            // width instead.
+            //
+            // The face is set BEFORE the box, and the box gets an explicit height. Dot mode
+            // measures the text against the label's current box, and a content-sized label
+            // keeps the height of whatever it last laid out: the width was being set with
+            // the previous face still on the label, then the theme's larger face applied,
+            // and the first line no longer fit a box one small line tall, so the whole row
+            // became "...". That is the "three dots for each theme" Zion saw in the Theme
+            // picker, and it came and went with whichever face the label held before.
+            const int ad = abs(d);
+            const lv_font_t *font;
+            if      (ad == 0) font = &lv_font_montserrat_20;
+            else if (ad == 1) font = &lv_font_montserrat_16;
+            else              font = &lv_font_montserrat_14;
+            const Chrome &ch = chrome();
+            const lv_font_t *labelFont = font;
+#if CUSTOM_HAS_SETTINGS
+            if (ch.themed) labelFont = (i == sel) ? theme_font::settings_sel() : theme_font::settings_item();
+#endif
+            lv_obj_set_style_text_font(items[i], labelFont, 0);
+            lv_obj_set_size(items[i], (lv_coord_t)lroundf(rowMaxW), lv_font_get_line_height(labelFont));
             lv_obj_set_style_text_align(items[i], LV_TEXT_ALIGN_CENTER, 0);
             lv_label_set_long_mode(items[i], LV_LABEL_LONG_DOT);
             lv_obj_align(items[i], LV_ALIGN_CENTER, (lv_coord_t)lroundf(sx), (lv_coord_t)lroundf(sy));
@@ -524,20 +555,13 @@ namespace {
             // numbers. Font stepping stays a fixed 3-step table: it's cosmetic,
             // stock-look-only (a Launch Kit push draws one uniform size — see
             // settings_text::draw_item below), and unrelated to the fade itself.
-            const int ad = abs(d);
             const float fall = fmaxf(0.0f, cosf(angleRad));
             const lv_opa_t opa = offDial ? 0
                                : (lv_opa_t)lroundf(255.0f * powf(fall, 2.0f * WHEEL_FADE));
-            const lv_font_t *font;
-            if      (ad == 0) font = &lv_font_montserrat_20;
-            else if (ad == 1) font = &lv_font_montserrat_16;
-            else              font = &lv_font_montserrat_14;
-            const Chrome &ch = chrome();
             if (!ch.themed) {
                 // Setup path. Stock sizing and fixed colours, so no theme can hide the words
                 // somebody needs to read in order to leave this screen — and this is the one
                 // screen they cannot leave in order to go and change the theme.
-                lv_obj_set_style_text_font(items[i], font, 0);
                 lv_obj_set_style_text_opa(items[i], opa, 0);
                 lv_obj_set_style_text_color(items[i], i == sel ? C_WHITE : C_GREY, 0);
                 continue;
@@ -564,16 +588,14 @@ namespace {
             // so we deliberately skipped it). Draw with plain labels, but still using the
             // THEME's font and colours: the canvas only ever added glow on top of those,
             // and falling back to the stock font stepping made a themed device suddenly
-            // render Settings in the wrong size and weight.
-            lv_obj_set_style_text_font(items[i],
-                i == sel ? theme_font::settings_sel() : theme_font::settings_item(), 0);
+            // render Settings in the wrong size and weight. The face itself went on above,
+            // before the box was sized.
             lv_obj_set_style_text_opa(items[i], rowOpa, 0);
             lv_obj_set_style_text_color(items[i],
                 lv_color_hex(i == sel ? ch.selColor : ch.itemColor), 0);
             (void)font;   // stock 3-step sizing is not used when a theme is active
           }
 #else
-            lv_obj_set_style_text_font(items[i], font, 0);
             lv_obj_set_style_text_opa(items[i], opa, 0);
             lv_obj_set_style_text_color(items[i], i == sel ? C_WHITE : C_GREY, 0);
 #endif
@@ -870,6 +892,11 @@ namespace {
         // back — cheap (one canvas clear) and safe even in stock builds, where
         // begin_frame() is a no-op with no canvas to clear.
         settings_text::begin_frame();
+        // The page titles and picker hints: stock chrome only. See s_hints.
+        for (int i = 0; i < s_hintN; ++i) {
+            if (chrome().themed) lv_obj_add_flag(s_hints[i], LV_OBJ_FLAG_HIDDEN);
+            else                 lv_obj_clear_flag(s_hints[i], LV_OBJ_FLAG_HIDDEN);
+        }
         lv_obj_add_flag(s_menu, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_bright, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_lmPage, LV_OBJ_FLAG_HIDDEN);
@@ -1587,6 +1614,7 @@ void settingsview::init() {
     lv_obj_set_style_text_color(bhint, C_GREY, 0);
     lv_obj_set_style_text_font(bhint, &lv_font_montserrat_14, 0);
     lv_obj_align(bhint, LV_ALIGN_CENTER, 0, 110);
+    reg_hint(bhint);
 
     // --- location menu page (Current / Search / Recent / Back) ---
     s_lmPage = lv_obj_create(s_screen);
@@ -1598,6 +1626,7 @@ void settingsview::init() {
     lv_obj_set_style_text_color(lmtitle, C_DIM, 0);
     lv_obj_set_style_text_font(lmtitle, &lv_font_montserrat_16, 0);
     lv_obj_align(lmtitle, LV_ALIGN_CENTER, 0, -122);
+    reg_hint(lmtitle);
     // Directly under the title and above the wheel, in the dim ink the other secondary
     // readouts use. Text is set in refresh_locmenu(), which runs on every entry.
     s_lmCoords = lv_label_create(s_lmPage);
@@ -1618,6 +1647,7 @@ void settingsview::init() {
     lv_obj_set_style_text_color(lmhint, C_GREY, 0);
     lv_obj_set_style_text_font(lmhint, &lv_font_montserrat_14, 0);
     lv_obj_align(lmhint, LV_ALIGN_CENTER, 0, 150);
+    reg_hint(lmhint);
 
     // --- first boot: which way do you want to give it WiFi? ---
     //
@@ -1668,6 +1698,7 @@ void settingsview::init() {
     lv_obj_set_style_text_color(fbHint, C_GREY, 0);
     lv_obj_set_style_text_font(fbHint, &lv_font_montserrat_18, 0);
     lv_obj_align(fbHint, LV_ALIGN_CENTER, 0, 150);
+    reg_hint(fbHint);
 
     // --- first boot: the phone path ---
     //
@@ -1751,6 +1782,7 @@ void settingsview::init() {
     lv_obj_set_style_text_color(rtitle, C_DIM, 0);
     lv_obj_set_style_text_font(rtitle, &lv_font_montserrat_16, 0);
     lv_obj_align(rtitle, LV_ALIGN_CENTER, 0, -70);
+    reg_hint(rtitle);
     s_recName = lv_label_create(s_recPage);
     lv_label_set_text(s_recName, "");
     lv_obj_set_style_text_color(s_recName, C_WHITE, 0);
@@ -1766,6 +1798,7 @@ void settingsview::init() {
     lv_obj_set_style_text_color(rhint, C_GREY, 0);
     lv_obj_set_style_text_font(rhint, &lv_font_montserrat_14, 0);
     lv_obj_align(rhint, LV_ALIGN_CENTER, 0, 110);
+    reg_hint(rhint);
 
     // --- search page ---
     s_srchPage = lv_obj_create(s_screen);
@@ -1808,6 +1841,7 @@ void settingsview::init() {
         lv_obj_set_style_text_color(dtitle, C_DIM, 0);
         lv_obj_set_style_text_font(dtitle, &lv_font_montserrat_16, 0);
         lv_obj_align(dtitle, LV_ALIGN_CENTER, 0, -110);
+        reg_hint(dtitle);
         s_dspHl = lv_obj_create(s_dspPage);
         style_highlight(s_dspHl);
         for (int i = 0; i < DSP_COUNT; ++i) {
@@ -1820,6 +1854,7 @@ void settingsview::init() {
         lv_obj_set_style_text_color(dhint, C_GREY, 0);
         lv_obj_set_style_text_font(dhint, &lv_font_montserrat_14, 0);
         lv_obj_align(dhint, LV_ALIGN_CENTER, 0, 150);
+        reg_hint(dhint);
     }
 
     // --- sound menu page (Radar / Chime / Volume / Back) ---
@@ -1832,6 +1867,7 @@ void settingsview::init() {
     lv_obj_set_style_text_color(sndtitle, C_DIM, 0);
     lv_obj_set_style_text_font(sndtitle, &lv_font_montserrat_16, 0);
     lv_obj_align(sndtitle, LV_ALIGN_CENTER, 0, -122);
+    reg_hint(sndtitle);
     s_sndHl = lv_obj_create(s_sndPage);
     style_highlight(s_sndHl);
     for (int i = 0; i < SND_COUNT; ++i) {
@@ -1855,6 +1891,7 @@ void settingsview::init() {
     lv_obj_set_style_text_color(chimetitle, C_DIM, 0);
     lv_obj_set_style_text_font(chimetitle, &lv_font_montserrat_16, 0);
     lv_obj_align(chimetitle, LV_ALIGN_CENTER, 0, -122);
+    reg_hint(chimetitle);
     s_chimeSelHl = lv_obj_create(s_chimeSelPage);
     style_highlight(s_chimeSelHl);
     for (int i = 0; i < CHIME_UI_MAX + 1; ++i) {
@@ -1867,6 +1904,7 @@ void settingsview::init() {
     lv_obj_set_style_text_color(chimehint, C_GREY, 0);
     lv_obj_set_style_text_font(chimehint, &lv_font_montserrat_14, 0);
     lv_obj_align(chimehint, LV_ALIGN_CENTER, 0, 150);
+    reg_hint(chimehint);
 
     // --- theme picker page (Display > Theme) ---
     s_themeSelPage = lv_obj_create(s_screen);
@@ -1878,6 +1916,7 @@ void settingsview::init() {
     lv_obj_set_style_text_color(themetitle, C_DIM, 0);
     lv_obj_set_style_text_font(themetitle, &lv_font_montserrat_16, 0);
     lv_obj_align(themetitle, LV_ALIGN_CENTER, 0, -122);
+    reg_hint(themetitle);
     s_themeSelHl = lv_obj_create(s_themeSelPage);
     style_highlight(s_themeSelHl);
     for (int i = 0; i < APP_THEME_COUNT + 1; ++i) {
@@ -1890,6 +1929,7 @@ void settingsview::init() {
     lv_obj_set_style_text_color(themehint, C_GREY, 0);
     lv_obj_set_style_text_font(themehint, &lv_font_montserrat_14, 0);
     lv_obj_align(themehint, LV_ALIGN_CENTER, 0, 150);
+    reg_hint(themehint);
 
     // --- theme restart notice (Display > Theme > pick one) ---
     // Reuses the picker's own background/ink so it reads as one continuous flow (pick ->
@@ -1919,6 +1959,7 @@ void settingsview::init() {
     lv_obj_set_style_text_color(designtitle, C_DIM, 0);
     lv_obj_set_style_text_font(designtitle, &lv_font_montserrat_16, 0);
     lv_obj_align(designtitle, LV_ALIGN_CENTER, 0, -122);
+    reg_hint(designtitle);
     s_designHl = lv_obj_create(s_designPage);
     style_highlight(s_designHl);
     for (int i = 0; i < theme_select::MAX_THEMES + 1; ++i) {
@@ -1931,6 +1972,7 @@ void settingsview::init() {
     lv_obj_set_style_text_color(designhint, C_GREY, 0);
     lv_obj_set_style_text_font(designhint, &lv_font_montserrat_14, 0);
     lv_obj_align(designhint, LV_ALIGN_CENTER, 0, 150);
+    reg_hint(designhint);
 
     // --- design restart notice (Design > pick one) ---
     // Reuses the picker's own background/ink so it reads as one continuous flow (pick ->
@@ -1958,6 +2000,7 @@ void settingsview::init() {
     lv_obj_set_style_text_color(rangetitle, C_DIM, 0);
     lv_obj_set_style_text_font(rangetitle, &lv_font_montserrat_16, 0);
     lv_obj_align(rangetitle, LV_ALIGN_CENTER, 0, -122);
+    reg_hint(rangetitle);
     s_rangeHl = lv_obj_create(s_rangePage);
     style_highlight(s_rangeHl);
     for (int i = 0; i < RNG_COUNT; ++i) {
@@ -1981,6 +2024,7 @@ void settingsview::init() {
     lv_obj_set_style_text_color(unitstitle, C_DIM, 0);
     lv_obj_set_style_text_font(unitstitle, &lv_font_montserrat_16, 0);
     lv_obj_align(unitstitle, LV_ALIGN_CENTER, 0, -122);
+    reg_hint(unitstitle);
     s_unitsHl = lv_obj_create(s_unitsPage);
     style_highlight(s_unitsHl);
     for (int i = 0; i < UNIT_COUNT; ++i) {
