@@ -840,14 +840,29 @@ static void rtc_seed_clock() {
     Serial.println("[rtc] system clock seeded from RTC");
 }
 
-// Brightness combines idle auto-dim and face-down sleep (sleep wins -> screen off).
+// Brightness combines idle auto-dim and face-down sleep (sleep wins -> screen off), and
+// an update in progress wins over everything: a theme arriving, a firmware flash about to
+// start or the bake after a restart all put the panel at full brightness, however dim the
+// owner keeps it and however long it has sat idle. update_ui drives that flag.
 static bool g_asleep = false;   // face-down
 static bool g_idle   = false;   // no touch for a while
+static bool g_updateBright = false;   // an update surface is up (update_ui)
 static void applyBrightness() {
     int b = g_brightnessDay;
     if (g_idle  && BRIGHTNESS_IDLE  < b) b = BRIGHTNESS_IDLE;   // idle only dims down
     if (g_asleep) b = 0;                                         // face-down -> screen off
+    if (g_updateBright) b = 255;                                 // an update outranks both
     display::setBrightness(b);
+}
+
+// update_ui's hook (declared extern there). The transfer counts as activity too, so the
+// idle clock starts over when the notice comes down rather than dimming the very next tick
+// because the install outlasted the idle time.
+void host_update_bright(bool on) {
+    g_updateBright = on;
+    display::noteActivity();
+    g_idle = false;
+    applyBrightness();
 }
 
 // Shared with the Settings app (settings_view.cpp).
@@ -2472,6 +2487,11 @@ void setup() {
     if (!display::begin()) {
         Serial.println("[!] display::begin() failed — check QSPI pins / power.");
     }
+    // The owner's own brightness, from here on. display::begin() lights the panel at
+    // BRIGHTNESS_DEFAULT and nothing used to correct that until the first idle or wake,
+    // so a level set in Settings > Display came back only after the screen had dimmed
+    // once. loadSettings() ran above, so the saved value is already in g_brightnessDay.
+    applyBrightness();
     // The bake, now that there is a screen to narrate it on. Only does real work on the
     // first boot after a theme push; the progress callback puts "Preparing theme, k of n"
     // on update_ui's plain panel while it grinds, which is the second-restart leg of an

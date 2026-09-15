@@ -1,5 +1,9 @@
 #include "update_ui.h"
 #include "ui.h"   // ui_splash_status(): during boot the splash narrates, not an overlay
+// main.cpp. True while any update surface is up: the screen goes to full brightness no
+// matter how dim the owner keeps it or how long it has sat idle, and comes back to its
+// normal level when the surface goes down. See ensure() / destroy().
+extern void host_update_bright(bool on);
 #include <lvgl.h>
 #include <stdio.h>
 #ifdef ARDUINO
@@ -32,6 +36,11 @@ lv_timer_t *s_autoClear   = nullptr;
 
 void ensure() {
     if (s_panel) return;
+    // Before the first pixel. An Orb that has dimmed for the night, or that its owner keeps
+    // at a low level, was showing its update notice at that same low level, and a dim
+    // "do not unplug" is not much better than none. Zion: the moment software starts
+    // loading, firmware or theme, the screen goes to its brightest.
+    host_update_bright(true);
     s_panel = lv_obj_create(lv_layer_top());
     lv_obj_set_size(s_panel, LV_PCT(100), LV_PCT(100));
     lv_obj_set_style_bg_color(s_panel, lv_color_black(), 0);
@@ -41,7 +50,10 @@ void ensure() {
     lv_obj_clear_flag(s_panel, LV_OBJ_FLAG_SCROLLABLE);
 
     s_title = lv_label_create(s_panel);
-    lv_label_set_text(s_title, "Updating");
+    // The theme-install states leave this title alone, so it names the theme install. Every
+    // other state sets its own. It used to say just "Updating", which had Zion looking for
+    // what exactly was being updated.
+    lv_label_set_text(s_title, "Updating theme");
     lv_obj_set_style_text_color(s_title, lv_color_white(), 0);
     lv_obj_set_style_text_font(s_title, &lv_font_montserrat_28, 0);
     lv_obj_align(s_title, LV_ALIGN_CENTER, 0, -40);
@@ -82,6 +94,7 @@ void destroy() {
     // A whole-screen invalidate costs one repaint on a path that runs a handful of times in
     // a device's life, so there is no reason to be clever about which region it was.
     if (had) {
+        host_update_bright(false);   // back to the owner's own level, idle clock restarted
         if (lv_obj_t *scr = lv_scr_act()) lv_obj_invalidate(scr);
         lv_obj_invalidate(lv_layer_top());
         lv_refr_now(NULL);
@@ -148,7 +161,7 @@ void file_received(const char *name, int count) {
     s_lastActivity = millis();
     if (s_interrupted) {   // the send resumed after a stall: back to the normal state
         s_interrupted = false;
-        lv_label_set_text(s_title, "Updating");
+        lv_label_set_text(s_title, "Updating theme");
     }
     char b[96];
     // Numbered, because the thing a person cannot tell from the desk is whether the device
@@ -166,7 +179,7 @@ void file_progress(const char *name, int count, uint32_t bytes) {
     s_lastActivity = millis();      // the whole point: this is activity
     if (s_interrupted) {            // a big file mid-flight is not an interruption after all
         s_interrupted = false;
-        lv_label_set_text(s_title, "Updating");
+        lv_label_set_text(s_title, "Updating theme");
     }
     // Repainting per 400-byte chunk would spend more time in LVGL than on the transfer.
     static uint32_t s_painted = 0;
