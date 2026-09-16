@@ -1787,6 +1787,11 @@ int main(int argc, char **argv) {
             clockview::init();
             lv_scr_load(clockview::screen());
             {
+                // The canvas is taken in onEnter() and the face is painted by a once-a-second
+                // tick, neither of which has happened at this point, so the capture below
+                // used to be a black disc every time.
+                clockview::onEnter();
+                clockview::refresh();
                 lv_timer_handler();
                 lv_refr_now(NULL);
                 SDL_RenderClear(s_ren);

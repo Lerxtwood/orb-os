@@ -19,6 +19,7 @@
 #include <ctime>
 static bool getLocalTime(struct tm *info, uint32_t = 0) {
     time_t now = time(nullptr);
+    if (getenv("SIM_NO_TIME")) return false;   // photograph the not-yet-set face (see s_noTime)
     return localtime_r(&now, info) != nullptr;
 }
 static struct { void printf(const char *fmt, ...) const { va_list a; va_start(a, fmt); vprintf(fmt, a); va_end(a); } void println(const char *s) const { puts(s); } } Serial;
@@ -38,6 +39,24 @@ static void  heap_caps_free(void *p) { free(p); }
 #include "office_sprite.h"
 #include "office_minute_img_meta.h"
 #include "office_hour_img_meta.h"
+
+// NO TIME YET. Until the RTC or NTP has set the clock, getLocalTime() says no, and this
+// screen used to draw nothing at all: a black disc, on a theme whose dial is drawn here.
+// The first stranger to power-cycle an Orb without a coin cell in the RTC read that as a
+// broken clock (CanadianAvenger, 2.16.17), and it did look like one. A clock that has not
+// been set shows its face at twelve, which every oven and microwave has taught people to
+// read correctly, so that is what this draws: the dial, the hands at 12:00 with the seconds
+// running, and no date, because a date would be an invented one. The real time replaces it
+// on the tick after it arrives.
+static bool s_noTime = false;
+
+static void time_for_face(struct tm *ti) {
+    if (getLocalTime(ti, 0)) { s_noTime = false; return; }
+    time_t now; time(&now);
+    localtime_r(&now, ti);
+    ti->tm_hour = 0; ti->tm_min = 0;   // tm_sec keeps running from the system clock
+    s_noTime = true;
+}
 #include "dial_img.h"      // DIAL_IMG  — Imperial Signal (blue)
 #include "dial_avi.h"      // DIAL_AVI  — Aviator (cream), AVI_SUB_X/Y sub-dial centre
 #include "hand_hour_img.h" // HAND_HOUR_IMG — owner's real hour hand (trefoil tip), rotated at runtime
@@ -179,14 +198,16 @@ static void draw_needle_at(float pxc, float pyc, float angDeg, float len, float 
 static void draw_imperial(const struct tm *ti) {
     memcpy(s_buf, DIAL_IMG, sizeof(DIAL_IMG));
 
-    char ds[4];
-    snprintf(ds, sizeof(ds), "%d", ti->tm_mday);
-    lv_draw_label_dsc_t ld;
-    lv_draw_label_dsc_init(&ld);
-    ld.color = COL_DATE;
-    ld.font  = &lv_font_montserrat_20;
-    ld.align = LV_TEXT_ALIGN_CENTER;
-    lv_canvas_draw_text(s_canvas, DATE_WIN_X - 24, DATE_WIN_Y - 12, 48, &ld, ds);
+    if (!s_noTime) {
+        char ds[4];
+        snprintf(ds, sizeof(ds), "%d", ti->tm_mday);
+        lv_draw_label_dsc_t ld;
+        lv_draw_label_dsc_init(&ld);
+        ld.color = COL_DATE;
+        ld.font  = &lv_font_montserrat_20;
+        ld.align = LV_TEXT_ALIGN_CENTER;
+        lv_canvas_draw_text(s_canvas, DATE_WIN_X - 24, DATE_WIN_Y - 12, 48, &ld, ds);
+    }
 
     const float sec  = ti->tm_sec;
     const float mins = ti->tm_min + sec / 60.0f;
@@ -226,7 +247,7 @@ static void draw_aviator(const struct tm *ti) {
     memcpy(s_buf, DIAL_AVI, sizeof(DIAL_AVI));
 
     // date curved along the banner at the bottom ("Mon 27th")
-    {
+    if (!s_noTime) {
         int day = ti->tm_mday;
         const char *suf = "th";
         if (day < 11 || day > 13) {
@@ -313,6 +334,8 @@ static void draw_digital(const struct tm *ti) {
     x += colonW + gap;
     draw_seg_cell(x, oy, w, h, t, SEG[digits[2]]); x += w + gap;
     draw_seg_cell(x, oy, w, h, t, SEG[digits[3]]);
+
+    if (s_noTime) return;   // no weekday and no date until there is a real one to show
 
     // --- weekday strip MO..SU, today lit and underlined, the rest dim ----------
     static const char *WD[7] = { "MO", "TU", "WE", "TH", "FR", "SA", "SU" };
@@ -515,6 +538,7 @@ static void draw_office(const struct tm *ti) {
     draw_office_hour_sprite(hourAngle);
     draw_office_minute_sprite(minAngle);
 
+    if (s_noTime) return;   // the date line would be an invented one
     char wd[16]; strftime(wd, sizeof(wd), "%A", ti);
     char mo[16]; strftime(mo, sizeof(mo), "%B", ti);
     char dateStr[40];
@@ -573,6 +597,7 @@ static void draw_baked_text(const lv_font_t *font, const char *fmt, int bx, int 
                             uint32_t bg = 0, int bgOpa = 0, int bgRadius = 0) {
     if (!font)          { banner_silent(which, "no font loaded for this slot", fmt); return; }
     if (!fmt || !fmt[0]) { banner_silent(which, "empty format", fmt); return; }
+    if (s_noTime)        return;   // nothing true to print yet; see time_for_face()
     char buf[48];
     // 0 means strftime refused the format outright — almost always a flag or a conversion
     // this libc does not implement, since 48 bytes is ample for anything a banner shows.
@@ -684,6 +709,7 @@ static void draw_baked_arc_text(const lv_font_t *font, const char *fmt, float R,
     if (!font)           { banner_silent(which, "no font loaded for this slot", fmt); return; }
     if (!fmt || !fmt[0])  { banner_silent(which, "empty format", fmt); return; }
     if (R < 1.0f)        { banner_silent(which, "curved, but sitting on the dial centre", fmt); return; }
+    if (s_noTime)        return;
     char buf[48];
     if (strftime(buf, sizeof(buf), fmt, ti) == 0) {
         banner_silent(which, "strftime rejected the format, or it produced nothing", fmt);
@@ -1404,7 +1430,8 @@ static void sweep_frame(float secs) {
     // where the minute has them.
     {
         struct tm ti;
-        if (getLocalTime(&ti, 0)) {
+        time_for_face(&ti);
+        {
             const float p_sec = (float)ti.tm_sec, p_min = ti.tm_min + p_sec / 60.0f;
             const float p_hr = (ti.tm_hour % 12) + p_min / 60.0f;
             const float above[5] = { p_hr * 30.0f, p_min * 6.0f, ang, 0.0f, 0.0f };
@@ -1539,7 +1566,7 @@ static void tick_cb(lv_timer_t * /*t*/) {
     // invalidation is dropped. It was the whole of the hitch.
     if (orb_screen_covered()) return;
     struct tm ti;
-    if (!getLocalTime(&ti, 0)) return;
+    time_for_face(&ti);
 
     if (sweep_possible()) {
         // The cache is of one minute. When the minute rolls, the hour and minute hands have
@@ -1577,7 +1604,8 @@ void clockview::setSweep(int mode) {
 void clockview::refresh() {
     if (!s_screen) return;
     struct tm ti;
-    if (getLocalTime(&ti, 0)) redraw(&ti);
+    time_for_face(&ti);
+    redraw(&ti);
 }
 
 static void apply_face() {
@@ -1597,7 +1625,8 @@ static void apply_face() {
         if (s_minShadow)  lv_obj_add_flag(s_minShadow,  LV_OBJ_FLAG_HIDDEN);
     }
     struct tm ti;
-    if (getLocalTime(&ti, 0)) redraw(&ti);
+    time_for_face(&ti);
+    redraw(&ti);
 }
 
 // The custom face's plate/overlay/hand sprites decode once into PSRAM and were

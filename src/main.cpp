@@ -2818,38 +2818,59 @@ void setup() {
     // failures, which is exactly the case that stranded the device — but it recovers the
     // common brief blip without waiting for the 20 s retry.
     WiFi.setAutoReconnect(true);
+    // WHAT IS STORED, read properly, before anything tries to use it. The driver has to be
+    // up for esp_wifi_get_config() to answer (it loads the saved network from NVS as part
+    // of coming up), and the return code has to be checked, because an unchecked call
+    // leaves the buffer holding whatever the stack held. That unchecked read is what
+    // WiFiManager's getWiFiSSID() does, and below it used to run AFTER a failed autoConnect
+    // had opened the portal and switched the station side off, which is exactly when the
+    // call fails. So a slow first association on a cold boot read back as "no network
+    // stored" on some boots and as the right name on others, purely by what the stack
+    // happened to hold: CanadianAvenger's 2.16.17 report, "WiFi not remembered" on one
+    // power cycle and remembered on the next.
+    WiFi.mode(WIFI_STA);
+    char storedSsid[33] = {0};
+    {
+        wifi_config_t cur = {};
+        if (esp_wifi_get_config(WIFI_IF_STA, &cur) == ESP_OK)
+            snprintf(storedSsid, sizeof(storedSsid), "%s", (const char *)cur.sta.ssid);
+    }
+    const bool haveStoredNetwork = storedSsid[0] != '\0';
+    Serial.printf("[wifi] stored network: %s\n", haveStoredNetwork ? storedSsid : "(none)");
+    // NEVER OPEN THE PORTAL OVER A STORED NETWORK. When autoConnect fails it starts the
+    // "The Orb Setup" access point, and WiFiManager turns the station side OFF to do it
+    // (_disableSTAConn). Nothing ever turned it back on: the SDK's own reconnect has
+    // nothing to reconnect, and WiFi.reconnect() from the network task is a no-op with the
+    // station disabled. So "reconnecting in the background", which the log promised, was
+    // never happening; the Orb sat in AP mode until somebody pulled the plug, and the
+    // second power cycle was the one that "brought the WiFi back". With a network stored
+    // the portal stays shut, the station side stays up, and a slow router costs a few
+    // seconds of "No WiFi" instead of a night of it. The portal still opens when there is
+    // nothing stored, or after Settings > Reset, which are the two times it is the answer.
+    g_wm.setEnableConfigPortal(wantWifiSetup || !haveStoredNetwork);
     // BOUNDED. There was no connect timeout at all, so autoConnect blocked for the library
     // default while the screen above promised "up to twenty seconds" — measured at about
     // forty-five on the bench. Twelve is comfortably more than a healthy association needs
-    // and is the number the boot screen can honestly stand behind.
+    // and is the number the boot screen can honestly stand behind. Missing it is no longer
+    // costly (see above), so it is not worth stretching for a slow router.
     g_wm.setConnectTimeout(12);
     const bool wifiUp = g_wm.autoConnect("The Orb Setup");
-    if (wifiUp) Serial.println("[wifi] connected");
-    else        Serial.println("[wifi] config portal open - join 'The Orb Setup' to set WiFi; UI stays live");
+    if (wifiUp)                          Serial.println("[wifi] connected");
+    else if (g_wm.getConfigPortalActive()) Serial.println("[wifi] config portal open - join 'The Orb Setup' to set WiFi; UI stays live");
+    else                                 Serial.printf("[wifi] '%s' did not come up in time; the station side stays on and keeps trying\n", storedSsid);
 
     // No network means the first thing anyone should see is how to give it one, not a
     // clock that cannot tell the time. Both routes are open from here: the knob walks
     // through scan/pick/password on the screen itself, and the same moment the portal is
     // up on "The Orb Setup" for anyone who would rather type on a phone.
-    // "Did not connect just now" and "was never configured" are different things, and this
-    // line treated them as the same one. An Orb with a good saved network that was merely
-    // slow, or whose router was still waking up, got sent to the setup screen and asked to
-    // configure something it already knew — which is what happened on the bench: it gave up,
-    // showed setup, and then reconnected on its own moments later.
-    //
-    // The comment fifteen lines above already said the right test is WiFiManager's own
-    // getWiFiSSID(), and warned against exactly this. It is the right test because it reads
-    // what is STORED rather than what happened in the last few seconds.
-    //
-    // With a network stored and simply not up, the Flight Tracker's "No WiFi" banner says so
-    // and WiFi.setAutoReconnect keeps trying, which is the honest pair: report the state,
-    // keep working on it, and do not demand setup for something already set up.
-    const bool haveStoredNetwork = g_wm.getWiFiSSID(true).length() > 0;
+    // "Did not connect just now" and "was never configured" are different things. An Orb
+    // with a good saved network that was merely slow, or whose router was still waking up,
+    // must not be sent to the setup screen and asked to configure something it already
+    // knows. With a network stored and simply not up, the Flight Tracker's "No WiFi" banner
+    // says so, the clock shows its face at twelve until the time arrives, and the SDK plus
+    // the network task's 20 s retry keep working on it: report the state, keep trying, and
+    // do not demand setup for something already set up.
     if (!wifiUp && !haveStoredNetwork) wantWifiSetup = true;
-    if (!wifiUp && haveStoredNetwork)
-        Serial.printf("[wifi] '%s' is stored but did not come up in time; reconnecting in the "
-                      "background rather than asking for setup\n",
-                      g_wm.getWiFiSSID(true).c_str());
     // UX-024, and it comes before the WiFi choice on purpose. Both are things the Orb is
     // missing, and the card is the one that needs somebody to go and find a physical
     // object, so it is the one worth saying while they are still standing at the desk.
@@ -3414,8 +3435,17 @@ void loop() {
             // Settings > Location where somebody checking their location will look for it.
             snprintf(net, sizeof(net), "Configure at " ORB_MDNS_ADDR "\n%s",
                      WiFi.localIP().toString().c_str());
-        else
+        else if (g_wm.getConfigPortalActive())
             snprintf(net, sizeof(net), "WiFi setup:\njoin \"The Orb Setup\"");
+        else {
+            // The portal is not up, so "join The Orb Setup" would send somebody looking for
+            // an access point that does not exist. What is true instead: a network is
+            // stored and the Orb is still trying to reach it (see the boot block).
+            char ssid[33];
+            host_wifi_saved_ssid(ssid, sizeof(ssid));
+            if (ssid[0]) snprintf(net, sizeof(net), "Reconnecting to\n%s", ssid);
+            else         snprintf(net, sizeof(net), "No WiFi:\nSettings > WiFi");
+        }
         settingsview::setNetInfo(net);   // shown on Settings > About (was the Stats screen)
         // The centre point the scope is actually using, shown on Settings > Location. Same
         // contract as setNetInfo: safe every loop, only redraws while that page is open.
