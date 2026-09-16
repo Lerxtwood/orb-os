@@ -73,26 +73,55 @@ namespace {
 // mattered. Widening this to 1400 without it made ordinary browsing open the menu, because
 // any left-then-right counted however far the left half had run. The two together are the
 // gesture: a SHORT turn back, then forward, reasonably promptly.
-constexpr uint32_t ROCK_WINDOW_MS = 800;
+// knob.cpp decides the quickness now (ROCK_QUICK_MS, 250 ms); this window only has to be
+// no tighter than that, and it is the same number so the two cannot disagree.
+constexpr uint32_t ROCK_WINDOW_MS = 250;
+
+// THE SETTLE. A reversal is not yet a rock; it is a rock if the hand STOPS. After the
+// reversal detent the router waits this long, holding the detents back from the app, and
+// then looks at what followed: nothing, or one more detent, and it was a flick, so the
+// menu opens; more than that and it was a scroll that changed direction, so the held
+// detents go to the app as if nothing had happened. Zion, browsing headlines: "it's very
+// easy to accidentally go into the main menu when you're just scrolling back and forth."
+// The cost is this delay before the menu appears, which is below what a hand notices.
+constexpr uint32_t ROCK_SETTLE_MS = 160;
+constexpr int32_t  ROCK_BACK_MAX  = 2;    // detents allowed on the reversed side, the reversal itself included
 
 // The reversal this router has already acted on, so one gesture cannot fire twice. Stored
 // as the timestamp rather than a flag: a second rock produces a new one, so it fires again
 // with nothing to arm or reset.
 uint32_t s_firedAt = 0;
+// Detents held back while a reversal settles; delivered if it turns out not to be a rock.
+int32_t  s_held = 0;
 
-bool rocked() {
+enum Rock { ROCK_NONE, ROCK_PENDING, ROCK_FIRE, ROCK_REJECT };
+
+Rock rock_state() {
     const uint32_t at = knob::lastRockMs();
-    if (at == 0) return false;                       // no reversal has ever happened
-    if (at == s_firedAt) return false;               // already acted on this one
+    if (at == 0) return ROCK_NONE;                   // no reversal has ever happened
+    if (at == s_firedAt) return ROCK_NONE;           // already acted on this one
     if (knob::lastRockGapMs() > ROCK_WINDOW_MS) {    // a reversal, but an unhurried one
         s_firedAt = at;                              // consumed, so it cannot fire later
-        return false;
+        return ROCK_NONE;
     }
+    const int32_t after = knob::detentCount() - knob::lastRockDetent();
+    const int32_t back  = (after < 0 ? -after : after) + 1;   // the reversal detent counts
+    if (back > ROCK_BACK_MAX) { s_firedAt = at; return ROCK_REJECT; }
+    if ((uint32_t)(lv_tick_get() - at) < ROCK_SETTLE_MS) return ROCK_PENDING;
     s_firedAt = at;
-    return true;
+    return ROCK_FIRE;
 }
 
+bool rock_pending() { return rock_state() == ROCK_PENDING; }
+
 }  // namespace
+
+// A reversal that is settling needs a poll with no new input to finish settling. main.cpp
+// and the simulator call this every pass; it is a no-op unless a reversal is in flight.
+void input_router::tick() {
+    if (rock_pending()) return;                 // still inside the settle: nothing to decide
+    if (knob::lastRockMs() != 0 && knob::lastRockMs() != s_firedAt) dispatch(0, false);
+}
 
 void input_router::dispatch(int delta, bool pressed) {
     // The "Ready" notice owns the knob until it is acknowledged, and ANY input clears it:
@@ -137,8 +166,16 @@ void input_router::dispatch(int delta, bool pressed) {
     // free to keep meaning "open the app menu" here as everywhere else. Without that, a
     // theme could strand somebody on a screen that will not take no for an answer, which is
     // the thing CUT-05 exists to forbid.
+    // The reversal, settled or not. While it settles the detents are held; when it turns
+    // out to be a scroll they are let through with this poll's, and when it is a rock they
+    // are dropped, because the detents that MADE the gesture are not input to the app.
+    const Rock rock = rock_state();
+    if (rock == ROCK_PENDING) { s_held += delta; delta = 0; }
+    else if (rock == ROCK_REJECT) { delta += s_held; s_held = 0; }
+    else if (rock == ROCK_FIRE) { s_held = 0; }
+
     if (wind_notice::showing()) {
-        if (rocked()) { app_shell::openSwitcher(); return; }
+        if (rock == ROCK_FIRE) { app_shell::openSwitcher(); return; }
         if (delta != 0) wind_notice::turn(delta);
         return;
     }
@@ -178,7 +215,7 @@ void input_router::dispatch(int delta, bool pressed) {
     // Safe to allow: load() sets the captured flag from the app being entered and runs the
     // outgoing app's exit hook on every real switch, so a screen rocked out of leaves neither
     // its capture nor its state behind.
-    if (rocked()) {
+    if (rock == ROCK_FIRE) {
         app_shell::openSwitcher();
         return;
     }

@@ -18,9 +18,16 @@ static constexpr int32_t KNOB_STEPS_PER_DETENT = 4;
 // Two, so a slightly heavy flick still counts, but a deliberate scroll does not.
 static constexpr int ROCK_MAX_RUN = 2;
 
-// A rock has to be humanly possible. Below the minimum it is contact bounce; above the
-// maximum it is two separate decisions. input_router applies no timing of its own.
+// A rock has to be humanly possible, and QUICK. Below the minimum it is contact bounce.
+// The reversal has to come within ROCK_QUICK_MS of the last detent the other way: a flick
+// back and forth is one motion, and a hand reverses inside a quarter of a second when it
+// means the gesture. It was 800 ms, and at 800 ms the ordinary back-and-forth of browsing a
+// list (down two, up one to reread) was a rock; Zion, in the News app: "it's very easy to
+// accidentally go into the main menu when you're just scrolling back and forth." The pause
+// that ends a run stays wider, because that is a different question: how long after a turn
+// the next detent is a new gesture rather than the same one.
 static constexpr uint32_t ROCK_MIN_GAP_MS = 45;
+static constexpr uint32_t ROCK_QUICK_MS   = 250;
 static constexpr uint32_t ROCK_MAX_GAP_MS = 900;
 
 static constexpr uint32_t SW_DEBOUNCE_MS = 200;  // min time between accepted presses. Wide on purpose:
@@ -66,6 +73,7 @@ static volatile int      s_isrRunLen    = 0;
 static volatile int32_t  s_anchor       = 0;   // rawPos at the last COMMITTED detent
 static volatile int32_t  s_detent       = 0;   // committed detents; the one true stream
 static volatile uint32_t s_rockMs       = 0;   // the detent that completed a reversal, either way
+static volatile int32_t  s_rockDetent   = 0;   // s_detent at that moment, for the settle check
 static volatile uint32_t s_rockGapMs    = 0;
 static volatile bool s_pendingPress = false;
 static volatile bool s_pendingLong  = false;
@@ -143,9 +151,10 @@ static void IRAM_ATTR on_detent(int dir) {
     const bool fresh = (now - s_isrLastDirMs) > ROCK_MAX_GAP_MS;
     if (!fresh && s_isrLastDir != 0 && dir != s_isrLastDir && s_isrRunLen <= ROCK_MAX_RUN) {
         const uint32_t gap = now - s_isrLastDirMs;
-        if (gap >= ROCK_MIN_GAP_MS) {
-            s_rockGapMs = gap;
-            s_rockMs    = now ? now : 1;   // never 0, which means "never happened"
+        if (gap >= ROCK_MIN_GAP_MS && gap <= ROCK_QUICK_MS) {
+            s_rockGapMs  = gap;
+            s_rockDetent = s_detent;
+            s_rockMs     = now ? now : 1;   // never 0, which means "never happened"
         }
     }
     s_isrRunLen    = (!fresh && dir == s_isrLastDir) ? s_isrRunLen + 1 : 1;
@@ -273,6 +282,8 @@ int32_t knob::rawPosition() { return s_rawPos; }
 
 uint32_t knob::lastRockMs()    { return s_rockMs; }
 uint32_t knob::lastRockGapMs() { return s_rockGapMs; }
+int32_t  knob::lastRockDetent() { return s_rockDetent; }
+int32_t  knob::detentCount()    { return s_detent; }
 
 bool knob::takePress() {
     bool p = s_pendingPress;

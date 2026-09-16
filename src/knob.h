@@ -52,6 +52,11 @@ namespace knob {
     // lastRockGapMs: how long that reversal took, so the caller owns the "quickly" part.
     uint32_t lastRockMs();
     uint32_t lastRockGapMs();
+    // The committed detent count at the reversal, and the count now. input_router compares
+    // the two after a short settle: a flick stops, a scroll that merely changed direction
+    // keeps going, and only the flick is a rock.
+    int32_t  lastRockDetent();
+    int32_t  detentCount();
 
     uint32_t heldMs();       // how long the button has been continuously held right now (0 if up)
     uint32_t longPressMs();  // the hold duration that triggers takeLongPress() (for a countdown UI)

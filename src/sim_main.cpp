@@ -1072,7 +1072,14 @@ int main(int argc, char **argv) {
         }
         printf("[selftest] boot app: %s (idx %d)\n", app_shell::name(), app_shell::index());
         auto press = [&]() { simknob::injectPress(true, SDL_GetTicks()); simknob::injectPress(false, SDL_GetTicks()); pump(); };
-        auto rock  = [&]() { simknob::injectTurn(-1); pump(); simknob::injectTurn(+1); pump(); };
+        // A rock is a quick reversal and then a STOP: the second detent has to arrive inside
+        // ROCK_QUICK_MS of the first, and the router only opens the menu once nothing more
+        // has arrived for ROCK_SETTLE_MS (input_router.cpp). The delays are those two rules.
+        auto rock  = [&]() {
+            simknob::injectTurn(-1); pump();
+            SDL_Delay(60); simknob::injectTurn(+1); pump();
+            SDL_Delay(200); input_router::tick(); pump();
+        };
         // Everything in this block happens in the space of a few milliseconds, which is not
         // how a knob is used: a leftward turn from one test phase would still be inside the
         // Rock window when the next phase turns right, and read as a gesture nobody made.
@@ -1098,11 +1105,20 @@ int main(int argc, char **argv) {
         // Right-then-left must NOT open it. Requiring one order is what keeps ordinary
         // direction changes from being read as the gesture.
         if (app_shell::browsing()) press();          // commit out of the switcher first
+        // A scroll that changes direction is NOT a rock: down three, up one, however quick.
         settle();
-        simknob::injectTurn(+1); pump();
+        simknob::injectTurn(+3); pump();
+        SDL_Delay(60); simknob::injectTurn(-1); pump();
+        SDL_Delay(200); input_router::tick(); pump();
+        printf("[selftest] scroll reversal: browsing=%d (expect 0 = a scroll, not a rock)\n", app_shell::browsing());
+        printf("[selftest] a scroll reversal is not a rock: %s\n", !app_shell::browsing() ? "PASS" : "FAIL");
+        // And an unhurried reversal is not one either: down one, a moment, up one.
+        settle();
         simknob::injectTurn(-1); pump();
-        printf("[selftest] reverse rock: browsing=%d (expect 0 = wrong order, ignored)\n", app_shell::browsing());
-        printf("[selftest] rock is directional: %s\n", !app_shell::browsing() ? "PASS" : "FAIL");
+        SDL_Delay(500); simknob::injectTurn(+1); pump();
+        SDL_Delay(200); input_router::tick(); pump();
+        printf("[selftest] slow reversal: browsing=%d (expect 0 = too slow to be a rock)\n", app_shell::browsing());
+        printf("[selftest] a slow reversal is not a rock: %s\n", !app_shell::browsing() ? "PASS" : "FAIL");
 
         // Browsing: turns cycle apps, a press commits.
         settle();
@@ -1268,6 +1284,7 @@ int main(int argc, char **argv) {
             int32_t kd = knob::takeDelta();
             bool pressed = knob::takePress();
             input_router::dispatch((int)kd, pressed);
+            input_router::tick();
             poll_updating_overlay(now);
         }
         if (now - lastData >= 1000) {       // simulate a 1 Hz ADS-B poll
