@@ -170,20 +170,6 @@ static volatile bool         g_feedOk = true;                        // ADS-B fe
 static volatile bool         g_radarViewActive = false;
 static volatile uint32_t     g_lastFeedOkMs = 0;                     // millis() of the last good poll (HUD staleness)
 
-// How many times we have already restarted THIS POWER CYCLE trying to un-stick the feed.
-// RTC_NOINIT survives ESP.restart() and is cleared by a real power cycle, which is exactly
-// the scope wanted: one attempt per plug-in.
-//
-// The restart genuinely does help here, briefly. The feed reads its first snapshots fine on
-// a fresh heap and then starts timing out as internal memory fragments, so rebooting buys
-// another minute or two. That is precisely why it must be capped: a recovery that works for
-// ninety seconds and then needs performing again is not a recovery, it is a loop, and from
-// the desk it looks like a device that will not stay on the screen you put it on. One go,
-// then stop and show the honest stale-feed state instead.
-RTC_NOINIT_ATTR static uint32_t g_feedReboots;
-RTC_NOINIT_ATTR static uint32_t g_feedRebootsMagic;
-static const uint32_t FEED_REBOOT_MAGIC = 0x0FEED123;
-static const uint32_t FEED_REBOOT_LIMIT = 1;
 static volatile uint32_t     g_rebootAtMs = 0;
 // /theme?slug=... — applied from loop() rather than the request handler, because
 // theme_select::set() reboots and would cut the HTTP reply off mid-flight.
@@ -265,16 +251,11 @@ static void adsb_task(void*) {
     bool wasRadarActive = false;
     for (;;) {
         const bool conn = (WiFi.status() == WL_CONNECTED);
-        // Polling used to wait for someone to actually open Flight Tracker, on the
-        // reasoning that fetching data for a screen nobody is looking at wastes memory.
-        // It does not: the task, its 7168-byte stack, and the JSON parse buffer (PSRAM,
-        // see PsramJsonAllocator in adsb_client.cpp) are all already reserved for this
-        // task's entire lifetime from the moment xTaskCreatePinnedToCore ran in setup(),
-        // whether Flight Tracker is ever opened or not. The only thing the wait bought
-        // was a person watching "Loading aircraft and location data" for as long as the
-        // first poll takes, every single time, instead of arriving to a scope that was
-        // already warm. A theme that hides Flight Tracker entirely still skips this: no
-        // reachable screen, no reason to fetch for it.
+        // Whether the theme has a Flight Tracker at all. A theme that hides it entirely has
+        // no reachable screen and no reason to fetch. Whether anyone is LOOKING at it is a
+        // separate question, answered below by g_radarViewActive, and it decides how often
+        // the feed is asked: full rate on screen, a slow keep-warm for a while after, then
+        // nothing until the tracker is opened again.
         const bool radarActive = theme_style::apps().flight;
         if (radarActive && !wasRadarActive) {
             // First tick after boot (or after a theme switch turns Flight Tracker back
@@ -320,30 +301,22 @@ static void adsb_task(void*) {
             // mDNS + OTA are started on core 1 (loop) to keep all mDNS use on one core
         }
         wasConnected = conn;
-        // self-heal: a long feed outage while WiFi is up usually means the internal heap
-        // fragmented and the TLS handshake can't allocate -> reboot to recover (settings persist).
+        // A feed outage is reported, not "recovered" by restarting the device. This used to
+        // reboot once per power cycle after 180 s of failed polls, on the theory that the
+        // internal heap had fragmented under TLS handshakes. The feeds have been plain HTTP
+        // since 2026-08-17, so that theory no longer describes anything, and what the reboot
+        // actually did was reset an Orb sitting on the CLOCK because a free public feed had
+        // a bad three minutes (CanadianAvenger, 2026-09-16: "just had another reset"). A
+        // desk clock does not restart itself over somebody else's server. If the link
+        // itself is the problem the network task's own WiFi retry above handles it; if the
+        // feed is, the scope says so and the backoff keeps asking politely.
         if (!conn || !radarActive) lastFeedOk = millis();
-        else if (!feedEverOk) {
-            // Never worked this session: nothing to restore, so hold the clock and let the
-            // backoff keep trying. The HUD already shows the feed as stale, which is the
-            // honest thing to show, and the rest of the device stays usable.
-            lastFeedOk = millis();
-        }
+        else if (!feedEverOk) lastFeedOk = millis();
         else if (millis() - lastFeedOk > 180000UL) {
-            if (g_feedReboots >= FEED_REBOOT_LIMIT) {
-                // Already tried it this power cycle and here we are again. Stop bouncing.
-                lastFeedOk = millis();
-                radar::setFeedNote("Aircraft feed keeps dropping\nThis Orb needs a power cycle\nEverything else still works");
-                Serial.println("[adsb] feed stuck again, but a restart already failed to fix it this power cycle — staying up");
-                diag::log("feed stuck again; restart already tried, staying up");
-            } else {
-                ++g_feedReboots;
-                Serial.println("[adsb] feed stuck >180s with WiFi up -> restarting to recover (once)");
-                diag::log("feed stuck 180s -> reboot %u (heap %u)",
-                          (unsigned)g_feedReboots, (unsigned)ESP.getFreeHeap());
-                delay(100);
-                ESP.restart();
-            }
+            lastFeedOk = millis();
+            radar::setFeedNote("No aircraft feed\nStill trying\nEverything else still works");
+            Serial.println("[adsb] no good poll for 180 s with WiFi up; staying up and retrying");
+            diag::log("feed stuck 180s; staying up (heap %u)", (unsigned)ESP.getFreeHeap());
         }
         if (g_requery) {                          // display range changed (double-tap zoom)
             g_adsb.begin(g_settings.homeLat, g_settings.homeLon, g_requeryKm);
@@ -355,15 +328,33 @@ static void adsb_task(void*) {
             // it refreshing even while the user taps around — a slow route/photo lookup (below)
             // can block this single network task, so it must never get ahead of the feed.
             const uint32_t nowMs = millis();
-            const uint32_t pollInterval =
-                (g_pollOverrideMs ? g_pollOverrideMs
-                                  : (g_onBattery ? POLL_INTERVAL_BATTERY_MS : POLL_INTERVAL_MS)) + adsbBackoffMs;
+            // ONLY WHILE SOMEBODY CAN SEE IT. The feed used to be polled every ten seconds
+            // for as long as the theme had a Flight Tracker, clock or no clock, all night:
+            // thousands of requests a day to a free public service for data nobody looked
+            // at, which CanadianAvenger measured off the serial line and rightly called
+            // unfriendly. Now: the tracker on screen polls at the full rate; for ten minutes
+            // after it was last on screen (or after boot) it polls once a minute, so a quick
+            // return finds a warm scope; after that it stops, and opening the tracker polls
+            // at once. The "Loading aircraft" notice covers that first second or two.
+            static uint32_t s_lastOnScreenMs = 0;
+            static bool     s_wasOnScreen = false;
+            const bool onScreen = g_radarViewActive;
+            if (onScreen) s_lastOnScreenMs = nowMs;
+            if (onScreen && !s_wasOnScreen) lastPoll = 0;      // just opened: ask now
+            s_wasOnScreen = onScreen;
+            const bool warm = onScreen || (nowMs - s_lastOnScreenMs) < 600000UL;
+            const uint32_t baseInterval =
+                g_pollOverrideMs ? g_pollOverrideMs
+              : !onScreen        ? 60000UL
+              : g_onBattery      ? POLL_INTERVAL_BATTERY_MS
+                                 : POLL_INTERVAL_MS;
+            const uint32_t pollInterval = baseInterval + adsbBackoffMs;
             // g_locationSet: no centre, no query. The coordinates are 0,0 until the network
             // lookup or Settings supplies a real one, and asking a free non-commercial API
             // every few seconds for the traffic over the Gulf of Guinea is a request nobody
             // wanted answered. The scope says "Location not set" meanwhile, so the silence
             // is explained rather than looking like a dead feed.
-            if (radarActive && g_locationSet && (lastPoll == 0 || nowMs - lastPoll >= pollInterval)) {  // aircraft feed, Flight Tracker only
+            if (radarActive && g_locationSet && warm && (lastPoll == 0 || nowMs - lastPoll >= pollInterval)) {  // aircraft feed, while it can be seen
                 lastPoll = nowMs;
                 static int failCount = 0;
                 // poll() tries the fallback provider after a primary failure; keep the HUD
@@ -2491,7 +2482,6 @@ void setup() {
 
     // RTC_NOINIT holds whatever was in it, including rubbish after a real power cycle, so it
     // is only trusted when the companion magic says we wrote it. Same guard diag_log uses.
-    if (g_feedRebootsMagic != FEED_REBOOT_MAGIC) { g_feedRebootsMagic = FEED_REBOOT_MAGIC; g_feedReboots = 0; }
 
     // Send large allocations (>=4KB) to PSRAM instead of the ~300KB internal heap.
     // TLS handshakes (WiFiClientSecure, fresh one built for every poll of every feed —
