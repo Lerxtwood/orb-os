@@ -8,6 +8,7 @@
 #include <lvgl.h>
 #include <math.h>
 #include <string.h>
+#include <stdlib.h>   // strdup, free: the wheel rows keep their full text on the label (fit_label)
 #include "config.h"     // SCREEN_W / SCREEN_H
 #include "splash_art.h" // splash_art_decode() — the boot splash, reused for the About page
 #include "splash_lines.h" // the three standing lines and the glass over them
@@ -475,6 +476,43 @@ namespace {
     // together. The selected item sits at a fixed vertical spot (screen center plus
     // WHEEL_CY, 0 by default); hl (if given) sits fixed there too — nothing slides,
     // the wheel scrolls past a stationary highlight/gate.
+    // Cut a row's text to fit maxW in its face, ending in "...", from the full text the
+    // label was last given. The full text lives on the label's user data: set by a
+    // refresh_*() through lv_label_set_text, and recognised here because anything the
+    // label shows that is not "the remembered text, or a cut of it" is a new text.
+    bool is_cut_of(const char *shown, const char *full) {
+        const size_t n = strlen(shown);
+        if (n < 3 || strcmp(shown + n - 3, "...") != 0) return false;
+        return strncmp(shown, full, n - 3) == 0;
+    }
+    void fit_label(lv_obj_t *lbl, const lv_font_t *font, float maxW) {
+        const char *shown = lv_label_get_text(lbl);
+        char *full = (char *)lv_obj_get_user_data(lbl);
+        if (!full || (strcmp(shown, full) != 0 && !is_cut_of(shown, full))) {
+            free(full);
+            full = strdup(shown);
+            lv_obj_set_user_data(lbl, full);
+        }
+        if (!full) return;
+        lv_point_t sz;
+        lv_txt_get_size(&sz, full, font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+        if ((float)sz.x <= maxW) { if (strcmp(shown, full) != 0) lv_label_set_text(lbl, full); return; }
+        // Same rule as settings_text::draw_item: drop letters from the end until the rest
+        // plus "..." fits, and never end on a space.
+        char buf[64];
+        size_t keep = strlen(full);
+        if (keep > sizeof(buf) - 4) keep = sizeof(buf) - 4;
+        for (;;) {
+            memcpy(buf, full, keep);
+            buf[keep] = '.'; buf[keep + 1] = '.'; buf[keep + 2] = '.'; buf[keep + 3] = '\0';
+            lv_txt_get_size(&sz, buf, font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+            if ((float)sz.x <= maxW || keep <= 1) break;
+            --keep;
+            while (keep > 1 && full[keep - 1] == ' ') --keep;
+        }
+        if (strcmp(shown, buf) != 0) lv_label_set_text(lbl, buf);
+    }
+
     void wheel_layout(lv_obj_t **items, int count, int sel, lv_obj_t *hl) {
 #if CUSTOM_HAS_SETTINGS
         // A Launch Kit push draws every item itself, on the shared glow-capable
@@ -546,7 +584,14 @@ namespace {
             lv_obj_set_style_text_font(items[i], labelFont, 0);
             lv_obj_set_size(items[i], (lv_coord_t)lroundf(rowMaxW), lv_font_get_line_height(labelFont));
             lv_obj_set_style_text_align(items[i], LV_TEXT_ALIGN_CENTER, 0);
-            lv_label_set_long_mode(items[i], LV_LABEL_LONG_DOT);
+            // The cut is done HERE, by measuring, not by LVGL's dot mode. Dot mode edits the
+            // label's own text against the box it happens to have at that moment, and on
+            // the first show of a page (stale box, face just swapped) it cut every row down
+            // to "..." until the next turn re-laid the wheel (CanadianAvenger, 2.16.17).
+            // The full text is kept on the label's user data, so a re-layout after a cut
+            // measures the whole row again and a wider spot gets its letters back.
+            lv_label_set_long_mode(items[i], LV_LABEL_LONG_CLIP);
+            fit_label(items[i], labelFont, rowMaxW);
             lv_obj_align(items[i], LV_ALIGN_CENTER, (lv_coord_t)lroundf(sx), (lv_coord_t)lroundf(sy));
 
             // Continuous falloff off the same angle used for position — cos(angle)
