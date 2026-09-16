@@ -461,11 +461,17 @@ void render() {
         const int ageH    = lv_font_get_line_height(slot_font(3, cfg.ageSize));
         // An explicit margin wins over the worked-out bound: a design that states where the
         // band is knows something about its own artwork that this arithmetic cannot.
+        //
+        // The worked-out bound uses the DEFAULT spots of the title and the updated line (65
+        // and 409, the fixed layout's), not where the design moved them, THEME_CAPS 51.
+        // Following the moved lines meant that dragging the updated line down pushed every
+        // headline after it, which is not what moving a line means; the margins above are
+        // the control for the band, and a line moved into the band is the designer's call.
         const int topB    = cfg.marginTop > 0    ? cfg.marginTop - 233
-                          : cfg.titleShow        ? (cfg.titleY - 233) + titleH / 2 + 8
+                          : cfg.titleShow        ? (65 - 233) + titleH / 2 + 8
                                                  : -180;
         const int botB    = cfg.marginBottom > 0 ? 233 - cfg.marginBottom
-                          : cfg.ageShow          ? (cfg.ageY - 233) - ageH / 2 - 6
+                          : cfg.ageShow          ? (409 - 233) - ageH / 2 - 6
                                                  :  180;
         step = blockH + ROW_GAP;
         const int avail = botB - topB;
@@ -542,10 +548,13 @@ void render() {
         }
         show(s_chevDown, false);
         show(s_chevUp, false);
+        // THEME_CAPS 51: a design may take the title down while a story is open.
+        if (s_title) show(s_title, cfg.titleShow && !cfg.briefHideTitle);
         show(s_briefPanel, true);
         render_brief();
         return;
     }
+    if (s_title) show(s_title, cfg.titleShow);
     show(s_briefPanel, false);
     show(s_briefBack, false);
 

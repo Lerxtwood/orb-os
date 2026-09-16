@@ -353,7 +353,15 @@ namespace theme_style {
 //      story also gained the chevrons the list already had: a long story scrolls, and
 //      nothing said so. An Orb below this level places all three itself and draws no
 //      chevrons on the story.
-constexpr int THEME_CAPS = 50;
+//  51  the story can hide the News screen's title while it is open (Intel.briefHideTitle),
+//      so a design can show just the headline and the story. And, no key: the headline
+//      band stops following the title and the updated line when those are moved. It was
+//      worked out from wherever they sat, so dragging the updated line down to the bezel
+//      pushed the headlines after it (Zion: "when I move the update line it screws the
+//      newsfeed up"). The band now sits where the two lines sit BY DEFAULT unless the
+//      design sets its own margins, which is the control that was always meant for that.
+//      An Orb below this level keeps the title up over a story and still moves the band.
+constexpr int THEME_CAPS = 51;
 
 struct ClockText {
     bool     show   = false;
@@ -1193,6 +1201,10 @@ struct Intel {
     // shipped no font_intel_brief.bin; 0 means the credit's face and size, which is what
     // every theme before this level gets.
     int      briefSize    = 0;
+    // THEME_CAPS 51. Take the title down while a story is open, so the band can hold just
+    // the headline and its story. Its own key rather than a rule, because a title that
+    // names the feed ("BBC News") is worth keeping on some designs and clutter on others.
+    bool     briefHideTitle = false;
     // THEME_CAPS 50. Where the marks go. Each pair is read only when its *Place is true;
     // false is the worked-out spot: the list's chevron under the last row shown, the Back
     // button at the foot of the band, the story's chevron between the story and the button.

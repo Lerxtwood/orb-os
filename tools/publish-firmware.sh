@@ -83,7 +83,8 @@ if [ "$DIST_VERSION" != "$VERSION" ]; then
   echo " NOT DONE YET. Orb Studio still serves ${DIST_VERSION}."
   echo " Flashing from Studio right now would install ${DIST_VERSION}, not ${VERSION}."
   echo
-  echo "   cd $(dirname "$STUDIO")/.. && npx vite build && npx wrangler deploy --name buildtheorb"
+  echo "   cd $(dirname "$STUDIO")/.. && bun run refresh-default && bun run build && bunx wrangler deploy --name buildtheorb"
+  echo "   (refresh-default pulls Zion's Default theme off his account into the build, so an edit he made in Studio ships)"
   echo "=============================================================="
 fi
 echo

@@ -991,6 +991,7 @@ void load() {
                 const int v = doc["briefSize"].as<int>();
                 s_intel.briefSize = fontSizeOk(v) ? v : 0;
             }
+            if (doc["briefHideTitle"].is<bool>()) s_intel.briefHideTitle = doc["briefHideTitle"].as<bool>();
             // THEME_CAPS 50. Placement pairs, clamped to the panel like titleX/titleY.
             {
                 struct P { const char *on; const char *x; const char *y; bool &place; int &px; int &py; };
