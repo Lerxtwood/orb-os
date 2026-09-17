@@ -1168,6 +1168,35 @@ int main(int argc, char **argv) {
                (double)before, (double)after);
         printf("[selftest] Settings>Range: %s\n", (before != after) ? "PASS" : "FAIL (range did not move)");
 
+        // Settings > Theme: one push opens the picker and ONLY opens it. Zion, 2026-09-16,
+        // on a freshly synced Orb: "went to theme, there was nothing, it immediately said
+        // restarting with the new theme". Two things are asserted: a single press from the
+        // menu does not restart anything, and every row of the picker shows a name.
+        {
+            static int s_restarts = 0;
+            theme_select::setRestartHook([]() { ++s_restarts; });
+            app_shell::setCaptured(false);
+            if (app_shell::browsing()) press();
+            settle();
+            app_shell::selectApp(app_shell::APP_SETTINGS); pump();
+            settingsview::onEnter(); pump();
+            for (int i = 0; i < 15; ++i) { simknob::injectTurn(-1); pump(); }   // clamp on Display
+            for (int i = 0; i < 6;  ++i) { simknob::injectTurn(+1); pump(); }   // Display -> Theme
+            press();                                                              // open the picker
+            settle();
+            int rows = 0, blank = 0;
+            for (int i = 0; i < 40; ++i) {
+                const char *t = settingsview::designRowText(i);
+                if (!t) break;
+                ++rows; if (!t[0]) ++blank;
+                if (i < 4) printf("[selftest] Settings>Theme row %d: \"%s\"\n", i, t);
+            }
+            printf("[selftest] Settings>Theme: rows=%d blank=%d restarts=%d (expect rows>=2, blank 0, restarts 0)\n", rows, blank, s_restarts);
+            printf("[selftest] Settings>Theme: %s\n", (rows >= 2 && blank == 0 && s_restarts == 0) ? "PASS" : "FAIL");
+            theme_select::setRestartHook(sim_restart);
+            app_shell::setCaptured(false);
+        }
+
         // Headlines scroll mode (THEME_CAPS 11): same press-to-own-the-knob grammar as
         // the Flight Tracker's selection, but only when the theme's type size actually
         // overflows the dial. With everything fitting, a push stays a refresh and must

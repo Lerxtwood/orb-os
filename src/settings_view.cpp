@@ -2337,6 +2337,11 @@ void settingsview::openWifiSetupPrompt() {
 // custom splash active — jumps straight to the About page, which holds the same
 // splash art up indefinitely (push the knob to leave) instead of the normal boot
 // splash's 2s-then-fade, so a just-pushed design stays on screen to look at.
+const char *settingsview::designRowText(int i) {
+    if (s_mode != MODE_DESIGN_SELECT || i < 0 || i >= design_item_count()) return nullptr;
+    return lv_label_get_text(s_designItems[i]);
+}
+
 void settingsview::openAboutPage() {
     s_sel = ITEM_ABOUT;
     show_page(MODE_ABOUT);

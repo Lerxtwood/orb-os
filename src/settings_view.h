@@ -21,6 +21,9 @@ namespace settingsview {
     // splash active — jumps straight to the About page (the same splash art,
     // held indefinitely) so a just-pushed design doesn't just flash and vanish.
     void      openAboutPage();
+    // The text a row of the theme picker is showing right now, or nullptr past the end.
+    // For the simulator's self-test, which asserts that the rows draw their names.
+    const char *designRowText(int i);
 
     // How to reach the web config page (IP / hostname / setup AP). Shown on the About
     // page alongside the firmware version. Both moved here from the old touch-only
