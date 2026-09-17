@@ -19,9 +19,11 @@
 #include <stdint.h>
 namespace theme_pull {
 void begin();                            // read the claim from NVS; once, at boot
-bool claim(const char *token);           // remember which account this Orb belongs to
+bool claim(const char *token, const char *owner);   // remember which account this Orb belongs to
 bool claimed();
 const char *token();
+const char *owner();                     // the account's public id, "" before any claim
+void forget();                           // token and owner gone: the Orb belongs to nobody
 // Start a pull. False, with lastError() saying why, when there is no WiFi, no claim, or a
 // pull is already running. Progress arrives through step().
 bool start();

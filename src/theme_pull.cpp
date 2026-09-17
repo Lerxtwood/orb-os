@@ -25,6 +25,7 @@ constexpr int    PULL_SHA_LEN       = 64;
 constexpr uint32_t MANIFEST_MAX = 256 * 1024;
 
 char  s_token[PULL_TOKEN_MAX + 1] = "";
+char  s_owner[48] = "";
 bool  (*s_switch)(const char *) = nullptr;
 
 // One file to fetch. The sha is the address on the account; the hash is Studio's own
@@ -197,24 +198,44 @@ void begin() {
     Preferences p;
     if (p.begin("orbpull", true)) {
         p.getString("token", s_token, sizeof(s_token));
+        p.getString("owner", s_owner, sizeof(s_owner));
         p.end();
     }
 #endif
 }
 
-bool claim(const char *token) {
-    if (!token || !*token || strlen(token) > PULL_TOKEN_MAX) return false;
-    for (const char *c = token; *c; ++c) if (!isalnum((unsigned char)*c) && *c != '-' && *c != '_') return false;
+static bool safe_id(const char *v, size_t max) {
+    if (!v || !*v || strlen(v) > max) return false;
+    for (const char *c = v; *c; ++c) if (!isalnum((unsigned char)*c) && *c != '-' && *c != '_') return false;
+    return true;
+}
+
+// The owner is the account's public id, kept beside the token so that hello can say WHOSE
+// Orb this is. Studio compares it with the signed-in account and, on a mismatch, offers
+// the handover rather than quietly syncing a stranger's themes over the owner's.
+bool claim(const char *token, const char *owner) {
+    if (!safe_id(token, PULL_TOKEN_MAX)) return false;
+    if (owner && *owner && !safe_id(owner, sizeof(s_owner) - 1)) return false;
     snprintf(s_token, sizeof(s_token), "%s", token);
+    snprintf(s_owner, sizeof(s_owner), "%s", (owner && *owner) ? owner : "");
 #ifdef ARDUINO
     Preferences p;
-    if (p.begin("orbpull", false)) { p.putString("token", s_token); p.end(); }
+    if (p.begin("orbpull", false)) { p.putString("token", s_token); p.putString("owner", s_owner); p.end(); }
 #endif
     return true;
 }
 
+void forget() {
+    s_token[0] = 0; s_owner[0] = 0;
+#ifdef ARDUINO
+    Preferences p;
+    if (p.begin("orbpull", false)) { p.clear(); p.end(); }
+#endif
+}
+
 bool claimed() { return s_token[0] != '\0'; }
 const char *token() { return s_token; }
+const char *owner() { return s_owner; }
 void setSwitchHook(bool (*hook)(const char *)) { s_switch = hook; }
 
 bool start() {

@@ -28,6 +28,7 @@ void host_set_poll_override(uint32_t ms);   // main.cpp
 void host_location_reset();                 // main.cpp
 void host_wifi_saved_ssid(char *out, size_t n);   // main.cpp — NAME only, never the password
 void host_wifi_scan_start();                                                     // main.cpp
+void host_factory_reset();                                                       // main.cpp: settings and WiFi gone, then a restart
 int  host_wifi_scan_result(char names[][33], int8_t *rssi, bool *isOpen, int maxN);   // main.cpp
 void host_wifi_restore_saved();                   // main.cpp — put the backed-up network back
 
@@ -140,6 +141,10 @@ void cmd_hello() {
     out_json_string(theme_select::activeSlug());
     out_str(",\"theme\":");
     out_json_string(theme_style::themeLabel());
+    // Whose Orb this is: the account id handed over with the claim token, "" if nobody
+    // has claimed it. Studio reads it against the signed-in account.
+    out_str(",\"owner\":");
+    out_json_string(theme_pull::owner());
     out_fmt(",\"weld\":%lu,\"assets\":%lu,\"uptime_s\":%lu}",
             (unsigned long)CUSTOM_WELD_HASH,
             (unsigned long)theme_style::assetsFingerprint(),
@@ -589,9 +594,29 @@ void cmd_wifi_join_status() {
 // "claim <token>" hands the Orb the account it belongs to; "sync" asks it to fetch that
 // account's themes over WiFi; "sync-status" is what Studio polls while it does. The
 // fetch itself runs from loop() (theme_pull::step), so these three return at once.
-void cmd_claim(const char *token) {
-    if (!theme_pull::claim(token)) { reply_error("bad token"); return; }
+// ?orb claim <token> [owner]: the token pulls the account's themes over WiFi; the owner
+// is the account's public id, so a later hello can say whose Orb this is.
+void cmd_claim(const char *arg) {
+    char token[80] = "", owner[48] = "";
+    if (arg) sscanf(arg, "%79s %47s", token, owner);
+    if (!theme_pull::claim(token, owner)) { reply_error("bad token"); return; }
     out_reset(); out_str("{\"ok\":true,\"claimed\":true}"); out_send();
+}
+
+// ?orb handover: this Orb is changing hands. Every theme off the card, the WiFi network
+// and every setting forgotten, the account token and owner gone, then a restart into
+// first-time setup, which is the state a new builder's Orb is in. Studio offers it when
+// the account on the cable is not the account the Orb was last synced with; the previous
+// owner's network password does not travel to the next person.
+void cmd_handover() {
+    if (s_putOpen) { reply_error("install in progress"); return; }
+    const int gone = sdcard::mounted() ? theme_select::wipeAll() : 0;
+    theme_pull::forget();
+    out_reset();
+    out_fmt("{\"ok\":true,\"wiped\":%d,\"restarting\":true}", gone);
+    out_send();
+    delay(150);                 // let the reply leave before the reset takes the port
+    host_factory_reset();       // does not return
 }
 
 void cmd_sync() {
@@ -809,6 +834,7 @@ void dispatch(char *line) {
     else if (!strcmp(line, "wifi-join"))     cmd_wifi_join(arg);
     else if (!strcmp(line, "wifi-join-status")) cmd_wifi_join_status();
     else if (!strcmp(line, "claim"))     cmd_claim(arg);
+    else if (!strcmp(line, "handover"))  cmd_handover();
     else if (!strcmp(line, "sync"))      cmd_sync();
     else if (!strcmp(line, "sync-status")) cmd_sync_status();
     else                                 reply_error("unknown command");
