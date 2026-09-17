@@ -18,6 +18,7 @@
 #include "theme_pull.h"
 #include "chime_library.h"
 #include "theme_style.h"
+#include "theme_font.h"    // ?orb fonts: which typefaces actually loaded
 #include "update_ui.h"
 #include "input_router.h"  // cmd_turn drives the real input path
 #include "app_shell.h"   // selectApp/nameAt for the app + apps commands
@@ -639,6 +640,25 @@ void cmd_sync_status() {
 // ?orb wipe: every theme off the card and the choice forgotten, then a restart. What a
 // brand new build looks like, for showing one on camera without opening the shell to
 // format the card. Studio does not offer this; it is a serial-only, deliberate act.
+// ?orb fonts: which typefaces are actually drawing. For each font slot: the file name,
+// whether the worn theme declares it, and whether it loaded from the flash bake. A slot
+// declared but not loaded is the one that draws in the compiled fallback face, which is
+// what "the text is tiny on the Orb but right in Studio" looks like from the glass
+// (canoejohn, 2026-09-17). Until this existed that could only be guessed at.
+void cmd_fonts() {
+    size_t n = 0;
+    const char *const *files = theme_font::slot_files(n);
+    out_reset();
+    out_fmt("{\"ok\":true,\"loaded\":%d,\"slots\":[", theme_font::loaded_count());
+    for (size_t i = 0; i < n; ++i) {
+        out_fmt("%s{\"f\":\"%s\",\"declared\":%s,\"loaded\":%s}", i ? "," : "", files[i],
+                theme_style::hasAsset(files[i]) ? "true" : "false",
+                theme_font::slot_loaded(i) ? "true" : "false");
+    }
+    out_str("]}");
+    out_send();
+}
+
 void cmd_wipe() {
     if (!sdcard::mounted()) { reply_error("no SD card"); return; }
     if (s_putOpen)          { reply_error("install in progress"); return; }
@@ -806,6 +826,7 @@ void dispatch(char *line) {
     else if (!strcmp(line, "theme"))     cmd_theme(arg);
     else if (!strcmp(line, "delete"))    cmd_delete(arg);
     else if (!strcmp(line, "wipe"))      cmd_wipe();
+    else if (!strcmp(line, "fonts"))     cmd_fonts();
     else if (!strcmp(line, "apps"))      cmd_apps();
     else if (!strcmp(line, "app"))       cmd_app(arg);
     else if (!strcmp(line, "flashing"))  cmd_flashing();

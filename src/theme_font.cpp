@@ -185,6 +185,8 @@ void begin() {
 #endif
 }
 
+bool slot_loaded(size_t i) { return i < (size_t)S_COUNT && s_font[i] != nullptr; }
+
 const lv_font_t *clock_text1()   { return get(S_CLOCK1); }
 const lv_font_t *clock_text2()   { return get(S_CLOCK2); }
 const lv_font_t *menu_current()  { return get(S_MENU_CUR); }

@@ -90,5 +90,8 @@ const lv_font_t *wind_ask();
 const lv_font_t *wind_turns();
 bool wind_has_font(int slot);   // 0 title, 1 ask, 2 turns
 int loaded_count();
+// One slot's state, for the ?orb fonts report: whether this theme declares the file, and
+// whether it is the face actually drawing (loaded from the bake) or the compiled fallback.
+bool slot_loaded(size_t i);
 
 } // namespace theme_font
