@@ -26,6 +26,10 @@ void set(const char *slug);  // persists, then reboots/re-execs — see app_them
 // A delete interrupted halfway then leaves a folder that no longer counts as a theme
 // rather than a half-empty one still offering itself in the list.
 bool removeInstalled(const char *slug);
+// Every theme folder off the card, the worn one included, and the choice forgotten: the
+// card is left the way a new builder's is. Returns how many folders went. The caller
+// restarts afterwards (set("")), so nothing is drawing from a folder that is gone.
+int  wipeAll();
 
 // Native only: sim_main.cpp registers its own re-exec here, same reasoning as
 // app_theme::setRestartHook — a fresh process needs this file's static state

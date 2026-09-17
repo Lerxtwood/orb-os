@@ -611,6 +611,22 @@ void cmd_sync_status() {
     out_send();
 }
 
+// ?orb wipe: every theme off the card and the choice forgotten, then a restart. What a
+// brand new build looks like, for showing one on camera without opening the shell to
+// format the card. Studio does not offer this; it is a serial-only, deliberate act.
+void cmd_wipe() {
+    if (!sdcard::mounted()) { reply_error("no SD card"); return; }
+    if (s_putOpen)          { reply_error("install in progress"); return; }
+    const int gone = theme_select::wipeAll();
+    chime_library::rescan();
+    out_reset();
+    out_str("{\"ok\":true,\"wiped\":");
+    char n[12]; snprintf(n, sizeof(n), "%d", gone); out_str(n);
+    out_str(",\"restarting\":true}");
+    out_send();
+    theme_select::set("");   // persists the empty choice and restarts
+}
+
 void cmd_delete(const char *slug) {
     if (!slug || !*slug)             { reply_error("missing slug");    return; }
     if (!sdcard::mounted())          { reply_error("no SD card");      return; }
@@ -764,6 +780,7 @@ void dispatch(char *line) {
     else if (!strcmp(line, "wifi"))      cmd_wifi();
     else if (!strcmp(line, "theme"))     cmd_theme(arg);
     else if (!strcmp(line, "delete"))    cmd_delete(arg);
+    else if (!strcmp(line, "wipe"))      cmd_wipe();
     else if (!strcmp(line, "apps"))      cmd_apps();
     else if (!strcmp(line, "app"))       cmd_app(arg);
     else if (!strcmp(line, "flashing"))  cmd_flashing();

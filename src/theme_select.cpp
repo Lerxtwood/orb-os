@@ -201,6 +201,49 @@ int listInstalled(char out[][MAX_SLUG_LEN]) {
     return n;
 }
 
+int wipeAll() {
+#ifdef ARDUINO
+    if (!sdcard::mounted()) return 0;
+    // Forget the worn theme first, or removeInstalled() refuses it, and rightly so.
+    s_slug[0] = 0;
+    {
+        Preferences p;
+        p.begin("capsuleradar", false);
+        p.putString("themeSlug", "");
+        p.end();
+    }
+    // Every folder under /themes, sentinel or not: a half-installed one is just as much in
+    // the way of "brand new" as a finished one.
+    static char names[MAX_THEMES * 2][MAX_SLUG_LEN];
+    int count = 0;
+    File dir = SD.open("/themes");
+    if (dir && dir.isDirectory()) {
+        File f = dir.openNextFile();
+        while (f && count < (int)(sizeof(names) / sizeof(names[0]))) {
+            if (f.isDirectory()) {
+                const char *nm = f.name();
+                const char *leaf = strrchr(nm, '/');
+                leaf = leaf ? leaf + 1 : nm;
+                strncpy(names[count], leaf, MAX_SLUG_LEN - 1);
+                names[count][MAX_SLUG_LEN - 1] = 0;
+                ++count;
+            }
+            f.close();
+            f = dir.openNextFile();
+        }
+        dir.close();
+    } else if (dir) {
+        dir.close();
+    }
+    int gone = 0;
+    for (int i = 0; i < count; ++i) if (removeInstalled(names[i])) ++gone;
+    Serial.printf("[theme_select] wiped %d theme folder(s) from the card\n", gone);
+    return gone;
+#else
+    return 0;
+#endif
+}
+
 bool removeInstalled(const char *slug) {
     if (!slug || !slug[0]) return false;
     // Never the one being worn. Every screen is drawing from that folder's art and reading
