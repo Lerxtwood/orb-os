@@ -591,6 +591,41 @@ static void banner_silent(const char *which, const char *why, const char *fmt) {
 #endif
 }
 
+// A rounded rectangle blended into the canvas in one pass at one opacity. Corner
+// coverage comes from the distance to the corner's circle centre, with a one-pixel ramp
+// so the curve is smooth rather than stepped. Radius is clamped to half the shorter side.
+static void fill_plate(int x, int y, int w, int h, int radius, lv_color_t col, lv_opa_t opa) {
+    if (!s_buf || w <= 0 || h <= 0 || opa == 0) return;
+    float r = (float)radius;
+    if (r > w * 0.5f) r = w * 0.5f;
+    if (r > h * 0.5f) r = h * 0.5f;
+    if (r < 0) r = 0;
+    const int x0 = x < 0 ? 0 : x, y0 = y < 0 ? 0 : y;
+    const int x1 = (x + w > SCREEN_W) ? SCREEN_W : x + w;
+    const int y1 = (y + h > SCREEN_H) ? SCREEN_H : y + h;
+    for (int py = y0; py < y1; ++py) {
+        for (int px = x0; px < x1; ++px) {
+            float cov = 1.0f;
+            if (r > 0.5f) {
+                // Which corner, if any, this pixel sits in; centre of that corner's arc.
+                const float cx = (px < x + r) ? x + r : (px >= x + w - r) ? x + w - r : -1.0f;
+                const float cy = (py < y + r) ? y + r : (py >= y + h - r) ? y + h - r : -1.0f;
+                if (cx >= 0 && cy >= 0) {
+                    const float dx = (px + 0.5f) - cx, dy = (py + 0.5f) - cy;
+                    const float d = sqrtf(dx * dx + dy * dy);
+                    cov = r + 0.5f - d;            // 1 inside, 0 outside, a one-pixel ramp between
+                    if (cov <= 0.0f) continue;
+                    if (cov > 1.0f) cov = 1.0f;
+                }
+            }
+            const lv_opa_t a = (lv_opa_t)lroundf(opa * cov);
+            if (!a) continue;
+            lv_color_t *dst = &s_buf[py * SCREEN_W + px];
+            *dst = lv_color_mix(col, *dst, a);
+        }
+    }
+}
+
 static void draw_baked_text(const lv_font_t *font, const char *fmt, int bx, int by,
                             uint32_t color, int glow, uint32_t glowColor, int align,
                             const struct tm *ti, const char *which, lv_opa_t opa = LV_OPA_COVER,
@@ -620,14 +655,16 @@ static void draw_baked_text(const lv_font_t *font, const char *fmt, int bx, int 
     // the raster filler that serves the other screens. Same padding, 8 across and 2 down, so
     // a design that moves a line between screens keeps the shape it drew against.
     if (bgOpa > 0) {
-        lv_draw_rect_dsc_t rd;
-        lv_draw_rect_dsc_init(&rd);
-        rd.bg_color = lv_color_hex(bg);
-        rd.bg_opa   = (lv_opa_t)bgOpa;
-        rd.radius   = (lv_coord_t)bgRadius;
+        // Drawn by hand, not with lv_canvas_draw_rect. LVGL 8.4's rounded rectangle with a
+        // background opacity under 253 paints its corner rows and its middle block down two
+        // different paths, and on this canvas the middle came out wrong: missing entirely in
+        // the simulator, and on the glass a dark seam across the words (canoejohn, a date box
+        // at 99% opacity, 2026-09-18). Studio's preview had no such line, because a browser
+        // draws a rounded rectangle in one pass. So does this: one coverage value per pixel,
+        // rounded corners included, blended once.
         const lv_coord_t lh = (lv_coord_t)lv_font_get_line_height(font);
-        lv_canvas_draw_rect(s_canvas, (lv_coord_t)lroundf(startX) - 8, (lv_coord_t)(y0 - 2),
-                            (lv_coord_t)lroundf(total) + 16, lh + 4, &rd);
+        fill_plate((int)lroundf(startX) - 8, y0 - 2, (int)lroundf(total) + 16, lh + 4,
+                   bgRadius, lv_color_hex(bg), (lv_opa_t)bgOpa);
     }
     lv_draw_label_dsc_t ld;
     lv_draw_label_dsc_init(&ld);

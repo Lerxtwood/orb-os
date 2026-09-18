@@ -1003,6 +1003,11 @@ int main(int argc, char **argv) {
             if (getenv("SIM_SETTINGS_ABOUT") && !strcmp(app_shell::name(), "Settings"))
                 settingsview::openAboutPage();
             for (int i = 0; i < settleMs / 2; ++i) { lv_timer_handler(); SDL_Delay(2); }   // let onEnter decode
+            // The clock paints on its own tick, and that tick stays away while it believes
+            // the splash still covers it (the overlay above was hidden, not dismissed), so
+            // every themeshot of the clock came out black. Paint it now, the same way
+            // coming back from a cover does.
+            if (app_shell::index() == app_shell::APP_CLOCK) { clockview::refresh(); lv_timer_handler(); }
             lv_refr_now(NULL);
             SDL_RenderClear(s_ren);
             SDL_RenderCopy(s_ren, s_tex, NULL, NULL);
