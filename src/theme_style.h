@@ -361,7 +361,15 @@ namespace theme_style {
 //      newsfeed up"). The band now sits where the two lines sit BY DEFAULT unless the
 //      design sets its own margins, which is the control that was always meant for that.
 //      An Orb below this level keeps the title up over a story and still moves the band.
-constexpr int THEME_CAPS = 51;
+//  52  the Swiss railway stop on a sweeping second hand (Clock.secondRailway): round the
+//      dial in 58.5 seconds, then a wait at 12 until the minute rolls. The station clocks
+//      of the Swiss Federal Railways did this so one pulse a minute could pull every clock
+//      on the network into step, and the Mondaine watch copies the pause because it is the
+//      thing people remember about them. WizardOfOz asked for that clock in Orb Studio; the
+//      bar hands, the square ends and the disc out near the point are all Studio's, drawn
+//      into the sprites, and this is the one part that has to be the device's. An Orb below
+//      this level sweeps straight through.
+constexpr int THEME_CAPS = 52;
 
 struct ClockText {
     bool     show   = false;
@@ -444,6 +452,9 @@ struct Clock {
     // design that draws anything above its second hand other than the glass falls back to
     // ticking rather than drawing the layers in the wrong order.
     bool      secondSweep = false;
+    // THEME_CAPS 52. The railway stop on that sweep: 58.5 seconds round, then a wait at 12.
+    // Only read while sweeping; a ticking hand has no glide to stop.
+    bool      secondRailway = false;
     // THEME_CAPS 38. A virtual mainspring: the clock runs down and has to be wound with the
     // knob. See clock_wind.h for why it exists and what it refuses to do. Off unless a
     // design asks, because a stopped clock reads as a broken one to anybody who did not

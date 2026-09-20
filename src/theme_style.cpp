@@ -479,6 +479,7 @@ void load() {
             if (doc["windCrankPY"].is<int>())        s_clock.windCrankPY   = doc["windCrankPY"].as<int>();
             if (doc["windCrankRest"].is<int>())      s_clock.windCrankRest = doc["windCrankRest"].as<int>();
             if (doc["secondSweep"].is<bool>())       s_clock.secondSweep = doc["secondSweep"].as<bool>();
+            if (doc["secondRailway"].is<bool>())     s_clock.secondRailway = doc["secondRailway"].as<bool>();
             if (doc["windTitleOpa"].is<int>())       s_clock.windTitleOpa  = doc["windTitleOpa"].as<int>();
             if (doc["windAskOpa"].is<int>())         s_clock.windAskOpa    = doc["windAskOpa"].as<int>();
             if (doc["windTurnsOpa"].is<int>())       s_clock.windTurnsOpa  = doc["windTurnsOpa"].as<int>();
