@@ -1,57 +1,126 @@
-name: Release firmware
-
-# Push a tag like v1.0.0 to build the merged firmware and attach it to a GitHub
-# Release (a single .bin makers can flash with esptool or the web flasher):
-#   git tag v1.0.0 && git push origin v1.0.0
+name: Release Orb Companion
 
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag (for example v2.16.26-companion)'
+        required: true
+        type: string
 
 permissions:
   contents: write
+
+concurrency:
+  group: companion-release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - name: Read pinned PrintSphere revision
+        id: printer
+        run: echo "ref=$(cat tools/companion/printsphere-ref.txt)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: Lerxtwood/PrintSphere
+          ref: ${{ steps.printer.outputs.ref }}
+          path: PrintSphere-source
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - name: Install PlatformIO + esptool
-        run: pip install platformio esptool
-
-      - name: Build firmware
-        run: pio run -e esp32-s3-amoled-175
-
-      - name: Merge into a single flashable binary
-        run: |
-          B=.pio/build/esp32-s3-amoled-175
-          BOOT_APP0="$(find "$HOME/.platformio/packages" -name boot_app0.bin -path '*framework-arduinoespressif32*' | head -1)"
-          python -m esptool --chip esp32s3 merge_bin -o TheOrbOS-esp32s3.bin \
-            --flash_mode dio --flash_freq 80m --flash_size 16MB \
-            0x0     "$B/bootloader.bin" \
-            0x8000  "$B/partitions.bin" \
-            0xe000  "$BOOT_APP0" \
-            0x10000 "$B/firmware.bin"
-          cp "$B/firmware.bin" TheOrbOS-ota.bin   # app-only image for the device's web OTA page
-
-      - name: Publish release
-        uses: softprops/action-gh-release@v2
+      - uses: actions/setup-node@v4
         with:
-          files: |
-            TheOrbOS-esp32s3.bin
-            TheOrbOS-ota.bin
+          node-version: '22'
+      - name: Check installer and release safety rules
+        run: |
+          node --test tools/companion/test_layout.mjs
+          python tools/companion/test_release.py
+      - name: Validate and stamp release version
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          python - <<'PY'
+          import os, re
+          from pathlib import Path
+          tag = os.environ['RELEASE_TAG']
+          if not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?', tag):
+              raise SystemExit('Expected a version tag such as v2.16.26-companion')
+          if len(tag + '-orb') > 31:
+              raise SystemExit('Version exceeds ESP-IDF app descriptor capacity')
+          source = Path('src/config.h')
+          text, count = re.subn(r'#define FW_VERSION "[^"]+"', '#define FW_VERSION "' + tag[1:] + '"', source.read_text())
+          if count != 1:
+              raise SystemExit('Could not stamp Orb firmware version')
+          source.write_text(text)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('tag=' + tag + '\n')
+          PY
+      - name: Install PlatformIO
+        run: pip install platformio
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: companion-pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+      - name: Build Orb companion
+        run: pio run -e esp32-s3-amoled-175-companion
+      - name: Prepare isolated PrintSphere source
+        run: python tools/companion/prepare_printsphere.py --source PrintSphere-source
+      - name: Build PrintSphere companion
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.4
+          target: esp32s3
+          path: .pio/companion/PrintSphere
+          command: idf.py -B ../ps-build -D PRINTSPHERE_HW_VARIANT=amoled_1_75 -D PRINTSPHERE_RELEASE_VERSION=${{ steps.version.outputs.tag }}-orb build
+      - name: Collect public release images
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          PRINTER_REF: ${{ steps.printer.outputs.ref }}
+        run: python tools/companion/release_assets.py --output dist --version "$RELEASE_TAG" --commit "$GITHUB_SHA" --printer-commit "$PRINTER_REF"
+      - name: Validate installer assets
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: python tools/companion/build_site.py --site site --local dist --tag "$RELEASE_TAG"
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
           generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/orb-bootloader.bin
+            dist/orb-partitions.bin
+            dist/Orb-companion.bin
+            dist/PrintSphere-companion.bin
+            dist/companion-release.json
           body: |
-            **First flash (USB):** `TheOrbOS-esp32s3.bin` — the full merged image (offset `0x0`).
-            - Browser, no toolchain: https://zionbrock.com/orb
-            - Or: `esptool.py --chip esp32s3 write_flash 0x0 TheOrbOS-esp32s3.bin`
+            Orb OS + PrintSphere for the 16 MB ESP32-S3 AMOLED 1.75.
 
-            **Update over WiFi (no cable):** `TheOrbOS-ota.bin` — the app-only image.
-            Open `http://theorb.local/update` on the device and upload this file.
-            (Do **not** upload the merged image there.)
+            **USB web installer:** https://lerxtwood.github.io/orb-os/
+
+            The installer downloads both firmwares from this release, checks the connected
+            device, and preserves settings and themes when updating an existing companion
+            installation. Standalone Orb migration saves a recovery backup and checks
+            available theme-cache space first. Other layouts are not modified.
+
+            Choose **Printer** in Orb and press to open PrintSphere. Tap **Orb** to return.
+            Orb's existing web configuration and theme uploads remain available while Orb runs.
+
+            These are separate images for the companion layout. Do not flash one at offset 0
+            or use a stock standalone firmware installer. Device-specific backups are never
+            included in release assets.
+  pages:
+    needs: release
+    uses: ./.github/workflows/companion-pages.yml
+    permissions:
+      contents: read
+      pages: write
+      id-token: write

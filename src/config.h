@@ -1,4 +1,7 @@
 #pragma once
+#ifndef ORB_COMPANION
+#define ORB_COMPANION 0
+#endif
 // The Orb OS — build & user configuration.
 
 // Bump this whenever a build goes out that a device could be BEHIND. That is not only

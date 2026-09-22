@@ -57,6 +57,9 @@ namespace app_shell {
 #if !APPS_LAUNCH_ONE
         APP_TICKER,
 #endif
+#if ORB_COMPANION
+        APP_PRINTER,
+#endif
         APP_SETTINGS,
         APP_COUNT,
     };

@@ -8,6 +8,7 @@
 #include <vector>
 #include <map>
 #include "config.h"
+#include "companion.h"
 #include "aircraft.h"
 #include "geo.h"
 #include "adsb_client.h"
@@ -2671,6 +2672,9 @@ void setup() {
                    tickerview::onPress, tickerview::onTurn, false,
                    tickerview::onEnter, tickerview::onExit, !theme_style::apps().ticker);  // turn steps the watchlist; onEnter takes the strip canvas only when the design curves it
 #endif
+#if ORB_COMPANION
+    companion::registerPrinter();
+#endif
     settingsview::init();
     psram_mark("after settingsview");
     app_shell::add(settingsview::screen(), theme_style::names().settings,
@@ -3191,6 +3195,9 @@ void loop() {
     // ever touched from this task. The update panel is up throughout, so the frames this
     // costs are frames of a screen nobody is looking at.
     if (theme_pull::active()) theme_pull::step();
+#if ORB_COMPANION
+    companion::poll();
+#endif
     serial_wifi_join_tick();   // a join asked for over the cable; a no-op otherwise
 
     // scheduled reboot after a fresh WiFi config (see setSaveConfigCallback)
@@ -3460,6 +3467,7 @@ void loop() {
                 }
             }
             settingsview::setHomeName(placeName);
+            radar::setLocationName(placeName);
             if (placeName[0]) Serial.printf("[location] current place: %s\n", placeName);
         }
         const bool bpresent = battery_present();

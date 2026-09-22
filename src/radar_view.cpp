@@ -255,6 +255,7 @@ static void radar_exit_select();             // -> default view (deselect + rele
 void noteSelectionDetailArrived();
 static float       s_lastRangeKm = 0.0f;     // current scope range, for the range banner (radar_range_fmt)
 static lv_obj_t   *s_feedWarn   = nullptr;   // "the feed is down, not your Orb" banner
+static lv_obj_t   *s_locationLabel = nullptr; // compact City, State footer
 static lv_obj_t   *s_simBadge   = nullptr;   // "this traffic is made up" mark, see setSimulatedBadge()
 static lv_obj_t   *s_loadTicker = nullptr;   // live elapsed-seconds line under the loading message
 static lv_obj_t   *s_textCanvas = nullptr;   // callsign/stats/route banners (curved+glow capable), a Launch Kit push
@@ -1663,6 +1664,7 @@ static void applyRadarLayerOrder() {
         if (byKind[k]) lv_obj_move_foreground(byKind[k]);
     }
     if (s_overlayImg) lv_obj_move_foreground(s_overlayImg);
+    if (s_locationLabel) lv_obj_move_foreground(s_locationLabel);
     if (s_simBadge)   lv_obj_move_foreground(s_simBadge);   // outranks even the glass
 
     // What the stack ACTUALLY is, straight from LVGL, rather than what the order array was
@@ -2096,6 +2098,18 @@ void init(void *lv_parent) {
     lv_obj_set_style_pad_hor(s_simBadge, 7, 0);
     lv_obj_set_style_pad_ver(s_simBadge, 3, 0);
     lv_obj_add_flag(s_simBadge, LV_OBJ_FLAG_HIDDEN);
+
+    s_locationLabel = make_label(parent, "", &lv_font_montserrat_14,
+                                  lv_color_hex(0xDDDDDD), LV_ALIGN_BOTTOM_MID, 0, -16);
+    lv_obj_set_style_bg_color(s_locationLabel, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(s_locationLabel, LV_OPA_70, 0);
+    lv_obj_set_style_radius(s_locationLabel, 4, 0);
+    lv_obj_set_style_pad_hor(s_locationLabel, 4, 0);
+    lv_obj_set_style_pad_ver(s_locationLabel, 1, 0);
+    lv_obj_set_style_text_align(s_locationLabel, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(s_locationLabel, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_obj_clear_flag(s_locationLabel, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    show(s_locationLabel, false);
 
     s_sweepDeg = 0.0f;
     s_prevSweepDeg = 0.0f;
@@ -3107,6 +3121,26 @@ void tickSweep() { /* sweep self-animates via lv_timer */ }
 //
 // Only after a real gap: aircraft arrive every ten seconds and a single missed poll is
 // normal, so warning at the first hiccup would train people to ignore this.
+void setLocationName(const char *name) {
+    if (!s_locationLabel) return;
+    const char *text = name ? name : "";
+    if (strcmp(lv_label_get_text(s_locationLabel), text) == 0) return;
+    lv_label_set_text(s_locationLabel, text);
+    const bool visible = text[0] != '\0';
+    if (visible) {
+        lv_point_t size;
+        lv_txt_get_size(&size, text, &lv_font_montserrat_14, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+        // At 16 px from the bottom of the circular panel, 156 px fits inside
+        // the bezel. Short names occupy only their measured width plus padding.
+        lv_obj_set_width(s_locationLabel, size.x + 8 < 156 ? size.x + 8 : 156);
+        lv_obj_set_height(s_locationLabel, lv_font_get_line_height(&lv_font_montserrat_14) + 2);
+        lv_obj_align(s_locationLabel, LV_ALIGN_BOTTOM_MID, 0, -16);
+    }
+    show(s_locationLabel, visible);
+    if (s_rose[1]) lv_obj_align(s_rose[1], LV_ALIGN_BOTTOM_MID, 0, visible ? -38 : -12);
+    if (s_feedWarn) lv_obj_align(s_feedWarn, LV_ALIGN_BOTTOM_MID, 0, visible ? -62 : -46);
+}
+
 void setFeedStatus(bool wifiUp, uint32_t staleSec, bool locationKnown) {
     if (!s_feedWarn) return;
     // No location is not a thing that waiting fixes, so it DISMISSES the loading notice
