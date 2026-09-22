@@ -3440,6 +3440,28 @@ void loop() {
         // The centre point the scope is actually using, shown on Settings > Location. Same
         // contract as setNetInfo: safe every loop, only redraws while that page is open.
         settingsview::setHomeCoords(g_settings.homeLat, g_settings.homeLon, g_locationSet);
+        // Names from city search and IP location are already saved with their exact
+        // coordinates. Read only when the centre changes, and never borrow the name
+        // of a different recent city for manually entered coordinates.
+        static bool nameLoaded = false, namedLocationSet = false;
+        static double namedLat = 0, namedLon = 0;
+        if (!nameLoaded || namedLocationSet != g_locationSet ||
+            namedLat != g_settings.homeLat || namedLon != g_settings.homeLon) {
+            nameLoaded = true; namedLocationSet = g_locationSet;
+            namedLat = g_settings.homeLat; namedLon = g_settings.homeLon;
+            char names[RECENTS_MAX][40];
+            double lats[RECENTS_MAX], lons[RECENTS_MAX];
+            char placeName[40] = "";
+            const int count = g_locationSet ? host_recents_get(names, lats, lons, RECENTS_MAX) : 0;
+            for (int i = 0; i < count; ++i) {
+                if (fabs(lats[i] - namedLat) < 0.00001 && fabs(lons[i] - namedLon) < 0.00001) {
+                    snprintf(placeName, sizeof(placeName), "%s", names[i]);
+                    break;
+                }
+            }
+            settingsview::setHomeName(placeName);
+            if (placeName[0]) Serial.printf("[location] current place: %s\n", placeName);
+        }
         const bool bpresent = battery_present();
         ui_set_battery(battery_percent(), battery_charging(), bpresent);
         g_onBattery = bpresent && !battery_charging();

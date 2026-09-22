@@ -352,6 +352,8 @@ namespace {
     // drift apart again.
     char      s_netInfo[112] = "";     // last line handed to setNetInfo(), replayed on page open
     char      s_homeCoords[48] = "";   // last value handed to setHomeCoords(), same contract
+    char      s_homeName[160] = "";
+    lv_obj_t *s_lmName = nullptr;
     lv_obj_t *s_lmCoords = nullptr;    // the readout under the Location page's title
     lv_obj_t *s_aboutImg  = nullptr;   // decoded fresh each time (see refresh_about()) — cheap, avoids relying on splash_art's shared decode buffer staying valid
     // --- first-boot WiFi choice (UX-019 as amended 2026-08-30, UX-022) ---
@@ -794,6 +796,10 @@ namespace {
         // you set is the location it uses - and it used to be legible only on the splash,
         // for three seconds, at the bottom of a crowded dial.
         if (s_lmCoords) lv_label_set_text(s_lmCoords, s_homeCoords[0] ? s_homeCoords : "location not set");
+        const char *name = s_homeCoords[0] ? s_homeName : "";
+        // Do not restart the scrolling label on each status tick or knob turn.
+        if (s_lmName && strcmp(lv_label_get_text(s_lmName), name) != 0)
+            lv_label_set_text(s_lmName, name);
         wheel_layout(s_lmItems, LM_COUNT, s_lmSel, s_lmHl);
     }
 
@@ -1670,8 +1676,16 @@ void settingsview::init() {
     lv_label_set_text(lmtitle, "Location");
     lv_obj_set_style_text_color(lmtitle, C_DIM, 0);
     lv_obj_set_style_text_font(lmtitle, &lv_font_montserrat_16, 0);
-    lv_obj_align(lmtitle, LV_ALIGN_CENTER, 0, -122);
+    lv_obj_align(lmtitle, LV_ALIGN_CENTER, 0, -150);
     reg_hint(lmtitle);
+    s_lmName = lv_label_create(s_lmPage);
+    lv_label_set_text(s_lmName, "");
+    lv_obj_set_style_text_color(s_lmName, C_WHITE, 0);
+    lv_obj_set_style_text_font(s_lmName, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_align(s_lmName, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_size(s_lmName, 340, 20);
+    lv_label_set_long_mode(s_lmName, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_obj_align(s_lmName, LV_ALIGN_CENTER, 0, -124);
     // Directly under the title and above the wheel, in the dim ink the other secondary
     // readouts use. Text is set in refresh_locmenu(), which runs on every entry.
     s_lmCoords = lv_label_create(s_lmPage);
@@ -2350,8 +2364,16 @@ void settingsview::openAboutPage() {
 // Called from the host's status loop. Stored rather than drawn immediately: the About
 // page is usually hidden, and the loop runs far more often than anyone opens it.
 void settingsview::setHomeCoords(double lat, double lon, bool set) {
-    if (set) snprintf(s_homeCoords, sizeof(s_homeCoords), "%.5f, %.5f", lat, lon);
-    else     s_homeCoords[0] = '\0';
+    char coords[sizeof(s_homeCoords)] = "";
+    if (set) snprintf(coords, sizeof(coords), "%.5f, %.5f", lat, lon);
+    if (strcmp(coords, s_homeCoords) == 0) return;
+    snprintf(s_homeCoords, sizeof(s_homeCoords), "%s", coords);
+    if (s_mode == MODE_LOCATION) refresh_locmenu();
+}
+
+void settingsview::setHomeName(const char *name) {
+    if (strcmp(s_homeName, name ? name : "") == 0) return;
+    snprintf(s_homeName, sizeof(s_homeName), "%s", name ? name : "");
     if (s_mode == MODE_LOCATION) refresh_locmenu();
 }
 

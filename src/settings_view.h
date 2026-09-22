@@ -36,4 +36,5 @@ namespace settingsview {
     // screen that is gone in three seconds. `set` false draws "not set yet" rather than
     // 0.00000, 0.00000, which is a real place in the Gulf of Guinea.
     void      setHomeCoords(double lat, double lon, bool set);
+    void      setHomeName(const char *name);
 }

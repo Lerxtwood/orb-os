@@ -1338,6 +1338,7 @@ int main(int argc, char **argv) {
             // the faults it exists to catch.
             settingsview::setNetInfo("Configure at " ORB_MDNS_ADDR "\n192.168.1.42");
             settingsview::setHomeCoords(28.53830, -81.37920, true);   // the Location readout
+            settingsview::setHomeName("Orlando, Florida");
         }
         // fulfil route lookups with a mock (the sim has no network)
         char wc[12];
