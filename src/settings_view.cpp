@@ -215,9 +215,9 @@ namespace {
 
     constexpr int RECENTS_MAX = 8;
 
-    // Search keyboard: 26 letters + '<' (backspace) + '_' (space)
-    const char KEYS[]   = "ABCDEFGHIJKLMNOPQRSTUVWXYZ<_";
-    const int  N_KEYS   = 28;
+    // Search keyboard: letters + comma (city, state) + '<' (backspace) + '_' (space)
+    const char KEYS[]   = "ABCDEFGHIJKLMNOPQRSTUVWXYZ,<_";
+    const int  N_KEYS   = (int)(sizeof(KEYS) - 1);
 
     constexpr int BRI_MIN = 8, BRI_MAX = 255, BRI_STEP = 13;
 
@@ -1571,13 +1571,13 @@ void settingsview::onPress() {
         }
     } else {  // MODE_SEARCH
         const int L = (int)strlen(s_str);
-        if (s_kbIdx < 26) {                                 // a letter
+        if (s_kbIdx < N_KEYS && KEYS[s_kbIdx] != '<' && KEYS[s_kbIdx] != '_') { // letter or comma
             if (L < (int)sizeof(s_str) - 1) { s_str[L] = KEYS[s_kbIdx]; s_str[L + 1] = 0; }
             mark_dirty();
-        } else if (s_kbIdx == 26) {                         // backspace (empty -> exit search)
+        } else if (s_kbIdx < N_KEYS && KEYS[s_kbIdx] == '<') { // backspace (empty -> exit search)
             if (L > 0) { s_str[L - 1] = 0; mark_dirty(); }
             else { app_shell::setCaptured(false); app_shell::openSwitcher(); }   // exit to switcher
-        } else if (s_kbIdx == 27) {                         // space
+        } else if (s_kbIdx < N_KEYS && KEYS[s_kbIdx] == '_') { // space
             if (L > 0 && L < (int)sizeof(s_str) - 1) { s_str[L] = ' '; s_str[L + 1] = 0; }
             mark_dirty();
         } else {                                            // a suggestion
