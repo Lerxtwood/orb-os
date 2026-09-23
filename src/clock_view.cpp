@@ -17,11 +17,6 @@
 #include <cstdarg>
 #include <cstdlib>
 #include <ctime>
-static bool getLocalTime(struct tm *info, uint32_t = 0) {
-    time_t now = time(nullptr);
-    if (getenv("SIM_NO_TIME")) return false;   // photograph the not-yet-set face (see s_noTime)
-    return localtime_r(&now, info) != nullptr;
-}
 static struct { void printf(const char *fmt, ...) const { va_list a; va_start(a, fmt); vprintf(fmt, a); va_end(a); } void println(const char *s) const { puts(s); } } Serial;
 static void *heap_caps_malloc(size_t sz, int) { return malloc(sz); }
 static void  heap_caps_free(void *p) { free(p); }
@@ -48,12 +43,16 @@ static void  heap_caps_free(void *p) { free(p); }
 // read correctly, so that is what this draws: the dial, the hands at 12:00 with the seconds
 // running, and no date, because a date would be an invented one. The real time replaces it
 // on the tick after it arrives.
+#include "orb_time.h"   // one honest read of the wall clock; NOT Arduino's retrying getLocalTime
+
 static bool s_noTime = false;
 
+// Reads the clock ONCE, through orb_local_time(). It used to call Arduino's
+// getLocalTime(ti, 0), which returns false without reading anything at all if the
+// millisecond counter ticks between its two adjacent millis() calls; orb_time.h has the
+// whole story. That false is what put the hands at twelve for a frame on every theme.
 static void time_for_face(struct tm *ti) {
-    if (getLocalTime(ti, 0)) { s_noTime = false; return; }
-    time_t now; time(&now);
-    localtime_r(&now, ti);
+    if (orb_local_time(ti)) { s_noTime = false; return; }
     ti->tm_hour = 0; ti->tm_min = 0;   // tm_sec keeps running from the system clock
     s_noTime = true;
 }
@@ -1571,15 +1570,6 @@ static float second_now() {
     return (float)ti.tm_sec + (float)tv.tv_usec / 1000000.0f;
 }
 
-// The Swiss railway stop, THEME_CAPS 52: the hand goes round in 58.5 seconds and waits at
-// 12 until the minute rolls, the way the SBB station clocks and the Mondaine watch do. The
-// wait is 60 rather than 0 so the hand sits at the top of its sweep instead of snapping
-// back through the dial, and the box maths sees it at the same angle either way.
-static float railway_seconds(float secs) {
-    if (!theme_style::clock().secondRailway) return secs;
-    return secs >= 58.5f ? 60.0f : secs * (60.0f / 58.5f);
-}
-
 // A tick a second, or a frame every 40 ms while sweeping.
 //
 // Reset whenever a theme is applied, because whether this design sweeps is the theme's
@@ -1626,7 +1616,7 @@ static void tick_cb(lv_timer_t * /*t*/) {
             s_prevSecValid = true;
         }
         sweep_pad_for_shadow();
-        sweep_frame(railway_seconds(second_now()));
+        sweep_frame(second_now());
         return;
     }
     redraw(&ti);
@@ -1635,6 +1625,9 @@ static void tick_cb(lv_timer_t * /*t*/) {
 // Redraw now, whatever the second says. For coming back from a screen that covered this one
 // for a while: the canvas still holds the face as it was when the cover went up, so without
 // this the clock shows the wrong time for up to a second after it reappears.
+// A read-only window for the self-test: whether the last read of the clock was believed.
+bool clockview::faceHasTime() { struct tm ti; time_for_face(&ti); return !s_noTime; }
+
 void clockview::setSweep(int mode) {
     s_forceSweep = mode;
     s_underMin = -1; s_underHr = -1; s_prevSecValid = false;
