@@ -4,7 +4,7 @@
 //   DIGITAL  — big hand-drawn 24-hour readout (seven-segment style) + the date.
 //
 // Time comes from the system clock (RTC-seeded, NTP-synced; see main.cpp). TZ is
-// applied at boot, so getLocalTime() returns local time.
+// applied at boot, so localtime_r() returns local time.
 #include "clock_view.h"
 #include "display.h"      // orb_screen_covered(): do not redraw under a cover
 #ifdef ARDUINO
@@ -17,11 +17,6 @@
 #include <cstdarg>
 #include <cstdlib>
 #include <ctime>
-static bool getLocalTime(struct tm *info, uint32_t = 0) {
-    time_t now = time(nullptr);
-    if (getenv("SIM_NO_TIME")) return false;   // photograph the not-yet-set face (see s_noTime)
-    return localtime_r(&now, info) != nullptr;
-}
 static struct { void printf(const char *fmt, ...) const { va_list a; va_start(a, fmt); vprintf(fmt, a); va_end(a); } void println(const char *s) const { puts(s); } } Serial;
 static void *heap_caps_malloc(size_t sz, int) { return malloc(sz); }
 static void  heap_caps_free(void *p) { free(p); }
@@ -51,9 +46,16 @@ static void  heap_caps_free(void *p) { free(p); }
 static bool s_noTime = false;
 
 static void time_for_face(struct tm *ti) {
-    if (getLocalTime(ti, 0)) { s_noTime = false; return; }
-    time_t now; time(&now);
-    localtime_r(&now, ti);
+    // getLocalTime(ti, 0) can skip its read when millis() advances between its
+    // timeout checks. Read once directly, without waiting or retrying, and use
+    // the same valid-year threshold as Arduino.
+    const time_t now = time(nullptr);
+    *ti = {};
+    bool valid = localtime_r(&now, ti) != nullptr && ti->tm_year > (2016 - 1900);
+#ifndef ARDUINO
+    if (getenv("SIM_NO_TIME")) valid = false;  // simulator's unset-clock preview
+#endif
+    if (valid) { s_noTime = false; return; }
     ti->tm_hour = 0; ti->tm_min = 0;   // tm_sec keeps running from the system clock
     s_noTime = true;
 }
