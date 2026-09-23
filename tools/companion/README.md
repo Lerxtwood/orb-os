@@ -14,8 +14,20 @@ on the user's computer and is never uploaded. Keep that file until the installat
 is verified. The installer never erases the whole chip.
 
 For the 16 MiB ESP32-S3 AMOLED 1.75 device. Orb remains the normal firmware;
-select **Printer**, then press to reboot into PrintSphere. Press **Orb** in
-PrintSphere to return. Only the running firmware serves its web interface.
+select **Printer**, then press to reboot into PrintSphere. From v2.16.27-companion,
+jig the dial to open **Return to Orb**, then press the dial
+to confirm. Turn to cancel, or let the menu close after eight seconds.
+Only the running firmware serves its web interface.
+
+PrintSphere's dial uses Orb's GPIO18(A)/17(B)/16(button) wiring and gesture timing.
+Clockwise advances right through available print pages; counter-clockwise goes
+left. It starts on printer status, stops at the ends, and skips unavailable pages.
+Page movement waits until the dial has settled for 250 ms so a jig can open the
+menu without bouncing between pages. Touch page swiping and
+the old touch return shortcuts are removed; existing print-control taps and
+brightness gestures remain. The existing power-save loop wakes the display for
+dial activity, while interrupts retain quick turns and presses during rendering.
+Input is routed by the existing LVGL worker, without another task stack.
 
 Orb's configuration, USB theme protocol, web theme upload, SD themes, and theme
 sync code are retained. PrintSphere uses a separate `ps_nvs` partition and imports
@@ -109,3 +121,8 @@ python -m http.server 8080 --directory .pio/companion/site
 update flow, corrupt downloads, foreign layouts, and mobile layout. The simulated
 test does not flash hardware. `smoke.py` exercises real Orb configuration pages and
 both existing USB/HTTP theme-file transports using a temporary folder.
+
+`test_dial.cpp` runs the production quadrature decoder and gesture router with
+direction changes, contact chatter, slow reversals, long scrolling runs, menu
+timeout/cancellation, early presses, and millisecond wrap. Compile with a host
+C++17 compiler and `-Itools/companion`. Its tests also run in both CI workflows.

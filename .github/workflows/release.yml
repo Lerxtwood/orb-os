@@ -43,6 +43,8 @@ jobs:
         run: |
           node --test tools/companion/test_layout.mjs
           python tools/companion/test_release.py
+          g++ -std=c++17 -O2 -Itools/companion tools/companion/test_dial.cpp -o /tmp/test_dial
+          /tmp/test_dial
       - name: Validate and stamp release version
         id: version
         env:
@@ -111,7 +113,11 @@ jobs:
             installation. Standalone Orb migration saves a recovery backup and checks
             available theme-cache space first. Other layouts are not modified.
 
-            Choose **Printer** in Orb and press to open PrintSphere. Tap **Orb** to return.
+            Choose **Printer** in Orb and press to open PrintSphere. Jig the dial in
+            PrintSphere to open **Return to Orb**, then press the dial to confirm.
+            Normal dial turns move right/left through the available print screens.
+            PrintSphere starts on printer status. Page movement waits briefly for the dial
+            to settle, so opening the return menu does not bounce between print screens.
             Orb's existing web configuration and theme uploads remain available while Orb runs.
 
             These are separate images for the companion layout. Do not flash one at offset 0

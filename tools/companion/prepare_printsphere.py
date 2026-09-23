@@ -2,6 +2,7 @@
 import argparse
 import shutil
 from pathlib import Path
+from adapt_dial import adapt as adapt_dial
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -62,6 +63,7 @@ def prepare(source, destination):
             'set_label_text_if_changed(radar_button_label_, "Radar");',
             'set_label_text_if_changed(radar_button_label_, "Orb");')
     adapt_installer_links(destination)
+    adapt_dial(destination)
     # Existing PrintSphere firmware writes to ota_1 explicitly, and its WiFi driver
     # already uses RAM storage. Assert both protections survive source updates.
     wifi = (destination / "main/src/wifi_manager.cpp").read_text(encoding="utf-8")
