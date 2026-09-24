@@ -239,6 +239,8 @@ static std::string s_selHex;
 // input, drops back to the default view. See knobPress()/knobTurn()/knobEnter().
 static bool        s_selectMode    = false;
 static uint32_t    s_selActivityMs = 0;      // lv_tick_get() of the last knob input in selection mode
+static bool        s_selectionRoutePending = false;
+static char        s_selectionRouteCall[12] = "";
 // How long a selected aircraft stays selected without input.
 //
 // Was 5000, which was never long enough to read the card even when it worked. The route
@@ -950,7 +952,29 @@ static void sweep_timer_cb(lv_timer_t *t) {
     // Selection mode auto-times-out: 5s with no knob input drops back to the
     // populated default view (deselect + release the knob) so the scope doesn't
     // stay pinned on one aircraft. Runs before the early returns below.
-    if (s_selectMode && (uint32_t)(lv_tick_get() - s_selActivityMs) >= SELECT_IDLE_MS) radar_exit_select();
+    if (s_selectMode) {
+        AcInfo selected;
+        if (radar::selected(selected) && selected.call[0]) {
+            if (strcmp(s_selectionRouteCall, selected.call) != 0) {
+                snprintf(s_selectionRouteCall, sizeof(s_selectionRouteCall), "%s", selected.call);
+                s_selectionRoutePending = true;
+                route_request(selected.call);
+            }
+            if (s_selectionRoutePending) {
+                char from[40], to[40];
+                // An empty stored result is a completed, unsuccessful lookup too.
+                if (route_get(selected.call, from, sizeof(from), to, sizeof(to))) {
+                    s_selectionRoutePending = false;
+                    s_selActivityMs = lv_tick_get();
+                    Serial.printf("[route-card] %s complete; reading timer started\n", selected.call);
+                }
+            }
+        } else {
+            s_selectionRoutePending = false;
+        }
+        if (!s_selectionRoutePending && (uint32_t)(lv_tick_get() - s_selActivityMs) >= SELECT_IDLE_MS)
+            radar_exit_select();
+    }
     {   // aircraft glyph motion, throttled: see AC_INTERP_MS for why this is slow on purpose
         static uint32_t s_lastInterpMs = 0;
         const uint32_t nowIms = lv_tick_get();
@@ -1602,6 +1626,7 @@ static void pulse_anim_cb(void *obj, int32_t v) {
 // so a turn opens the app switcher again. File scope so the sweep timer's idle
 // check (above, outside the namespace) and knobPress()/knobExit() can all call it.
 static void radar_exit_select() {
+    Serial.println("[route-card] selection dismissed");
     radar::select(-1);
     s_selectMode = false;
     app_shell::setCaptured(false);
@@ -2984,6 +3009,8 @@ static void refresh_custom_text() {}
 #endif
 
 void select(int idx) {
+    s_selectionRoutePending = false;
+    s_selectionRouteCall[0] = 0;
     if (idx < 0 || idx >= (int)s_acs.size()) s_selHex.clear();
     else s_selHex = s_acs[idx].hex;
     if (s_acLayer) lv_obj_invalidate(s_acLayer);

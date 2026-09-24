@@ -34,6 +34,7 @@
 #include "orb_link.h"
 #include "theme_pull.h"      // USB serial command channel: how a browser (Orb Studio) talks to this device
 #include "custom_weld.h"   // CUSTOM_WELD_HASH — lets a push tell whether new firmware is needed
+#include "orb_time.h"      // one honest read of the wall clock; NOT Arduino's retrying getLocalTime
 #include "theme_style.h"   // per-theme app roster (theme_style::apps())
 #include "clock_wind.h"    // the clock's virtual mainspring, THEME_CAPS 37
 #include "wind_notice.h"   // ...and the panel that asks for it
@@ -82,6 +83,7 @@
 #include <esp_system.h>             // esp_reset_reason() for /health
 #include <SD.h>                     // /sdput: write theme files straight to the microSD
 #include <esp_heap_caps.h>          // largest-free-block metric (heap health)
+#include <mbedtls/platform.h>
 #include <esp_wifi.h>               // WiFi driver control (reset must survive the reboot)
 #include <nvs.h>                    // erase the driver's "nvs.net80211" namespace (WiFi reset)
 
@@ -599,8 +601,9 @@ static void adsb_task(void*) {
             char wantCall[12];
             if (route_pending(wantCall, sizeof(wantCall))) {
                 char from[40] = "", to[40] = "";
-                if (route_cache_get(wantCall, from, sizeof(from), to, sizeof(to))) {
-                    route_store(wantCall, from, to);                       // NVS hit, no network
+                uint32_t routeRemainingMs = 0;
+                if (route_cache_get(wantCall, from, sizeof(from), to, sizeof(to), &routeRemainingMs)) {
+                    route_store(wantCall, from, to, routeRemainingMs);      // preserve original expiry
                     Serial.printf("[route] %s (cache): '%s' -> '%s'\n", wantCall, from, to);
                 } else if (route_fetch(wantCall, from, sizeof(from), to, sizeof(to))) {
                     route_store(wantCall, from, to);
@@ -1316,8 +1319,15 @@ static void host_locate_if_unset() {
 // maxN matches for the query; returns the count. Runs synchronously (~1s).
 int host_geocode(const char *query, char names[][40], double *lats, double *lons, int maxN) {
     if (WiFi.status() != WL_CONNECTED || !query || strlen(query) < 2) return 0;
+    // Percent-encode anything that is not plainly safe in a query value. It used to encode
+    // the space and pass everything else through, which was fine until the search keyboard
+    // gained a comma (settings_view.cpp) and "Leeds, UT" started arriving here.
     String q;
-    for (const char *p = query; *p; ++p) q += (*p == ' ') ? String("%20") : String(*p);
+    for (const char *p = query; *p; ++p) {
+        const unsigned char c = (unsigned char)*p;
+        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') q += (char)c;
+        else { char esc[4]; snprintf(esc, sizeof(esc), "%%%02X", c); q += esc; }
+    }
     // Plain HTTP for the same memory reason as the ADS-B and weather feeds; see the
     // ADSB_PRIMARY_TLS notes in config.h. This is a place-name lookup with no credentials.
     String url = "http://geocoding-api.open-meteo.com/v1/search?name=" + q +
@@ -2484,17 +2494,17 @@ void setup() {
     // RTC_NOINIT holds whatever was in it, including rubbish after a real power cycle, so it
     // is only trusted when the companion magic says we wrote it. Same guard diag_log uses.
 
-    // Send large allocations (>=4KB) to PSRAM instead of the ~300KB internal heap.
-    // TLS handshakes (WiFiClientSecure, fresh one built for every poll of every feed —
-    // ADS-B every 2s, weather, wx radar, cloud imagery, aircraft photos) were the
-    // biggest thing routinely landing on the internal heap, and repeatedly allocating
-    // and freeing those over a long uptime fragmented it badly enough that eventually
-    // no single free block was big enough for the next handshake, even with plenty of
-    // total free memory — mbedTLS calls it "SSL - Memory allocation failed", and it was
-    // tripping the "feed stuck 180s -> reboot" recovery every few minutes. Internal
-    // memory allocations don't get restructured at all; they're just redirected to the
-    // ~8MB PSRAM pool, which has vastly more room to absorb the same churn.
-    heap_caps_malloc_extmem_enable(4096);
+    // Prefer PSRAM for ordinary allocations above 1 KB, reserving internal RAM
+    // for WiFi and hardware crypto. Explicit DMA allocations are unaffected.
+    heap_caps_malloc_extmem_enable(1024);
+    // Install before any network task starts. TLS buffers can live in PSRAM;
+    // hardware crypto's explicit DMA allocations still use internal memory.
+    mbedtls_platform_set_calloc_free(
+        [](size_t n, size_t size) -> void* {
+            if (size && n > SIZE_MAX / size) return nullptr;
+            return heap_caps_calloc(n, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        },
+        [](void* p) { heap_caps_free(p); });
 
     psram_mark("boot start");
     sdcard::begin();
@@ -2904,25 +2914,9 @@ void setup() {
     // just sit unused. That memory goes to the Weather Radar animation frames instead.
     g_ac_mutex = xSemaphoreCreateMutex();
     psram_mark("before adsb task");
-    xTaskCreatePinnedToCore(adsb_task, "adsb", 7168, nullptr, 1, &g_adsbTaskHandle, 0);
-    // 7168, not 6144. 6144 was tried and MEASURED: under a real fetch the high-water mark
-    // fell to 1,012 bytes of headroom, which is not a margin, it is a fuse. A FreeRTOS stack
-    // overflow is a hard crash and this task runs unattended for weeks. So the saving here is
-    // 1 KB rather than 2; the real memory came from audio (reserving 4 KB to use 0.8) and
-    // from keeping allocations off internal RAM in the first place.
-    //
-    // Measured on the device (uxTaskGetStackHighWaterMark over multi-minute soaks, the feed
-    // both succeeding and failing): peak usage ~5.3 KB. Was 16 KB, then 8 KB, now 6 KB.
-    //
-    // A task stack is INTERNAL RAM, which is the resource this device actually runs out of:
-    // a clean boot leaves about 9.5 KB free, and a TCP connect plus an HTTP request needs
-    // more than that at peak. Every kilobyte reserved and never touched here is a kilobyte
-    // the network cannot have. 6144 keeps ~800 B over the observed peak, and the high-water
-    // mark is printed every 15 s in [memdbg] so the margin is watched rather than assumed.
-    // The old comment here said "TLS needs a big stack"; that stopped being true when the
-    // TLS fallback was disabled above, and even the plain-HTTP path never came close to
-    // justifying the size. 8 KB keeps roughly double the observed peak as margin and returns
-    // 8 KB of internal RAM, which is the exact resource the feed is starved for.
+    xTaskCreatePinnedToCore(adsb_task, "adsb", 10240, nullptr, 1, &g_adsbTaskHandle, 0);
+    // Direct TLS needs more stack than the former gateway-only HTTP path.
+    // Keep 10 KB and watch the high-water mark in the memory diagnostics.
 
     // configuration web page (http://theorb.local/)
     g_web.on("/diag", []{ g_web.send(200, "text/plain", diag::text()); });
@@ -3373,7 +3367,10 @@ void loop() {
 #endif
         char clk[8] = "--:--";
         struct tm ti;
-        const bool haveTime = getLocalTime(&ti, 0);
+        // orb_local_time, not getLocalTime(&ti, 0): that one can answer false without
+        // reading the clock at all (orb_time.h). Here it made the header time blink to
+        // --:-- and could hand the hourly chime a bogus hour.
+        const bool haveTime = orb_local_time(&ti);
         if (haveTime) {
             snprintf(clk, sizeof(clk), "%02d:%02d", ti.tm_hour, ti.tm_min);
             char date[20];

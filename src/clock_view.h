@@ -18,4 +18,8 @@ namespace clockview {
     void      onExit();    // shell is switching away: give it up, plus the decoded face
     void      refresh();   // redraw the face now, for coming back from something that covered it
     void      setSweep(int mode);  // -1 theme decides, 0 force tick, 1 force sweep. Not persisted.
+    // FOR THE SELF-TEST, and for nothing else: whether the last read of the wall clock was
+    // believed. Added 2026-09-23, when a spurious "no time" was putting every theme's hands
+    // at twelve for a frame. See orb_time.h.
+    bool      faceHasTime();
 }
