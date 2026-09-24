@@ -18,8 +18,11 @@ namespace clockview {
     void      onExit();    // shell is switching away: give it up, plus the decoded face
     void      refresh();   // redraw the face now, for coming back from something that covered it
     void      setSweep(int mode);  // -1 theme decides, 0 force tick, 1 force sweep. Not persisted.
-    // FOR THE SELF-TEST, and for nothing else: whether the last read of the wall clock was
-    // believed. Added 2026-09-23, when a spurious "no time" was putting every theme's hands
-    // at twelve for a frame. See orb_time.h.
+    // FOR THE SELF-TEST, and for nothing else. Two questions, and they exist because the
+    // answers were confused with each other in September 2026: whether the last read of the
+    // wall clock was believed (a spurious no put every theme's hands at twelve for a frame,
+    // see orb_time.h), and where the second hand is placed for a given wall-clock second,
+    // which is that second itself unless THIS design asked for the railway stop.
     bool      faceHasTime();
+    float     handSeconds(float wallSeconds);
 }

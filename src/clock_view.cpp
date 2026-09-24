@@ -44,6 +44,7 @@ static void  heap_caps_free(void *p) { free(p); }
 // running, and no date, because a date would be an invented one. The real time replaces it
 // on the tick after it arrives.
 #include "orb_time.h"   // one honest read of the wall clock; NOT Arduino's retrying getLocalTime
+#include "orb_text_case.h"   // ALL CAPS on a finished line, THEME_CAPS 53
 
 static bool s_noTime = false;
 
@@ -628,7 +629,7 @@ static void fill_plate(int x, int y, int w, int h, int radius, lv_color_t col, l
 static void draw_baked_text(const lv_font_t *font, const char *fmt, int bx, int by,
                             uint32_t color, int glow, uint32_t glowColor, int align,
                             const struct tm *ti, const char *which, lv_opa_t opa = LV_OPA_COVER,
-                            uint32_t bg = 0, int bgOpa = 0, int bgRadius = 0) {
+                            uint32_t bg = 0, int bgOpa = 0, int bgRadius = 0, bool upper = false) {
     if (!font)          { banner_silent(which, "no font loaded for this slot", fmt); return; }
     if (!fmt || !fmt[0]) { banner_silent(which, "empty format", fmt); return; }
     if (s_noTime)        return;   // nothing true to print yet; see time_for_face()
@@ -639,6 +640,9 @@ static void draw_baked_text(const lv_font_t *font, const char *fmt, int bx, int 
         banner_silent(which, "strftime rejected the format, or it produced nothing", fmt);
         return;
     }
+    // AFTER strftime, not before: %A is Wednesday by now, and uppercasing the format would
+    // have missed it. THEME_CAPS 53.
+    if (upper) orb_upper(buf);
     const int n = (int)strlen(buf);
     float w[48], total = 0.0f;
     for (int i = 0; i < n && i < 48; ++i) {
@@ -741,7 +745,7 @@ static void blit_glyph_rot(const uint8_t *bmp, int bw, int bh, float destCx, flo
 // the curve.
 static void draw_baked_arc_text(const lv_font_t *font, const char *fmt, float R, float arcDeg,
                                 uint32_t color, const struct tm *ti, const char *which,
-                                lv_opa_t opa = LV_OPA_COVER) {
+                                lv_opa_t opa = LV_OPA_COVER, bool upper = false) {
     if (!font)           { banner_silent(which, "no font loaded for this slot", fmt); return; }
     if (!fmt || !fmt[0])  { banner_silent(which, "empty format", fmt); return; }
     if (R < 1.0f)        { banner_silent(which, "curved, but sitting on the dial centre", fmt); return; }
@@ -751,6 +755,7 @@ static void draw_baked_arc_text(const lv_font_t *font, const char *fmt, float R,
         banner_silent(which, "strftime rejected the format, or it produced nothing", fmt);
         return;
     }
+    if (upper) orb_upper(buf);   // THEME_CAPS 53, after strftime for the same reason
     const int n = (int)strlen(buf);
     float w[48]; float total = 0.0f;
     for (int i = 0; i < n && i < 48; ++i) {
@@ -1125,15 +1130,15 @@ static void compose_custom(const struct tm *ti, bool skipSecond, bool withOverla
         {
             const theme_style::ClockText &t = theme_style::clock().text1;
             if (t.show) {
-                if (t.curved) draw_baked_arc_text(theme_font::clock_text1(), t.fmt, (float)t.curveR, t.arcDeg, t.color, ti, "text1", (lv_opa_t)t.opa);
-                else draw_baked_text(theme_font::clock_text1(), t.fmt, t.x, t.y, t.color, t.glow, t.glowColor, t.align, ti, "text1", (lv_opa_t)t.opa, t.bg, t.bgOpa, t.radius);
+                if (t.curved) draw_baked_arc_text(theme_font::clock_text1(), t.fmt, (float)t.curveR, t.arcDeg, t.color, ti, "text1", (lv_opa_t)t.opa, t.upper);
+                else draw_baked_text(theme_font::clock_text1(), t.fmt, t.x, t.y, t.color, t.glow, t.glowColor, t.align, ti, "text1", (lv_opa_t)t.opa, t.bg, t.bgOpa, t.radius, t.upper);
             }
         }
         {
             const theme_style::ClockText &t = theme_style::clock().text2;
             if (t.show) {
-                if (t.curved) draw_baked_arc_text(theme_font::clock_text2(), t.fmt, (float)t.curveR, t.arcDeg, t.color, ti, "text2", (lv_opa_t)t.opa);
-                else draw_baked_text(theme_font::clock_text2(), t.fmt, t.x, t.y, t.color, t.glow, t.glowColor, t.align, ti, "text2", (lv_opa_t)t.opa, t.bg, t.bgOpa, t.radius);
+                if (t.curved) draw_baked_arc_text(theme_font::clock_text2(), t.fmt, (float)t.curveR, t.arcDeg, t.color, ti, "text2", (lv_opa_t)t.opa, t.upper);
+                else draw_baked_text(theme_font::clock_text2(), t.fmt, t.x, t.y, t.color, t.glow, t.glowColor, t.align, ti, "text2", (lv_opa_t)t.opa, t.bg, t.bgOpa, t.radius, t.upper);
             }
         }
     };
@@ -1570,6 +1575,23 @@ static float second_now() {
     return (float)ti.tm_sec + (float)tv.tv_usec / 1000000.0f;
 }
 
+// The Swiss railway stop, THEME_CAPS 52: the hand goes round in 58.5 seconds and waits at
+// 12 until the minute rolls, the way the SBB station clocks and the Mondaine watch do. The
+// wait is 60 rather than 0 so the hand sits at the top of its sweep instead of snapping
+// back through the dial, and the box maths sees it at the same angle either way.
+//
+// BOTH flags, every frame, read from the theme on screen right now. theme_style reseeds
+// every field on each theme load (seed_defaults), so a design that does not ask for this
+// cannot inherit it from the one before; secondSweep is required as well, because a stop is
+// a pause in a glide and Studio only ever writes the pair together. This was blamed for the
+// hands flashing to twelve in September 2026 and was innocent: that was the clock read
+// underneath it (orb_time.h), and the self-test in sim_main.cpp now holds both apart.
+static float railway_seconds(float secs) {
+    const theme_style::Clock &cs = theme_style::clock();
+    if (!cs.secondRailway || !cs.secondSweep) return secs;
+    return secs >= 58.5f ? 60.0f : secs * (60.0f / 58.5f);
+}
+
 // A tick a second, or a frame every 40 ms while sweeping.
 //
 // Reset whenever a theme is applied, because whether this design sweeps is the theme's
@@ -1616,7 +1638,7 @@ static void tick_cb(lv_timer_t * /*t*/) {
             s_prevSecValid = true;
         }
         sweep_pad_for_shadow();
-        sweep_frame(second_now());
+        sweep_frame(railway_seconds(second_now()));
         return;
     }
     redraw(&ti);
@@ -1625,8 +1647,10 @@ static void tick_cb(lv_timer_t * /*t*/) {
 // Redraw now, whatever the second says. For coming back from a screen that covered this one
 // for a while: the canvas still holds the face as it was when the cover went up, so without
 // this the clock shows the wrong time for up to a second after it reappears.
-// A read-only window for the self-test: whether the last read of the clock was believed.
-bool clockview::faceHasTime() { struct tm ti; time_for_face(&ti); return !s_noTime; }
+// Read-only windows for the self-test. Named for the questions they answer rather than for
+// the fields behind them, so the test reads as the behaviour it protects.
+bool  clockview::faceHasTime() { struct tm ti; time_for_face(&ti); return !s_noTime; }
+float clockview::handSeconds(float wallSeconds) { return railway_seconds(wallSeconds); }
 
 void clockview::setSweep(int mode) {
     s_forceSweep = mode;

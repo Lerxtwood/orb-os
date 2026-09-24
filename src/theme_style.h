@@ -361,23 +361,43 @@ namespace theme_style {
 //      newsfeed up"). The band now sits where the two lines sit BY DEFAULT unless the
 //      design sets its own margins, which is the control that was always meant for that.
 //      An Orb below this level keeps the title up over a story and still moves the band.
-//  52  WITHDRAWN, 2026-09-23, one day after it shipped. It was the Swiss railway stop on a
-//      sweeping second hand: round the dial in 58.5 seconds, then a wait at 12, the way the
-//      SBB station clocks do. WizardOfOz asked for it and it worked, but the week it landed
-//      a separate fault put every theme's hands at twelve for a frame (orb_time.h), three
-//      people read that as this feature leaking into their clocks, and the whole community
-//      spent a day chasing it. Zion: "it might actually be better to completely remove this
-//      58.5 second rule, it's too complicated." A clock's second hand now always shows the
-//      second it is, on every theme, and there is nothing to explain.
+//  52  the Swiss railway stop on a sweeping second hand (Clock.secondRailway): round the
+//      dial in 58.5 seconds, then a wait at 12 until the minute rolls. The station clocks of
+//      the Swiss Federal Railways did this so one pulse a minute could pull every clock on
+//      the network into step, and the Mondaine watch copies the pause because it is the
+//      thing people remember about them.
 //
-//      The NUMBER stays at 52 rather than going back to 51, because a level is a promise
-//      about what a firmware understands and Studio compares those numbers: an Orb that
-//      once answered 52 must never answer less. Nothing asks for 52 any more, so nothing is
-//      refused by it. A theme still carrying "secondRailway" in its clock_style.json is
-//      read and ignored, like any other key this firmware has no use for.
-constexpr int THEME_CAPS = 52;
+//      WITHDRAWN on 2026-09-23 and PUT BACK on 2026-09-24, which is the part worth writing
+//      down. The week it shipped, a separate fault put every theme's hands at twelve for a
+//      frame (orb_time.h); three people read that as this feature leaking into their clocks,
+//      and it was removed while the real cause was still unknown. It was innocent. Once that
+//      was proved and fixed, WizardOfOz and Lerxtwood both asked for the stop back, and a
+//      feature is not wrong because it was once suspected. Studio now explains what it is
+//      where it is switched on, which is what was actually missing.
+//
+//      Only read while sweeping: a stop is a pause in a glide, and a ticking hand has no
+//      glide to pause. An Orb below this level sweeps straight through.
+//  53  ALL CAPS on any line of text a theme draws (`upper` on every text slot: the clock's
+//      two banners, the Flight Tracker's and the Weather map's four each, the Ticker's, the
+//      Spy Cam's, the app menu's three, and every line on the splash screen). Zion asked for
+//      it on 2026-09-23 "in all of the text blocks for all apps", and named the case nobody
+//      else could reach: the firmware version and the network address on the splash are
+//      written by the device rather than typed by the designer, so a face that wanted small
+//      caps throughout could not have them there at any price.
+//
+//      Applied to the FINISHED string at the moment of drawing rather than to the format,
+//      which is the only place that catches live text: %A is Wednesday by the time strftime
+//      is done with it, {callsign} is UAL328 by the time the expander is. ASCII only, since
+//      the faces carry 0x20-0x7F and an accented letter has no uppercase form to draw.
+//      Studio bakes the glyphs against the uppercased text, so the letters are there.
+//      An Orb below this level draws every line in the case the design typed it.
+constexpr int THEME_CAPS = 53;
 
 struct ClockText {
+    // ALL CAPS. THEME_CAPS 53. Applied to the finished line at the moment of drawing, so it
+    // reaches live text as well as literal text; ASCII only, because the faces this device
+    // carries have no uppercase form for anything outside it. See orb_text_case.h.
+    bool     upper  = false;
     bool     show   = false;
     int      x      = 233;
     int      y      = 233;
@@ -458,6 +478,9 @@ struct Clock {
     // design that draws anything above its second hand other than the glass falls back to
     // ticking rather than drawing the layers in the wrong order.
     bool      secondSweep = false;
+    // THEME_CAPS 52. The railway stop on that sweep: 58.5 seconds round, then a wait at 12.
+    // Read only while sweeping, and only when this design asked for it.
+    bool      secondRailway = false;
     // THEME_CAPS 38. A virtual mainspring: the clock runs down and has to be wound with the
     // knob. See clock_wind.h for why it exists and what it refuses to do. Off unless a
     // design asks, because a stopped clock reads as a broken one to anybody who did not
@@ -686,6 +709,10 @@ struct Names {
 // `onCard` is the one Flight Tracker specific: it rides the aircraft selection card, and no
 // other screen has one. A screen without a card simply leaves it false.
 struct TextSlot {
+    // ALL CAPS. THEME_CAPS 53. Applied to the finished line at the moment of drawing, so it
+    // reaches live text as well as literal text; ASCII only, because the faces this device
+    // carries have no uppercase form for anything outside it. See orb_text_case.h.
+    bool     upper  = false;
     bool     show   = false;
     int      x      = 233;
     int      y      = 233;
@@ -834,6 +861,10 @@ struct Weather {
     // if the field allowed it. bgOpa has NO floor, because a credit with no pill behind it
     // is still a credit.
     struct Credit {
+        // No `upper` here, and that is deliberate rather than an omission: the firmware
+        // already writes this line in capitals ("RAINVIEWER", "RADAR 12:04 | RAINVIEWER"),
+        // so the switch every other text slot gained at THEME_CAPS 53 would have been a
+        // control that changed nothing. Studio does not offer it here either.
         int      x       = 233;
         int      y       = 382;
         uint32_t color   = 0x9AA0A6;
@@ -1033,6 +1064,10 @@ struct Radar {
 };
 
 struct MenuText {
+    // ALL CAPS. THEME_CAPS 53. Applied to the finished line at the moment of drawing, so it
+    // reaches live text as well as literal text; ASCII only, because the faces this device
+    // carries have no uppercase form for anything outside it. See orb_text_case.h.
+    bool     upper  = false;
     bool     show  = false;
     int      x     = 233;
     int      y     = 233;
@@ -1096,6 +1131,10 @@ struct Settings {
 // drawn at a size the theme's baked font already fixed, and these are drawn from the
 // compiled ladder instead.
 struct SplashText {
+    // ALL CAPS. THEME_CAPS 53. Applied to the finished line at the moment of drawing, so it
+    // reaches live text as well as literal text; ASCII only, because the faces this device
+    // carries have no uppercase form for anything outside it. See orb_text_case.h.
+    bool     upper  = false;
     int      x         = 233;
     int      y         = 233;
     // From the compiled ladder in lv_conf.h only. LVGL fonts are glyph bitmaps, not

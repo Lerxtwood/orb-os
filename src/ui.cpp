@@ -2,6 +2,7 @@
 // Pure LVGL, portable. Taps hit-test via radar::hitTest; selection lives in radar.
 #include "ui.h"
 #include "theme_style.h"
+#include "orb_text_case.h"   // ALL CAPS on a finished line, THEME_CAPS 53
 #include "plate_sprite.h"
 #ifndef ARDUINO
 // The weather map's text canvas is allocated with the PSRAM allocator, which the simulator
@@ -600,6 +601,8 @@ static void wx_text_refresh(void) {
         char buf[96];
         text_tokens::expand(buf, sizeof(buf), t.fmt, toks, nToks);
         if (!buf[0]) continue;
+        // After the tokens, so {temp} and {cond} are caps too. THEME_CAPS 53.
+        if (t.upper) orb_upper(buf);
         const lv_font_t *font = theme_font::weather_text(i);
         if (t.curved) {
             // The SCREEN centre, like every other curved line on the device.

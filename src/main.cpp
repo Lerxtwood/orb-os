@@ -1283,6 +1283,45 @@ static bool ip_lookup_location(double &lat, double &lon) {
     return true;
 }
 
+// A position from Orb Studio, over the cable. UX-025 says the Orb has two location inputs,
+// the network it joins and a place the owner picks; this is the second one, picked on the
+// computer that is already plugged in rather than typed a letter at a time on the dial.
+//
+// It exists because IP geolocation is only as good as the ISP. It put one builder fifty
+// kilometres away in the wrong county, watching London's traffic from Herefordshire, and
+// CanadianAvenger's old ISP would have put him in Montreal while he sat in Toronto. A
+// browser can do far better: it has WiFi positioning, and it knows its own timezone, which
+// the IP lookup only ever guessed at from the same wrong place.
+//
+// NO RESTART, unlike Settings > Location, and that is the point of doing it here. Somebody
+// is standing in Studio with a cable in their hand; taking the device out of service would
+// drop the serial session they are using and leave the page hunting for an Orb that is
+// rebooting. persist_location() and apply_location_live() exist precisely so a location can
+// be applied without a restart, and the boot-time lookup already uses them that way.
+void host_set_location_from_studio(const char *name, double lat, double lon,
+                                   long tzOffsetSec, bool haveTz) {
+    if (name && name[0]) host_recents_add(name, lat, lon);
+    // The browser's own timezone, which beats the IP lookup's guess for the same reason the
+    // position does. Stored the same way and in the same format; the clock reads local from
+    // the next second, with no restart, because tzset() is all that stands behind it.
+    if (haveTz && tzOffsetSec >= -50400 && tzOffsetSec <= 50400) {
+        char tz[24];
+        posix_tz_from_offset(tzOffsetSec, tz, sizeof(tz));
+        g_tz = tz;
+        Preferences p;
+        p.begin("capsuleradar", false);
+        p.putString("tz", tz);
+        p.end();
+        setenv("TZ", g_tz.c_str(), 1);
+        tzset();
+        Serial.printf("[studio] tz offset %lds -> %s\n", tzOffsetSec, tz);
+    }
+    persist_location(lat, lon);
+    apply_location_live(lat, lon);
+    Serial.printf("[studio] location set to %.5f,%.5f%s%s\n", lat, lon,
+                  (name && name[0]) ? " " : "", (name && name[0]) ? name : "");
+}
+
 // Settings > Location > Current, and the tail of first-boot WiFi setup. Somebody asked for
 // this, so applying it by restarting is honest and is announced by the countdown inside
 // host_set_location(). Returns false only if the lookup failed, in which case it has not

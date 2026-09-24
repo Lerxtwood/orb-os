@@ -323,6 +323,7 @@ void merge_text(JsonVariantConst j, ClockText &t) {
     if (j["glow"].is<int>()) t.glow = j["glow"].as<int>();
     if (j["glowColor"].is<uint32_t>()) t.glowColor = j["glowColor"].as<uint32_t>();
     if (j["fmt"].is<const char *>()) snprintf(t.fmt, sizeof(t.fmt), "%s", j["fmt"].as<const char *>());
+    if (j["upper"].is<bool>()) t.upper = j["upper"].as<bool>();   // THEME_CAPS 53
     parse_pill(j, t);
     if (j["curved"].is<bool>()) t.curved = j["curved"].as<bool>();
     if (j["curveR"].is<int>()) t.curveR = j["curveR"].as<int>();
@@ -396,6 +397,7 @@ void merge_rtext(JsonVariantConst j, RadarText &t) {
     if (j["glow"].is<int>()) t.glow = j["glow"].as<int>();
     if (j["glowColor"].is<uint32_t>()) t.glowColor = j["glowColor"].as<uint32_t>();
     if (j["fmt"].is<const char *>()) snprintf(t.fmt, sizeof(t.fmt), "%s", j["fmt"].as<const char *>());
+    if (j["upper"].is<bool>()) t.upper = j["upper"].as<bool>();   // THEME_CAPS 53
     parse_pill(j, t);
     if (j["curved"].is<bool>()) t.curved = j["curved"].as<bool>();
     if (j["curveR"].is<int>()) t.curveR = j["curveR"].as<int>();
@@ -433,6 +435,8 @@ void merge_menu_text(JsonVariantConst j, MenuText &t) {
     if (j["glow"].is<int>()) t.glow = j["glow"].as<int>();
     if (j["glowColor"].is<uint32_t>()) t.glowColor = j["glowColor"].as<uint32_t>();
     if (j["fmt"].is<const char *>()) snprintf(t.fmt, sizeof(t.fmt), "%s", j["fmt"].as<const char *>());
+    // The menu's lines have no plate, so they miss parse_pill and read this themselves.
+    if (j["upper"].is<bool>()) t.upper = j["upper"].as<bool>();
     if (j["align"].is<int>()) t.align = j["align"].as<int>();
     if (j["wrapWidth"].is<int>()) t.wrapWidth = j["wrapWidth"].as<int>();
     if (j["lineGap"].is<int>()) t.lineGap = j["lineGap"].as<int>();
@@ -479,6 +483,7 @@ void load() {
             if (doc["windCrankPY"].is<int>())        s_clock.windCrankPY   = doc["windCrankPY"].as<int>();
             if (doc["windCrankRest"].is<int>())      s_clock.windCrankRest = doc["windCrankRest"].as<int>();
             if (doc["secondSweep"].is<bool>())       s_clock.secondSweep = doc["secondSweep"].as<bool>();
+            if (doc["secondRailway"].is<bool>())     s_clock.secondRailway = doc["secondRailway"].as<bool>();
             if (doc["windTitleOpa"].is<int>())       s_clock.windTitleOpa  = doc["windTitleOpa"].as<int>();
             if (doc["windAskOpa"].is<int>())         s_clock.windAskOpa    = doc["windAskOpa"].as<int>();
             if (doc["windTurnsOpa"].is<int>())       s_clock.windTurnsOpa  = doc["windTurnsOpa"].as<int>();
@@ -857,6 +862,7 @@ void load() {
                     const int a = v["align"].as<int>();
                     t.align = a < 0 ? 0 : (a > 2 ? 2 : a);
                 }
+                if (v["upper"].is<bool>()) t.upper = v["upper"].as<bool>();   // THEME_CAPS 53
                 parse_pill(v, t);
                 if (v["curved"].is<bool>())  t.curved = v["curved"].as<bool>();
                 if (v["curveR"].is<int>())   t.curveR = v["curveR"].as<int>();

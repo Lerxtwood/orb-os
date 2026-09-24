@@ -53,12 +53,43 @@ done
 BOOT0=$(find "$HOME/.platformio/packages" -name boot_app0.bin 2>/dev/null | head -1)
 [ -n "$BOOT0" ] && cp "$BOOT0" "$STUDIO/boot_app0.bin"
 
+# WHAT CHANGED, for the person about to press Flash. Lifted out of RELEASE_NOTES.md rather
+# than written here or pulled from git: commit subjects are written for whoever reads the
+# history, and the question on that card is "what do I get if I press this". Zion asked for
+# these beside the button on 2026-09-24, "for people who want an understanding of what
+# changed".
+#
+# Refused when the section is missing, the same way this script refuses a version that was
+# not bumped. An update nobody can read about is one people put off, and the moment this is
+# optional is the moment it is skipped on the release that most needed it.
+# Each "- " bullet becomes one line, with wrapped continuations folded back onto it.
+NOTES=$(awk -v v="## $VERSION" '
+  $0 == v { on = 1; next }
+  on && /^## / { exit }
+  !on { next }
+  /^- / { if (line != "") print line; sub(/^- /, ""); line = $0; next }
+  /^[[:space:]]+[^[:space:]]/ && line != "" { sub(/^[[:space:]]+/, ""); line = line " " $0; next }
+  END { if (line != "") print line }
+' RELEASE_NOTES.md)
+if [ -z "$NOTES" ]; then
+  echo "REFUSING TO PUBLISH: RELEASE_NOTES.md has no '## $VERSION' section." >&2
+  echo >&2
+  echo "  Studio prints that section beside the Flash button, so an update with none is one" >&2
+  echo "  nobody can read about before installing it. Add a few lines and run this again." >&2
+  exit 1
+fi
+# One JSON string per line, escaped for quotes and backslashes.
+NOTES_JSON=$(printf '%s\n' "$NOTES" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/^/    "/' -e 's/$/",/' | sed '$ s/,$//')
+
 cat > "$STUDIO/manifest.json" <<JSON
 {
   "version": "$VERSION",
   "caps": $CAPS,
   "built": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "bytes": $(stat -f%z "$STUDIO/firmware.bin" 2>/dev/null || stat -c%s "$STUDIO/firmware.bin")
+  "bytes": $(stat -f%z "$STUDIO/firmware.bin" 2>/dev/null || stat -c%s "$STUDIO/firmware.bin"),
+  "notes": [
+$NOTES_JSON
+  ]
 }
 JSON
 
