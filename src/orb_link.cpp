@@ -503,11 +503,14 @@ void cmd_wifirestore() {
 void cmd_mem() {
     multi_heap_info_t hi;
     heap_caps_get_info(&hi, MALLOC_CAP_INTERNAL);
+    multi_heap_info_t ps;
+    heap_caps_get_info(&ps, MALLOC_CAP_SPIRAM);
     out_reset();
-    out_fmt("{\"ok\":true,\"free\":%u,\"largest\":%u,\"freeBlocks\":%u,\"allocBlocks\":%u,\"psramFree\":%u}",
+    out_fmt("{\"ok\":true,\"free\":%u,\"largest\":%u,\"freeBlocks\":%u,\"allocBlocks\":%u,\"psramFree\":%u,\"psramLargest\":%u,\"psramFreeBlocks\":%u}",
             (unsigned)hi.total_free_bytes, (unsigned)hi.largest_free_block,
             (unsigned)hi.free_blocks, (unsigned)hi.allocated_blocks,
-            (unsigned)ESP.getFreePsram());
+            (unsigned)ps.total_free_bytes, (unsigned)ps.largest_free_block,
+            (unsigned)ps.free_blocks);
     out_send();
 }
 

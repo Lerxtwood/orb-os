@@ -129,7 +129,7 @@ void route_store(const char *callsign, const char *from, const char *to, uint32_
     ascii_fold(from, entry->from, sizeof(entry->from));
     ascii_fold(to, entry->to, sizeof(entry->to));
     // Do not retry an unavailable route on every frame, or retain it forever.
-    entry->expiresMs = now + (entry->from[0] && entry->to[0] ? ttlMs : 60000ULL);
+    entry->expiresMs = now + (entry->from[0] && entry->to[0] ? ttlMs : DETAIL_CACHE_MISS_TTL_MS);
     entry->used = ++s_used;
 }
 

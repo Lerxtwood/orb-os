@@ -64,3 +64,8 @@ geocoding query encoding, and upstream's comma-key support. It also follows upst
 in removing the railway-stop option: sweeping seconds now advance continuously,
 and legacy secondRailway theme settings are ignored. The clock-read fallback remains
 initialized if conversion fails. No partition or PrintSphere changes are involved.
+
+
+Flash command for combined firmware:
+
+.\.pio\build-venv\Scripts\python.exe tools/companion/flash.py update-orb --port COM5

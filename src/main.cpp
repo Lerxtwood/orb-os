@@ -614,8 +614,8 @@ static void adsb_task(void*) {
                     Serial.printf("[route] %s: no route\n", wantCall);
                 }
             }
-            char wantHex[10];
-            if (photo_pending(wantHex, sizeof(wantHex))) photo_fetch(wantHex);
+            char wantHex[10], wantType[12];
+            if (photo_pending(wantHex, sizeof(wantHex), wantType, sizeof(wantType))) photo_fetch(wantHex, wantType);
         }
         vTaskDelay(pdMS_TO_TICKS(250));
     }
