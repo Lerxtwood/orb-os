@@ -1,0 +1,49 @@
+# What changed
+
+One section per released version, newest first, written for the person holding the Orb
+rather than for whoever wrote the code. `tools/publish-firmware.sh` lifts the section
+matching `FW_VERSION` into `manifest.json`, and Orb Studio prints it beside the Flash
+button, so somebody deciding whether to update can read what they would be getting.
+
+It refuses to publish a version with no section here, for the same reason it refuses a
+version that was not bumped: an update nobody can read about is one people put off.
+
+Rules for a section, all of them learned from what reads badly on that card:
+
+- Say what it does for them, not what was edited. "The clock keeps the time it has" beats
+  "fixed getLocalTime timeout handling".
+- One line per change, no more than about four lines, no full stops needed at the end.
+- Name the person who found it when somebody did. It is their fix as much as anybody's.
+- No version numbers, no file names, no capability levels. The card already shows those.
+
+---
+
+## 2.16.27
+
+- Orb Studio can now tell your Orb where it is, using the computer it is plugged into. Your
+  laptop knows the spot better than your internet connection does, and it knows your time
+  zone too. Asked for by clock and CanadianAvenger
+- The city search keyboard has a comma, so "LEEDS, UT" finds Leeds in Utah rather than four
+  other Leeds. Lerxtwood's own fix
+
+## 2.16.26
+
+- The clock keeps the time it has. Hands were snapping to twelve for a moment at random, on
+  every theme, and a digital face would blank for about a second. Found by Lerxtwood,
+  CanadianAvenger and Drewzy between them
+- The Swiss railway stop is gone. It was never the cause of the above, but it was one day
+  old and not worth the confusion. A second hand now always shows the second it is
+
+## 2.16.25
+
+- A second hand could pause at twelve the way a Swiss station clock does. Removed again in
+  2.16.26
+
+## 2.16.24
+
+- Text on the clock no longer has a faint seam across its background. Found by canoejohn
+
+## 2.16.23
+
+- Orb Studio can now say which of a theme's typefaces actually loaded, so a theme drawing
+  the wrong font can be diagnosed rather than guessed at. Found by canoejohn
