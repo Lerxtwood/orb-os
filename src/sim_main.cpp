@@ -1229,6 +1229,22 @@ int main(int argc, char **argv) {
                                      : (!iCap1 && iTurnOk && !iCap2);
         printf("[selftest] Intel scroll: %s\n", iOk ? "PASS" : "FAIL");
 
+        // ---- the clock reads the time honestly ---------------------------------------
+        //
+        // 2026-09-23. Lerxtwood and Drewzy saw the hands snap to twelve for a frame, at
+        // random, on themes that had never heard of the Swiss Railway dial, and read it as
+        // that theme's stop leaking into theirs. The cause was underneath: Arduino's
+        // getLocalTime(ti, 0) answers false WITHOUT READING THE CLOCK when the millisecond
+        // counter ticks between its two millis() calls, and this screen took that false to
+        // mean the time was not set yet. A thousand reads is about forty seconds of a
+        // sweeping clock, and every one of them has to come back with the time.
+        {
+            unsigned lost = 0;
+            for (int i = 0; i < 1000; ++i) if (!clockview::faceHasTime()) ++lost;
+            printf("[selftest] clock read: %u of 1000 reads lost the time (expect 0)\n", lost);
+            printf("[selftest] the clock keeps the time it has: %s\n", lost == 0 ? "PASS" : "FAIL");
+        }
+
         SDL_Quit();
         return 0;
     }

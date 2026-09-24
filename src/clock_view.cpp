@@ -43,19 +43,16 @@ static void  heap_caps_free(void *p) { free(p); }
 // read correctly, so that is what this draws: the dial, the hands at 12:00 with the seconds
 // running, and no date, because a date would be an invented one. The real time replaces it
 // on the tick after it arrives.
+#include "orb_time.h"   // one honest read of the wall clock; NOT Arduino's retrying getLocalTime
+
 static bool s_noTime = false;
 
+// Reads the clock ONCE, through orb_local_time(). It used to call Arduino's
+// getLocalTime(ti, 0), which returns false without reading anything at all if the
+// millisecond counter ticks between its two adjacent millis() calls; orb_time.h has the
+// whole story. That false is what put the hands at twelve for a frame on every theme.
 static void time_for_face(struct tm *ti) {
-    // getLocalTime(ti, 0) can skip its read when millis() advances between its
-    // timeout checks. Read once directly, without waiting or retrying, and use
-    // the same valid-year threshold as Arduino.
-    const time_t now = time(nullptr);
-    *ti = {};
-    bool valid = localtime_r(&now, ti) != nullptr && ti->tm_year > (2016 - 1900);
-#ifndef ARDUINO
-    if (getenv("SIM_NO_TIME")) valid = false;  // simulator's unset-clock preview
-#endif
-    if (valid) { s_noTime = false; return; }
+    if (orb_local_time(ti)) { s_noTime = false; return; }
     ti->tm_hour = 0; ti->tm_min = 0;   // tm_sec keeps running from the system clock
     s_noTime = true;
 }
@@ -1637,6 +1634,9 @@ static void tick_cb(lv_timer_t * /*t*/) {
 // Redraw now, whatever the second says. For coming back from a screen that covered this one
 // for a while: the canvas still holds the face as it was when the cover went up, so without
 // this the clock shows the wrong time for up to a second after it reappears.
+// A read-only window for the self-test: whether the last read of the clock was believed.
+bool clockview::faceHasTime() { struct tm ti; time_for_face(&ti); return !s_noTime; }
+
 void clockview::setSweep(int mode) {
     s_forceSweep = mode;
     s_underMin = -1; s_underHr = -1; s_prevSecValid = false;

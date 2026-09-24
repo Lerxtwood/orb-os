@@ -34,6 +34,7 @@
 #include "orb_link.h"
 #include "theme_pull.h"      // USB serial command channel: how a browser (Orb Studio) talks to this device
 #include "custom_weld.h"   // CUSTOM_WELD_HASH — lets a push tell whether new firmware is needed
+#include "orb_time.h"      // one honest read of the wall clock; NOT Arduino's retrying getLocalTime
 #include "theme_style.h"   // per-theme app roster (theme_style::apps())
 #include "clock_wind.h"    // the clock's virtual mainspring, THEME_CAPS 37
 #include "wind_notice.h"   // ...and the panel that asks for it
@@ -1318,8 +1319,15 @@ static void host_locate_if_unset() {
 // maxN matches for the query; returns the count. Runs synchronously (~1s).
 int host_geocode(const char *query, char names[][40], double *lats, double *lons, int maxN) {
     if (WiFi.status() != WL_CONNECTED || !query || strlen(query) < 2) return 0;
+    // Percent-encode anything that is not plainly safe in a query value. It used to encode
+    // the space and pass everything else through, which was fine until the search keyboard
+    // gained a comma (settings_view.cpp) and "Leeds, UT" started arriving here.
     String q;
-    for (const char *p = query; *p; ++p) q += (*p == ' ') ? String("%20") : String(*p);
+    for (const char *p = query; *p; ++p) {
+        const unsigned char c = (unsigned char)*p;
+        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') q += (char)c;
+        else { char esc[4]; snprintf(esc, sizeof(esc), "%%%02X", c); q += esc; }
+    }
     // Plain HTTP for the same memory reason as the ADS-B and weather feeds; see the
     // ADSB_PRIMARY_TLS notes in config.h. This is a place-name lookup with no credentials.
     String url = "http://geocoding-api.open-meteo.com/v1/search?name=" + q +
@@ -3359,7 +3367,10 @@ void loop() {
 #endif
         char clk[8] = "--:--";
         struct tm ti;
-        const bool haveTime = getLocalTime(&ti, 0);
+        // orb_local_time, not getLocalTime(&ti, 0): that one can answer false without
+        // reading the clock at all (orb_time.h). Here it made the header time blink to
+        // --:-- and could hand the hourly chime a bogus hour.
+        const bool haveTime = orb_local_time(&ti);
         if (haveTime) {
             snprintf(clk, sizeof(clk), "%02d:%02d", ti.tm_hour, ti.tm_min);
             char date[20];

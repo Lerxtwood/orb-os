@@ -215,7 +215,18 @@ namespace {
 
     constexpr int RECENTS_MAX = 8;
 
-    // Search keyboard: letters + comma (city, state) + '<' (backspace) + '_' (space)
+    // Search keyboard: 26 letters, a comma, '<' (backspace) and '_' (space).
+    //
+    // The comma is how you say WHICH Leeds. The geocoder answers "Leeds, UT" with exactly
+    // one place and "Leeds UT" with none, and a bare "Leeds" puts Leeds, Utah fifth on a
+    // list this screen only has room to show four of, so it could not be reached at all.
+    // Lerxtwood hit that looking for his own town, forked the firmware and added this key
+    // himself (2026-09-23): "Worked like a charm." The other half of his report, scrolling
+    // past the first four matches, would mean rebuilding this panel; a comma costs one
+    // character and answers the same question.
+    //
+    // Counted rather than stated. It was a hand-written 28 sitting two lines under the
+    // string it counts, which is a number that goes wrong the first time somebody adds a key.
     const char KEYS[]   = "ABCDEFGHIJKLMNOPQRSTUVWXYZ,<_";
     const int  N_KEYS   = (int)(sizeof(KEYS) - 1);
 
