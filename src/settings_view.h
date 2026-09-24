@@ -25,6 +25,16 @@ namespace settingsview {
     // For the simulator's self-test, which asserts that the rows draw their names.
     const char *designRowText(int i);
 
+    // THE CITY SEARCH KEYBOARD, for the self-test, and for nothing else.
+    //
+    // searchKeys() is the strip of characters the ring offers, and searchType(c) presses
+    // the one whose character is `c` and returns what the search box then holds. Together
+    // they let the test press every key and read the answer, which is what would have
+    // caught the comma landing on the backspace in 2.16.27: the keys were dispatched by
+    // POSITION, so one new character moved every special key one place along.
+    const char *searchKeys();
+    const char *searchType(char c);
+
     // How to reach the web config page (IP / hostname / setup AP). Shown on the About
     // page alongside the firmware version. Both moved here from the old touch-only
     // Stats screen. Safe to call every loop: it only redraws while About is open.

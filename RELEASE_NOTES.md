@@ -18,6 +18,12 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.29
+
+- City search keys do their own jobs again. Yesterday's comma landed one place along from
+  where the keyboard expected it, so pressing comma backspaced, backspace typed a space, and
+  space did nothing. Found by Lerxtwood the same day he got the comma he asked for
+
 ## 2.16.28
 
 - ALL CAPS is now a switch on every line of text a theme draws: both clock banners, the

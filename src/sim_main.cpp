@@ -1258,6 +1258,40 @@ int main(int argc, char **argv) {
                    (lost == 0 && linear) ? "PASS" : "FAIL");
         }
 
+        // ---- every key on the city search keyboard does its own job ------------------
+        //
+        // 2.16.27 added a comma to that keyboard and the press handler branched on the
+        // INDEX of the key rather than on the character, so one new entry moved every
+        // special key one place along: the comma backspaced, backspace typed a space, and
+        // space did nothing at all. Lerxtwood found it within a day, having asked for the
+        // comma in the first place. Pressing each key and reading the box back is the test
+        // that would have caught it, and it is cheap.
+        {
+            const char *keys = settingsview::searchKeys();
+            settingsview::searchType('<');                    // empty box, clear anything left over
+            bool ok = true;
+            // Every printing key puts ITSELF in the box.
+            for (const char *k = keys; *k; ++k) {
+                if (*k == '<' || *k == '_') continue;
+                const char *box = settingsview::searchType(*k);
+                const size_t n = strlen(box);
+                if (n == 0 || box[n - 1] != *k) {
+                    printf("[selftest] key '%c' typed \"%s\" (expected it to end in '%c')\n", *k, box, *k);
+                    ok = false;
+                }
+            }
+            const size_t full = strlen(settingsview::searchKeys()) - 2;   // every key but < and _
+            const char *afterBack = settingsview::searchType('<');
+            const bool backOk = strlen(afterBack) == full - 1;
+            const char *afterSpace = settingsview::searchType('_');
+            const size_t sl = strlen(afterSpace);
+            const bool spaceOk = sl == full && afterSpace[sl - 1] == ' ';
+            printf("[selftest] search keys: every character types itself=%s, backspace removes one=%s,"
+                   " space types a space=%s\n", ok ? "yes" : "no", backOk ? "yes" : "no", spaceOk ? "yes" : "no");
+            printf("[selftest] the city search keyboard: %s\n",
+                   (ok && backOk && spaceOk) ? "PASS" : "FAIL");
+        }
+
         SDL_Quit();
         return 0;
     }
