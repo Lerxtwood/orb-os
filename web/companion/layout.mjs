@@ -74,21 +74,27 @@ export function validateCache(bytes) {
   require(magic === 0x4F524254 && data.getUint32(4, true) === 6, 'Unrecognized Orb theme cache. Nothing was changed.');
   const count = data.getUint32(8, true), used = data.getUint32(12, true);
   require(count <= 127 && used + 8192 <= 0x480000,
-    'Your cached themes need more space than this layout allows. Use the local migration tools before installing.');
+    'Your cached themes need more space than this layout allows. Select Rebuild theme cache to continue.');
   for (let n = 0; n < count; n++) {
     const position = 16 + n * 64, offset = data.getUint32(position + 44, true), length = data.getUint32(position + 48, true);
     require(offset >= 8192 && offset + length <= 0x480000, 'A cached theme would be truncated. Nothing was changed.');
   }
 }
-export function flashPlan(layout, files) {
+export function flashPlan(layout, files, rebuildCache = false) {
   require(['companion', 'orb', 'blank'].includes(layout), 'Unsupported existing firmware. Nothing was changed.');
   const appNames = ['Orb-companion.bin', 'PrintSphere-companion.bin'];
-  if (layout === 'companion') return appNames.map(name => ({address: PARTS[name][0], data: files[name], name}));
+  const cacheReset = {address: 0x650000, data: new Uint8Array(8192).fill(255), name: 'Rebuild theme cache'};
+  if (layout === 'companion') {
+    const plan = appNames.map(name => ({address: PARTS[name][0], data: files[name], name}));
+    if (rebuildCache) plan.push(cacheReset);
+    return plan;
+  }
   // Separate writes leave Orb NVS and themeart untouched. No full-chip erase.
   const names = ['orb-bootloader.bin', ...appNames];
   const result = names.map(name => ({address: PARTS[name][0], data: files[name], name}));
   result.push({address: 0xE000, data: new Uint8Array(8192).fill(255), name: 'Start in Orb'});
   result.push({address: 0xED0000, data: new Uint8Array(0x120000).fill(255), name: 'Initialize PrintSphere settings'});
+  if (rebuildCache && layout === 'orb') result.push(cacheReset);
   // Commit the new layout last, after all images are present.
   result.push({address: 0x8000, data: files['orb-partitions.bin'], name: 'Activate companion layout'});
   return result;

@@ -26,8 +26,10 @@
       <p id="status" role="status" aria-live="polite">Loading available GitHub releases…</p>
       <div id="ready" hidden>
         <p id="plan"></p>
-        <button id="backup" class="secondary" hidden>Save recovery backup</button>
-        <p id="backup-note" class="note" hidden>Your backup includes WiFi and device settings. It stays on your computer.</p>
+        <div id="cache-option" hidden>
+          <label class="check-option"><input id="rebuild-cache" type="checkbox" aria-describedby="cache-note"> Rebuild theme cache</label>
+          <p id="cache-note" class="note">Clear cached artwork and rebuild it from your SD-card theme files on the next boot. Keep the SD card inserted. Saved settings and theme files are kept; the first boot may take longer.</p>
+        </div>
         <button id="install" disabled>Install both firmwares</button>
       </div>
       <progress id="progress" max="100" value="0" aria-label="Installation progress" hidden></progress>
@@ -37,7 +39,7 @@
     <section class="after" aria-labelledby="after-title">
       <div class="section-title"><span class="step">02</span><h2 id="after-title">Make yourself at home</h2></div>
       <div class="cards"><article><h3>Orb stays familiar</h3><p>Your web configuration and Orb Studio theme uploads work as before while Orb is running.</p></article><article><h3>Printer, one press away</h3><p>Choose <strong>Printer</strong> in Orb and press to open PrintSphere. Jig the dial in PrintSphere, then press <strong>Return to Orb</strong>. The first release, v2.16.26, uses an Orb touch button.</p></article></div>
-      <p class="note">Standalone Orb migration keeps saved settings and SD themes. The artwork cache becomes 4.5 MB; migration stops if your current cache will not fit. Other firmware layouts are not modified.</p>
+      <p class="note">Standalone Orb migration keeps saved settings and SD themes. The artwork cache becomes 4.5 MB; select Rebuild theme cache if your current cache will not fit. No firmware backup is created. Other firmware layouts are not modified.</p>
     </section>
     <footer><span>Built for your Orb.</span><a href="https://github.com/Lerxtwood/orb-os/releases">Release notes & downloads ↗</a></footer>
   </main>

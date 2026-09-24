@@ -114,8 +114,9 @@ jobs:
 
             The installer downloads both firmwares from this release, checks the connected
             device, and preserves settings and themes when updating an existing companion
-            installation. Standalone Orb migration saves a recovery backup and checks
-            available theme-cache space first. Other layouts are not modified.
+            installation. Standalone Orb migration checks available theme-cache space first
+            and offers an optional rebuild from SD theme files. No firmware backup is
+            required. Other layouts are not modified.
 
             Choose **Printer** in Orb and press to open PrintSphere. Jig the dial in
             PrintSphere to open **Return to Orb**, then press the dial to confirm.

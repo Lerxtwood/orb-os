@@ -1,6 +1,6 @@
 import {FLASH_SIZE, require, identifyLayout, validateRelease, validateImage, validateCache, flashPlan} from './layout.mjs';
 const $ = id => document.getElementById(id);
-let releases = [], loader, transport, layout, backup, backupSaved = false, busy = false;
+let releases = [], loader, transport, layout, settingsHash, cacheError = '', busy = false;
 const log = message => { $('log').textContent = ($('log').textContent + message + '\n').slice(-14000); };
 function status(message, error = false) { $('status').textContent = message; $('status').classList.toggle('error', error); }
 function progress(value) { $('progress').hidden = false; $('progress').value = value; }
@@ -9,8 +9,8 @@ function lock(value) {
   $('connect').disabled = value || !!loader || !releases.length || !('serial' in navigator);
   $('release').disabled = value || !!loader || !releases.length;
   $('disconnect').disabled = value;
-  $('install').disabled = value || !layout || (layout !== 'companion' && !backupSaved);
-  $('backup').disabled = value;
+  $('install').disabled = value || !layout || (!!cacheError && !$('rebuild-cache').checked);
+  $('rebuild-cache').disabled = value;
 }
 const md5 = bytes => SparkMD5.ArrayBuffer.hash(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
 async function readVerified(address, size) {
@@ -43,8 +43,9 @@ async function downloadRelease() {
 async function disconnect(reset = true) {
   if (loader && reset) { try { await loader.after('hard_reset'); } catch (error) { log(error.message); } }
   if (transport) { try { await transport.disconnect(); } catch (error) { log(error.message); } }
-  loader = transport = layout = backup = undefined;
-  backupSaved = false;
+  loader = transport = layout = settingsHash = undefined;
+  cacheError = '';
+  $('rebuild-cache').checked = false;
   $('ready').hidden = $('disconnect').hidden = true;
   lock(false);
 }
@@ -63,40 +64,46 @@ $('connect').addEventListener('click', async () => {
       'This installer requires the 16 MB ESP32-S3 AMOLED 1.75 device.');
     layout = identifyLayout(await readVerified(0x8000, 4096));
     require(layout !== 'unknown', 'This device has another firmware layout. Use its recovery tools before installing Orb Companion. Nothing was changed.');
-    if (layout !== 'companion') {
-      if (layout === 'orb') validateCache(await readVerified(0x650000, 8192));
-      status('Reading your recovery backup. Keep the cable connected…');
-      backup = new Uint8Array(FLASH_SIZE);
-      // Bound readFlash's internal buffer copying for a full 16 MB backup.
+    cacheError = '';
+    $('rebuild-cache').checked = false;
+    $('cache-option').hidden = layout === 'blank';
+    if (layout === 'orb') {
+      const cache = await readVerified(0x650000, 8192);
+      try { validateCache(cache); }
+      catch (error) { cacheError = error.message; }
+    }
+    if (layout === 'blank') {
+      // An erased partition table alone does not establish that the device is empty.
+      // Check in bounded chunks without retaining or downloading a firmware backup.
+      status('Checking that the device is empty...');
       for (let address = 0; address < FLASH_SIZE; address += 0x40000) {
-        backup.set(await readVerified(address, 0x40000), address);
+        require((await readVerified(address, 0x40000)).every(b => b === 255),
+          'Unrecognized data on this device. Nothing was changed.');
         progress(100 * (address + 0x40000) / FLASH_SIZE);
       }
-      if (layout === 'blank') require(backup.every(b => b === 255), 'Unrecognized data on this device. Nothing was changed.');
-      $('backup').hidden = $('backup-note').hidden = false;
-      $('plan').textContent = layout === 'orb'
-        ? 'Ready to add PrintSphere. Your Orb settings, SD themes and cached artwork will be kept. Save the recovery backup to continue.'
-        : 'Ready for a first installation of Orb and PrintSphere. Save the recovery backup to continue.';
-      $('install').textContent = 'Install both firmwares';
-    } else {
-      $('backup').hidden = $('backup-note').hidden = true;
-      $('plan').textContent = 'Orb + PrintSphere detected. This updates both firmwares and keeps your settings, themes and selected startup firmware.';
-      $('install').textContent = 'Update both firmwares';
     }
+    $('install').textContent = layout === 'companion' ? 'Update both firmwares' : 'Install both firmwares';
+    updatePlan();
     $('ready').hidden = $('disconnect').hidden = false;
     $('progress').hidden = true;
-    status('Device checked. Ready when you are.');
+    status(cacheError ? cacheError : 'Device checked. Ready when you are.', !!cacheError);
   } catch (error) {
     await disconnect();
     status(error.name === 'NotFoundError' ? 'No device selected. Connect when you are ready.' : error.message, true);
   } finally { lock(false); }
 });
-$('backup').addEventListener('click', () => {
-  const url = URL.createObjectURL(new Blob([backup], {type: 'application/octet-stream'}));
-  const link = document.createElement('a');
-  link.href = url; link.download = 'orb-recovery-' + new Date().toISOString().replaceAll(':', '-') + '.bin';
-  link.click(); setTimeout(() => URL.revokeObjectURL(url), 60000);
-  backupSaved = true; $('backup').textContent = 'Save backup again'; lock(false);
+function updatePlan() {
+  const rebuild = $('rebuild-cache').checked;
+  $('plan').textContent = layout === 'blank'
+    ? 'Ready for a first installation of Orb and PrintSphere.'
+    : (layout === 'companion' ? 'Ready to update both firmwares. ' : 'Ready to add PrintSphere. ') +
+      (rebuild ? 'Your settings and SD themes will be kept. Cached artwork will be rebuilt on the next boot.'
+               : 'Your settings, SD themes and cached artwork will be kept.');
+}
+$('rebuild-cache').addEventListener('change', () => {
+  updatePlan(); lock(false);
+  status(cacheError && !$('rebuild-cache').checked ? cacheError : 'Device checked. Ready when you are.',
+    !!cacheError && !$('rebuild-cache').checked);
 });
 $('disconnect').addEventListener('click', async () => { lock(true); await disconnect(); status('Disconnected. Your device is restarting.'); });
 $('install').addEventListener('click', async () => {
@@ -105,23 +112,26 @@ $('install').addEventListener('click', async () => {
   try {
     const files = await downloadRelease();
     require(identifyLayout(await readVerified(0x8000, 4096)) === layout, 'Device layout changed. Reconnect before installing.');
-    const plan = flashPlan(layout, files);
+    const rebuild = $('rebuild-cache').checked;
+    if (layout === 'orb' && !rebuild) validateCache(await readVerified(0x650000, 8192));
+    if (layout !== 'blank') settingsHash = md5(await readVerified(0x9000, 0x5000));
+    const plan = flashPlan(layout, files, rebuild);
     status('Installing both firmwares. Keep this page open and the cable connected…');
     wrote = true;
     await loader.writeFlash({fileArray: plan, flashSize: 'keep', flashMode: 'keep', flashFreq: 'keep',
       eraseAll: false, compress: true, calculateMD5Hash: md5,
       reportProgress: (file, done, total) => progress(100 * (file + done / total) / plan.length)});
     // Check private storage survived an in-place migration before rebooting.
-    if (layout === 'orb') {
-      require(md5(await readVerified(0x9000, 0x5000)) === md5(backup.slice(0x9000, 0xE000)), 'Orb settings verification failed. Keep your recovery backup.');
+    if (layout !== 'blank') {
+      require(md5(await readVerified(0x9000, 0x5000)) === settingsHash, 'Orb settings verification failed.');
     }
     await disconnect();
     progress(100);
     status('Installation complete and verified. Your device is restarting.');
   } catch (error) {
-    // Do not boot a partially written image. Reconnect and retry or restore backup.
+    // Do not boot a partially written image. Reconnect and retry.
     await disconnect(!wrote);
-    status(error.message + (wrote ? ' Installation did not finish. Reconnect and retry; keep your recovery backup.' : ' Nothing was written.'), true);
+    status(error.message + (wrote ? ' Installation did not finish. Reconnect and retry.' : ' Nothing was written.'), true);
   } finally { lock(false); }
 });
 window.addEventListener('beforeunload', event => { if (busy) { event.preventDefault(); event.returnValue = ''; } });

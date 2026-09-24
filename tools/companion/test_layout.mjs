@@ -50,3 +50,87 @@ test('migration rejects overfull caches and entries crossing the retained bounda
   v.setUint32(8,1,true); v.setUint32(16+44,0x47F000,true); v.setUint32(16+48,8192,true);
   assert.throws(()=>validateCache(bytes));
 });
+
+
+test('opt-in rebuild clears only the cache index and commits migration layout last', () => {
+  for (const layout of ['orb', 'companion']) {
+    const plan = flashPlan(layout, files, true);
+    const reset = plan.filter(p => p.address === 0x650000);
+    assert.equal(reset.length, 1);
+    assert.equal(reset[0].data.length, 8192);
+    assert.ok(reset[0].data.every(b => b === 255));
+    for (const p of plan) assert.ok(p.address + p.data.length <= 0x9000 || p.address >= 0xE000);
+    if (layout === 'orb') assert.equal(plan.at(-1).address, 0x8000);
+    else assert.deepEqual(plan.map(p => p.address), [0x10000, 0xAD0000, 0x650000]);
+  }
+  assert.deepEqual(flashPlan('blank', files, true), flashPlan('blank', files));
+  validateCache(new Uint8Array(8192).fill(255));
+  assert.throws(() => flashPlan('unknown', files, true));
+});
+
+
+test('installer migration needs no backup and gates an oversized cache on explicit consent', async () => {
+  const {readFile} = await import('node:fs/promises');
+  const vm = await import('node:vm');
+  const source = (await readFile(new URL('../../web/companion/installer.mjs', import.meta.url), 'utf8'))
+    .replace(/^import .*?;\s*/, '')
+    .replace("await import('https://cdn.jsdelivr.net/npm/esptool-js@0.7.0/bundle.js')", 'fakeTools');
+  for (const overfull of [false, true]) {
+    const nodes = new Map(), reads = [], writes = [];
+    const element = id => {
+      if (!nodes.has(id)) nodes.set(id, {value: '0', checked: false, textContent: '', hidden: false,
+        classList: {toggle() {}}, listeners: {}, replaceChildren() {},
+        addEventListener(name, fn) { this.listeners[name] = fn; }});
+      return nodes.get(id);
+    };
+    const cache = new Uint8Array(8192), view = new DataView(cache.buffer);
+    view.setUint32(0, 0x4F524254, true); view.setUint32(4, 6, true);
+    if (overfull) view.setUint32(12, 0x480000, true);
+    class Loader {
+      chip = {CHIP_NAME: 'ESP32-S3'};
+      async main() {} async detectFlashSize() { return '16MB'; }
+      async readFlash(address, size) {
+        reads.push([address, size]);
+        return address === 0x8000 ? original : address === 0x650000 ? cache : new Uint8Array(size);
+      }
+      async flashMd5sum() { return 'verified'; }
+      async writeFlash(options) { writes.push(options); }
+      async after() {}
+    }
+    class Transport { async disconnect() {} }
+    const sandbox = {FLASH_SIZE: 0x1000000, require: (ok,msg) => { if (!ok) throw Error(msg); },
+      identifyLayout, validateCache, flashPlan, validateRelease() {}, validateImage() {},
+      document: {getElementById: element, createElement: () => ({})},
+      navigator: {serial: {requestPort: async () => ({})}},
+      window: {addEventListener() {}}, location: {href: 'https://example.com/', origin: 'https://example.com'},
+      SparkMD5: {ArrayBuffer: {hash: () => 'verified'}},
+      fakeTools: {ESPLoader: Loader, Transport}, URL, Uint8Array, crypto: {subtle: {digest: async () => new Uint8Array(32)}},
+      fetch: async url => String(url).includes('release-index')
+        ? {ok:true, json:async () => [{tag:'test',manifest:'manifest.json'}]}
+        : String(url).includes('manifest.json')
+          ? {ok:true,json:async () => ({parts:Object.keys(PARTS).map(path => ({path,size:256,sha256:'0'.repeat(64)}))})}
+          : {ok:true,arrayBuffer:async () => new Uint8Array(256).buffer}};
+    await vm.runInNewContext('(async () => {' + source + '})()', sandbox);
+    await element('connect').listeners.click();
+    assert.equal(element('ready').hidden, false);
+    assert.equal(element('install').disabled, overfull);
+    assert.equal(element('rebuild-cache').checked, false);
+    assert.ok(reads.every(([,size]) => size <= 8192)); // no full-flash backup
+    if (overfull) {
+      element('rebuild-cache').checked = true;
+      element('rebuild-cache').listeners.change();
+      assert.equal(element('install').disabled, false);
+      element('rebuild-cache').checked = false;
+      element('rebuild-cache').listeners.change();
+      assert.equal(element('install').disabled, true);
+      element('rebuild-cache').checked = true;
+      element('rebuild-cache').listeners.change();
+    }
+    await element('install').listeners.click();
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0].eraseAll, false);
+    assert.equal(writes[0].fileArray.some(p => p.address === 0x650000), overfull);
+    assert.equal(reads.filter(([address]) => address === 0x9000).length, 2);
+    assert.match(element('status').textContent, /Installation complete and verified/);
+  }
+});
