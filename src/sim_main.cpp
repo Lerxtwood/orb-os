@@ -1242,7 +1242,20 @@ int main(int argc, char **argv) {
             unsigned lost = 0;
             for (int i = 0; i < 1000; ++i) if (!clockview::faceHasTime()) ++lost;
             printf("[selftest] clock read: %u of 1000 reads lost the time (expect 0)\n", lost);
-            printf("[selftest] the clock keeps the time it has: %s\n", lost == 0 ? "PASS" : "FAIL");
+
+            // And the other half of that week's confusion, held apart from it here. The
+            // railway stop belongs to the design that asked for it; the theme loaded in the
+            // simulator did not, so its hand has to be where the second is, all the way
+            // round, including the last second and a half where a railway hand waits.
+            const bool linear = fabsf(clockview::handSeconds(0.0f) - 0.0f) < 0.01f
+                             && fabsf(clockview::handSeconds(30.0f) - 30.0f) < 0.01f
+                             && fabsf(clockview::handSeconds(58.5f) - 58.5f) < 0.01f
+                             && fabsf(clockview::handSeconds(59.9f) - 59.9f) < 0.01f;
+            printf("[selftest] a theme that did not ask for the railway stop sweeps evenly: %s"
+                   " (at 58.5s its hand is at %.2f)\n", linear ? "yes" : "no",
+                   (double)clockview::handSeconds(58.5f));
+            printf("[selftest] the clock keeps its time, and the stop stays home: %s\n",
+                   (lost == 0 && linear) ? "PASS" : "FAIL");
         }
 
         SDL_Quit();

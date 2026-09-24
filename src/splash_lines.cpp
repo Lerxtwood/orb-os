@@ -1,5 +1,6 @@
 #include "splash_lines.h"
 #include "config.h"          // SCREEN_W / SCREEN_H, FW_VERSION
+#include "orb_text_case.h"   // ALL CAPS on a finished line, THEME_CAPS 53
 #include "theme_style.h"     // the placement and styling these three lines are allowed
 #include "curved_text.h"     // straight AND arc, one code path, glow included
 #include "font_ladder.h"     // the sizes this binary actually contains
@@ -45,6 +46,12 @@ lv_color_t rgb(uint32_t v) {
 
 void one_line(const theme_style::SplashText &t, const char *text, int lineGap = 0) {
     if (!text || !*text || !s_buf) return;
+    // ALL CAPS, THEME_CAPS 53, and this is the call site Zion named: the firmware version
+    // and the network address are written by the device, not typed by the designer, so
+    // before this a face that wanted small caps throughout could not have them here at any
+    // price. One buffer, because every line on this screen comes through here.
+    char up[64];
+    if (t.upper) text = orb_upper_into(up, sizeof(up), text, true);
     const curved_text::Target dst{ s_buf, W, H };
     const lv_font_t *f = splash_font(t.size);   // Inter, not the compiled stock face
     const lv_color_t col = rgb(t.color);

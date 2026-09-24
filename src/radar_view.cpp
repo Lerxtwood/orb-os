@@ -20,6 +20,7 @@
 #include "custom_radar_blip.h"   // CUSTOM_HAS_RADAR_BLIP_IMAGE / CUSTOM_RADAR_BLIP_PIVOT_X/Y
 #include "custom_radar_sweep.h"  // CUSTOM_SWEEP_IMAGE_PIVOT_X/Y / CUSTOM_SWEEP_IMAGE_CENTER_X/Y — compile-time, coupled to whichever sweep sprite is baked in
 #include "theme_style.h"
+#include "orb_text_case.h"   // ALL CAPS on a finished line, THEME_CAPS 53
 #include "theme_font.h"   // per-theme fonts, with the compiled font as fallback     // per-theme sweep/blip/selection/off-range/center/RTEXT values — see theme_style.h for what's covered vs. stays compile-time
 #include <lvgl.h>
 #include <math.h>
@@ -2944,6 +2945,8 @@ static void refresh_custom_text() {
             if (!t.show) continue;
             char buf[64];
             if (!radar_fmt(buf, sizeof(buf), t.fmt, in)) continue;
+            // After the tokens, not before: {callsign} is UAL328 by now. THEME_CAPS 53.
+            if (t.upper) orb_upper(buf);
             if (t.curved) { rtext_draw_curved(theme_font::radar_text(i), buf, (float)t.curveR, t.arcDeg, lv_color_hex(t.color), t.glow, lv_color_hex(t.glowColor), (lv_opa_t)t.opa); continue; }
             // A line riding the card reads x/y as an offset from the card's own centre, so
             // it travels with it. Only when a card is actually showing: a line pinned to a
@@ -2960,6 +2963,7 @@ static void refresh_custom_text() {
     if (rs.rtext[3].show) {
       const theme_style::RadarText &t = rs.rtext[3];
       char buf[64]; radar_range_fmt(buf, sizeof(buf), t.fmt);
+      if (t.upper) orb_upper(buf);   // THEME_CAPS 53
       if (t.curved) rtext_draw_curved(theme_font::radar_text(3), buf, (float)t.curveR, t.arcDeg, lv_color_hex(t.color), t.glow, lv_color_hex(t.glowColor), (lv_opa_t)t.opa);
       else rtext_draw_straight(theme_font::radar_text(3), buf, (float)t.x, (float)t.y, lv_color_hex(t.color), t.glow, lv_color_hex(t.glowColor), t.align, (lv_opa_t)t.opa, curved_text::pill_of(t));
     }

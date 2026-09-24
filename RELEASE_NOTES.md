@@ -18,6 +18,17 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.28
+
+- ALL CAPS is now a switch on every line of text a theme draws: both clock banners, the
+  Flight Tracker's and the Weather map's readouts, the app menu, and every line on the
+  splash screen including the firmware version and the network address, which nobody could
+  reach before. Asked for by Zion
+- The Swiss railway stop is back, with a note in Orb Studio explaining what it is. The
+  second hand goes round in 58.5 seconds and waits at 12, the way a station clock does. It
+  was never the cause of the hands flashing to twelve; that was fixed separately in 2.16.26.
+  Asked for by WizardOfOz and Lerxtwood
+
 ## 2.16.27
 
 - Orb Studio can now tell your Orb where it is, using the computer it is plugged into. Your
