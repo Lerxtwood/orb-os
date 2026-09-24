@@ -27,6 +27,8 @@
 #include "radar_view.h"  // debugHideLayer for the "layer" command
 void host_set_poll_override(uint32_t ms);   // main.cpp
 void host_location_reset();                 // main.cpp
+void host_set_location_from_studio(const char *name, double lat, double lon,
+                                   long tzOffsetSec, bool haveTz);   // main.cpp
 void host_wifi_saved_ssid(char *out, size_t n);   // main.cpp — NAME only, never the password
 void host_wifi_scan_start();                                                     // main.cpp
 void host_factory_reset();                                                       // main.cpp: settings and WiFi gone, then a restart
@@ -414,6 +416,52 @@ void cmd_trailsteps(const char *arg) {
     radar::setTrailSteps(n);
     out_reset();
     out_fmt("{\"ok\":true,\"trailSteps\":%d}", n);
+    out_send();
+}
+
+// ?orb setloc <lat> <lon> [tzOffsetMinutes] [name...]
+//
+// A position from the browser, which knows where it is far better than the ISP does. IP
+// geolocation put one builder fifty kilometres out in the wrong county and would have put
+// another in a different province; a laptop has WiFi positioning and its own timezone.
+//
+// The name is optional and free text to the end of the line, so "Leeds, UT" arrives whole.
+// The timezone offset is optional too, in MINUTES and in the sign a person would say out
+// loud (UTC-7 is -420), because that is what every browser API hands you; the firmware's
+// own helper wants seconds, and converting here keeps the conversion in one place rather
+// than in whichever caller forgets.
+//
+// Applied live. No restart, unlike Settings > Location: the cable this arrived on is the
+// session somebody is standing in.
+void cmd_setloc(const char *arg) {
+    if (!arg) { reply_error("need lat and lon"); return; }
+    double lat = 1000, lon = 1000;
+    int n = 0;
+    if (sscanf(arg, "%lf %lf%n", &lat, &lon, &n) < 2) { reply_error("need lat and lon"); return; }
+    if (!(lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180)) { reply_error("out of range"); return; }
+
+    const char *rest = arg + n;
+    while (*rest == ' ') ++rest;
+    long tzMin = 0;
+    bool haveTz = false;
+    if (*rest == '-' || *rest == '+' || (*rest >= '0' && *rest <= '9')) {
+        char *end = nullptr;
+        const long v = strtol(rest, &end, 10);
+        // Only when the number ENDS the token. Otherwise a name that begins with a digit
+        // ("1066 Road") would be eaten as an offset and the place would lose its name.
+        if (end && (*end == ' ' || *end == '\0')) {
+            tzMin = v; haveTz = true; rest = end;
+            while (*rest == ' ') ++rest;
+        }
+    }
+    char name[40] = "";
+    snprintf(name, sizeof(name), "%s", rest);
+
+    host_set_location_from_studio(name, lat, lon, tzMin * 60L, haveTz);
+    out_reset();
+    out_fmt("{\"ok\":true,\"lat\":%.5f,\"lon\":%.5f,\"tz\":%s,\"name\":", lat, lon, haveTz ? "true" : "false");
+    out_json_string(name);
+    out_str("}");
     out_send();
 }
 
@@ -837,6 +885,7 @@ void dispatch(char *line) {
     else if (!strcmp(line, "layer"))     cmd_layer(arg);
     else if (!strcmp(line, "mem"))       cmd_mem();
     else if (!strcmp(line, "locreset"))  cmd_locreset();
+    else if (!strcmp(line, "setloc"))    cmd_setloc(arg);
     else if (!strcmp(line, "wifisaved")) cmd_wifisaved();
     else if (!strcmp(line, "wifirestore")) cmd_wifirestore();
     else if (!strcmp(line, "sweepms"))   cmd_sweepms(arg);
