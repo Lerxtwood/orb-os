@@ -1,10 +1,12 @@
 import copy
 import hashlib
 import json
+import shutil
+import re
 from pathlib import Path
 import tempfile
 import unittest
-from build_site import mirror, validate
+from build_site import mirror, validate, version_assets, ROOT
 from release_assets import FILES
 
 
@@ -24,6 +26,30 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(set(p.name for p in (path / 'releases/v1.2.3').iterdir()),
                              {*FILES, 'companion-release.json'})
             self.assertEqual(entry['manifest'], 'releases/v1.2.3/companion-release.json')
+
+    def test_ui_assets_are_versioned_including_module_dependencies(self):
+        with tempfile.TemporaryDirectory() as temp:
+            site = Path(temp)
+            def prepare():
+                shutil.copytree(ROOT / 'web/companion', site, dirs_exist_ok=True)
+                version_assets(site)
+                page = (site / 'index.html').read_text(encoding='utf-8')
+                module = re.search(r'src="(installer\.[a-f0-9]+\.mjs)"', page).group(1)
+                css = re.search(r'href="(style\.[a-f0-9]+\.css)"', page).group(1)
+                self.assertTrue((site / css).is_file())
+                code = (site / module).read_text(encoding='utf-8')
+                layout = re.search(r"from './(layout\.[a-f0-9]+\.mjs)'", code).group(1)
+                self.assertTrue((site / layout).is_file())
+                return module, layout
+            original = prepare()
+            self.assertEqual(prepare(), original)
+            # A layout-only change must also invalidate the importing installer URL.
+            shutil.copytree(ROOT / 'web/companion', site, dirs_exist_ok=True)
+            with (site / 'layout.mjs').open('a', encoding='utf-8') as out:
+                out.write('\n// changed layout')
+            version_assets(site)
+            page = (site / 'index.html').read_text(encoding='utf-8')
+            self.assertNotIn(original[0], page)
 
     def test_rejects_modified_download(self):
         with tempfile.TemporaryDirectory() as temp, self.assertRaises(ValueError):

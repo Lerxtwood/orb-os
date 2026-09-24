@@ -45,9 +45,28 @@ def mirror(site, tag, manifest_bytes, fetch):
     return {'tag': tag, 'manifest': f'releases/{tag}/companion-release.json'}
 
 
+def version_assets(site):
+    """Give each UI bundle immutable URLs, including its imported layout module."""
+    def publish(name, data):
+        path = Path(name)
+        versioned = f'{path.stem}.{hashlib.sha256(data).hexdigest()[:16]}{path.suffix}'
+        (site / versioned).write_bytes(data)
+        return versioned
+    layout_name = publish('layout.mjs', (site / 'layout.mjs').read_bytes())
+    installer = (site / 'installer.mjs').read_text(encoding='utf-8')
+    installer = installer.replace("'./layout.mjs'", f"'./{layout_name}'")
+    installer_name = publish('installer.mjs', installer.encode('utf-8'))
+    style_name = publish('style.css', (site / 'style.css').read_bytes())
+    page = (site / 'index.html').read_text(encoding='utf-8')
+    page = page.replace('src="installer.mjs"', f'src="{installer_name}"')
+    page = page.replace('href="style.css"', f'href="{style_name}"')
+    (site / 'index.html').write_text(page, encoding='utf-8')
+
+
 def build(site, repository, limit=8, local=None, tag=None):
     site.mkdir(parents=True, exist_ok=True)
     shutil.copytree(ROOT / 'web/companion', site, dirs_exist_ok=True)
+    version_assets(site)
     entries = []
     if local:
         require(bool(tag), '--tag is required with --local')
