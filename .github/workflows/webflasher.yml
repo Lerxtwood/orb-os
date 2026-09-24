@@ -30,6 +30,8 @@ jobs:
           python tools/companion/test_release.py
           g++ -std=c++17 -O2 -Itools/companion tools/companion/test_dial.cpp -o /tmp/test_dial
           /tmp/test_dial
+          g++ -std=c++17 -O2 -UNDEBUG -Isrc tools/companion/test_route_memory.cpp src/route.cpp -o /tmp/test_route_memory
+          /tmp/test_route_memory
       - name: Install PlatformIO
         run: pip install platformio
       - uses: actions/cache@v4
