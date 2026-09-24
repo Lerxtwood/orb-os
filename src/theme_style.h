@@ -361,14 +361,20 @@ namespace theme_style {
 //      newsfeed up"). The band now sits where the two lines sit BY DEFAULT unless the
 //      design sets its own margins, which is the control that was always meant for that.
 //      An Orb below this level keeps the title up over a story and still moves the band.
-//  52  the Swiss railway stop on a sweeping second hand (Clock.secondRailway): round the
-//      dial in 58.5 seconds, then a wait at 12 until the minute rolls. The station clocks
-//      of the Swiss Federal Railways did this so one pulse a minute could pull every clock
-//      on the network into step, and the Mondaine watch copies the pause because it is the
-//      thing people remember about them. WizardOfOz asked for that clock in Orb Studio; the
-//      bar hands, the square ends and the disc out near the point are all Studio's, drawn
-//      into the sprites, and this is the one part that has to be the device's. An Orb below
-//      this level sweeps straight through.
+//  52  WITHDRAWN, 2026-09-23, one day after it shipped. It was the Swiss railway stop on a
+//      sweeping second hand: round the dial in 58.5 seconds, then a wait at 12, the way the
+//      SBB station clocks do. WizardOfOz asked for it and it worked, but the week it landed
+//      a separate fault put every theme's hands at twelve for a frame (orb_time.h), three
+//      people read that as this feature leaking into their clocks, and the whole community
+//      spent a day chasing it. Zion: "it might actually be better to completely remove this
+//      58.5 second rule, it's too complicated." A clock's second hand now always shows the
+//      second it is, on every theme, and there is nothing to explain.
+//
+//      The NUMBER stays at 52 rather than going back to 51, because a level is a promise
+//      about what a firmware understands and Studio compares those numbers: an Orb that
+//      once answered 52 must never answer less. Nothing asks for 52 any more, so nothing is
+//      refused by it. A theme still carrying "secondRailway" in its clock_style.json is
+//      read and ignored, like any other key this firmware has no use for.
 constexpr int THEME_CAPS = 52;
 
 struct ClockText {
@@ -452,9 +458,6 @@ struct Clock {
     // design that draws anything above its second hand other than the glass falls back to
     // ticking rather than drawing the layers in the wrong order.
     bool      secondSweep = false;
-    // THEME_CAPS 52. The railway stop on that sweep: 58.5 seconds round, then a wait at 12.
-    // Only read while sweeping; a ticking hand has no glide to stop.
-    bool      secondRailway = false;
     // THEME_CAPS 38. A virtual mainspring: the clock runs down and has to be wound with the
     // knob. See clock_wind.h for why it exists and what it refuses to do. Off unless a
     // design asks, because a stopped clock reads as a broken one to anybody who did not

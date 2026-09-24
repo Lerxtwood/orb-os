@@ -1570,15 +1570,6 @@ static float second_now() {
     return (float)ti.tm_sec + (float)tv.tv_usec / 1000000.0f;
 }
 
-// The Swiss railway stop, THEME_CAPS 52: the hand goes round in 58.5 seconds and waits at
-// 12 until the minute rolls, the way the SBB station clocks and the Mondaine watch do. The
-// wait is 60 rather than 0 so the hand sits at the top of its sweep instead of snapping
-// back through the dial, and the box maths sees it at the same angle either way.
-static float railway_seconds(float secs) {
-    if (!theme_style::clock().secondRailway) return secs;
-    return secs >= 58.5f ? 60.0f : secs * (60.0f / 58.5f);
-}
-
 // A tick a second, or a frame every 40 ms while sweeping.
 //
 // Reset whenever a theme is applied, because whether this design sweeps is the theme's
@@ -1625,7 +1616,7 @@ static void tick_cb(lv_timer_t * /*t*/) {
             s_prevSecValid = true;
         }
         sweep_pad_for_shadow();
-        sweep_frame(railway_seconds(second_now()));
+        sweep_frame(second_now());
         return;
     }
     redraw(&ti);

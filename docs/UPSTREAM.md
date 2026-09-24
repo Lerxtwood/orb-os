@@ -51,7 +51,7 @@ Create a new companion release only when its firmware is ready to distribute.
 
 - Companion partition layout, separate PrintSphere settings, and app-only updates.
 - Orb web configuration, theme uploads, retained theme art, and USB protocol.
-- Location labels, comma search, and the optional Swiss railway second-hand stop.
+- Location labels and comma search.
 - Direct FlightAware lookup, PSRAM-backed TLS, route expiry and immediate RAM-cache
   revisits, and the info-card wait/read timer.
 - PrintSphere source pin and reproducible companion adaptations.
@@ -60,6 +60,7 @@ Create a new companion release only when its firmware is ready to distribute.
 
 Branch `integration/upstream-2.16.26` incorporates upstream commit `4df2d82`.
 It adopts the shared clock-read helper (including the header/chime fix), safer
-geocoding query encoding, and upstream's comma-key support. It retains this fork's
-railway-stop option, which upstream removed. The clock-read fallback remains
+geocoding query encoding, and upstream's comma-key support. It also follows upstream
+in removing the railway-stop option: sweeping seconds now advance continuously,
+and legacy secondRailway theme settings are ignored. The clock-read fallback remains
 initialized if conversion fails. No partition or PrintSphere changes are involved.
