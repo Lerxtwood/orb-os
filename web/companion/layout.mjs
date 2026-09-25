@@ -99,3 +99,16 @@ export function flashPlan(layout, files, rebuildCache = false) {
   result.push({address: 0x8000, data: files['orb-partitions.bin'], name: 'Activate companion layout'});
   return result;
 }
+
+// esptool-js 0.7.0 HardReset only releases RTS; it never asserts reset.
+// Match esptool's native-USB timing and keep the boot strap deasserted.
+export async function resetToFirmware(transport, wait = ms => new Promise(resolve => setTimeout(resolve, ms))) {
+  await transport.setDTR(false);
+  try {
+    await transport.setRTS(true);
+    await wait(200);
+  } finally {
+    await transport.setRTS(false);
+  }
+  await wait(200); // let the USB peripheral settle before closing the port
+}

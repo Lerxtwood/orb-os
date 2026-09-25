@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {identifyLayout, validateRelease, validateCache, flashPlan, PARTS} from '../../web/companion/layout.mjs';
+import {identifyLayout, validateRelease, validateCache, flashPlan, PARTS, resetToFirmware} from '../../web/companion/layout.mjs';
 const table = entries => {
   const bytes = new Uint8Array(4096).fill(255), view = new DataView(bytes.buffer);
   entries.forEach(([name, kind, subtype, offset, size], index) => {
@@ -97,9 +97,9 @@ test('installer migration needs no backup and gates an oversized cache on explic
       async writeFlash(options) { writes.push(options); }
       async after() {}
     }
-    class Transport { async disconnect() {} }
+    class Transport { async disconnect() {} async setDTR() {} async setRTS() {} }
     const sandbox = {FLASH_SIZE: 0x1000000, require: (ok,msg) => { if (!ok) throw Error(msg); },
-      identifyLayout, validateCache, flashPlan, validateRelease() {}, validateImage() {},
+      identifyLayout, validateCache, flashPlan, resetToFirmware, validateRelease() {}, validateImage() {},
       document: {getElementById: element, createElement: () => ({})},
       navigator: {serial: {requestPort: async () => ({})}},
       window: {addEventListener() {}}, location: {href: 'https://example.com/', origin: 'https://example.com'},
@@ -133,4 +133,20 @@ test('installer migration needs no backup and gates an oversized cache on explic
     assert.equal(reads.filter(([address]) => address === 0x9000).length, 2);
     assert.match(element('status').textContent, /Installation complete and verified/);
   }
+});
+
+
+test('firmware reset deasserts boot strap, pulses reset, and waits before closing', async () => {
+  const calls = [];
+  await resetToFirmware({setDTR: async v => calls.push(['DTR', v]),
+    setRTS: async v => calls.push(['RTS', v])}, async ms => calls.push(['wait', ms]));
+  assert.deepEqual(calls, [['DTR', false], ['RTS', true], ['wait', 200], ['RTS', false], ['wait', 200]]);
+});
+
+test('reset failures propagate and still attempt to release reset', async () => {
+  const calls = [];
+  await assert.rejects(resetToFirmware({setDTR: async () => {}, setRTS: async v => {
+    calls.push(v); if (v) throw new Error('USB reset failed');
+  }}, async () => {}), /USB reset failed/);
+  assert.deepEqual(calls, [true, false]);
 });

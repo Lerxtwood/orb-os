@@ -1,4 +1,4 @@
-import {FLASH_SIZE, require, identifyLayout, validateRelease, validateImage, validateCache, flashPlan} from './layout.mjs';
+import {FLASH_SIZE, require, identifyLayout, validateRelease, validateImage, validateCache, flashPlan, resetToFirmware} from './layout.mjs';
 const $ = id => document.getElementById(id);
 let releases = [], loader, transport, layout, settingsHash, cacheError = '', busy = false;
 const log = message => { $('log').textContent = ($('log').textContent + message + '\n').slice(-14000); };
@@ -41,13 +41,21 @@ async function downloadRelease() {
   return files;
 }
 async function disconnect(reset = true) {
-  if (loader && reset) { try { await loader.after('hard_reset'); } catch (error) { log(error.message); } }
+  let restarted = false;
+  if (transport && reset) {
+    try {
+      log('Restarting firmware with an explicit DTR/RTS reset pulse...');
+      await resetToFirmware(transport);
+      restarted = true;
+    } catch (error) { log('Automatic restart failed: ' + error.message); }
+  }
   if (transport) { try { await transport.disconnect(); } catch (error) { log(error.message); } }
   loader = transport = layout = settingsHash = undefined;
   cacheError = '';
   $('rebuild-cache').checked = false;
   $('ready').hidden = $('disconnect').hidden = true;
   lock(false);
+  return restarted;
 }
 $('connect').addEventListener('click', async () => {
   lock(true);
@@ -105,7 +113,11 @@ $('rebuild-cache').addEventListener('change', () => {
   status(cacheError && !$('rebuild-cache').checked ? cacheError : 'Device checked. Ready when you are.',
     !!cacheError && !$('rebuild-cache').checked);
 });
-$('disconnect').addEventListener('click', async () => { lock(true); await disconnect(); status('Disconnected. Your device is restarting.'); });
+$('disconnect').addEventListener('click', async () => {
+  lock(true);
+  const restarted = await disconnect();
+  status(restarted ? 'Disconnected. Restart requested.' : 'Disconnected. Unplug and reconnect USB to restart the device.', !restarted);
+});
 $('install').addEventListener('click', async () => {
   lock(true);
   let wrote = false;
@@ -125,9 +137,10 @@ $('install').addEventListener('click', async () => {
     if (layout !== 'blank') {
       require(md5(await readVerified(0x9000, 0x5000)) === settingsHash, 'Orb settings verification failed.');
     }
-    await disconnect();
+    const restarted = await disconnect();
     progress(100);
-    status('Installation complete and verified. Your device is restarting.');
+    status(restarted ? 'Installation complete and verified. Restart requested.'
+      : 'Installation complete and verified, but automatic restart failed. Unplug and reconnect USB to start the device.', !restarted);
   } catch (error) {
     // Do not boot a partially written image. Reconnect and retry.
     await disconnect(!wrote);
