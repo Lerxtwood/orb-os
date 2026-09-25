@@ -11,6 +11,17 @@ static void turn(Decoder& decoder, int direction, uint32_t now) {
 
 int main() {
   {
+    Decoder d; Router r; d.seed(3, true, 0);
+    d.button(false, 1000);
+    auto press = r.poll(d.snapshot(), 1000);
+    assert(press.pressed && press.activity && !press.confirmed);
+    assert(!r.poll(d.snapshot(), 1020).pressed);  // one action per press
+    d.button(true, 1040); d.button(false, 1060);
+    assert(!r.poll(d.snapshot(), 1060).pressed);  // reject release bounce
+    d.button(false, 1300);
+    assert(r.poll(d.snapshot(), 1300).pressed);
+  }
+  {
     Decoder d; d.seed(3, true, 0);
     // Sub-detent contact chatter cannot change screens or open the menu.
     for (int n = 0; n < 100; ++n) { d.edge(1, 1000+n); d.edge(3, 1000+n); }
@@ -30,7 +41,8 @@ int main() {
     assert(menu.opened && menu.turn == 0);
     assert(!r.poll(d.snapshot(),1261).confirmed);
     d.button(false, 1300);
-    assert(r.poll(d.snapshot(),1300).confirmed);
+    auto confirm = r.poll(d.snapshot(),1300);
+    assert(confirm.confirmed && !confirm.pressed);
     assert(!r.poll(d.snapshot(),1350).confirmed);  // one return per confirmation
   }
   for (uint32_t gap : {44U, 45U, 250U, 251U}) {
@@ -41,7 +53,8 @@ int main() {
   {
     Decoder d; Router r; d.seed(3,true,0);
     turn(d,1,1000); turn(d,-1,1100);  // both halves between UI polls
-    assert(r.poll(d.snapshot(),1260).opened);
+    auto opened = r.poll(d.snapshot(),1260);
+    assert(opened.opened && !opened.pressed);
     assert(r.poll(d.snapshot(),9260).closed);  // timeout never returns
     assert(!r.menu_open());
     d.button(false,9300); assert(!r.poll(d.snapshot(),9300).confirmed);
@@ -50,7 +63,8 @@ int main() {
     Decoder d; Router r; d.seed(3,true,0);
     turn(d,1,1000); turn(d,-1,1100);
     d.button(false,1200);  // press before the menu appears is swallowed
-    assert(r.poll(d.snapshot(),1260).opened);
+    auto opened = r.poll(d.snapshot(),1260);
+    assert(opened.opened && !opened.pressed);
     assert(!r.poll(d.snapshot(),1300).confirmed);
     d.button(true,1320); d.button(false,1350);  // release bounce cannot confirm
     assert(!r.poll(d.snapshot(),1360).confirmed);
@@ -96,5 +110,5 @@ int main() {
     assert(r.poll(d.snapshot(),2351).turn == 2*direction);
     assert(r.poll(d.snapshot(),2400).turn == 0);
   }
-  std::puts("Dial tests passed: deferred navigation, jig without page movement, cancellation, fresh press, and clock wrap");
+  std::puts("Dial tests passed: center press, debounce, deferred navigation, jig without page movement, cancellation, fresh press, and clock wrap");
 }

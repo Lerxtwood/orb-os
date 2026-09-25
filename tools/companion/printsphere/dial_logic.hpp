@@ -69,7 +69,7 @@ class Decoder {
 
 struct Action {
   int32_t turn = 0;
-  bool opened = false, closed = false, confirmed = false, activity = false;
+  bool opened = false, closed = false, confirmed = false, pressed = false, activity = false;
 };
 
 class Router {
@@ -119,6 +119,7 @@ class Router {
         return result;  // A press queued before the menu appeared cannot confirm.
       }
     }
+    result.pressed = pressed;
     // Wait out the complete reversal window before showing any page movement.
     // A recognized jig discards both halves above, including its first detent.
     held_ += delta;

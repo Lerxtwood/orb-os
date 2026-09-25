@@ -18,7 +18,7 @@ esp_err_t Ui::initialize_dial() {
     lv_obj_add_flag(dial_menu_, LV_OBJ_FLAG_HIDDEN);
     dial_menu_label_ = lv_label_create(dial_menu_);
     lv_label_set_text(dial_menu_label_, "Return to Orb");
-    lv_obj_set_style_text_font(dial_menu_label_, &dosis_32, 0);
+    lv_obj_set_style_text_font(dial_menu_label_, &dosis_40, 0);
     lv_obj_set_style_text_color(dial_menu_label_, lv_color_hex(0xA8FFD2), 0);
     lv_obj_align(dial_menu_label_, LV_ALIGN_CENTER, 0, -18);
     lv_obj_t* hint = lv_label_create(dial_menu_);
@@ -68,6 +68,13 @@ void Ui::poll_dial() {
     lv_label_set_text(dial_menu_label_, "Returning to Orb...");
     ESP_LOGI("dial", "Return to Orb confirmed by dial press");
     return_to_radar_requested_.store(true);
+  }
+  if (action.pressed && active_page_ == kPageIdxMain &&
+      snapshot_has_active_print_center_cycle(last_snapshot_)) {
+    click_sound_requested_.store(true);
+    sync_runtime_center_mode_locked(last_snapshot_);
+    toggle_runtime_center_mode_locked();
+    apply_snapshot_locked(last_snapshot_, false);
   }
   if (action.turn != 0) {
     const int direction = action.turn > 0 ? 1 : -1;
