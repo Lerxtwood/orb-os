@@ -1588,14 +1588,25 @@ void settingsview::onPress() {
         }
     } else {  // MODE_SEARCH
         const int L = (int)strlen(s_str);
-        if (s_kbIdx < N_KEYS && KEYS[s_kbIdx] != '<' && KEYS[s_kbIdx] != '_') { // letter or comma
-            if (L < (int)sizeof(s_str) - 1) { s_str[L] = KEYS[s_kbIdx]; s_str[L + 1] = 0; }
-            mark_dirty();
-        } else if (s_kbIdx < N_KEYS && KEYS[s_kbIdx] == '<') { // backspace (empty -> exit search)
+        // WHICH KEY, by the character it is, not by where it sits.
+        //
+        // This branched on the index: under 26 a letter, 26 backspace, 27 space. Adding one
+        // comma to KEYS on 2026-09-23 therefore moved every special key one place along, and
+        // the comma ran the backspace branch, backspace ran the space branch, and space fell
+        // through to the suggestion branch and did nothing at all. Lerxtwood found it within
+        // a day of the release, having asked for the comma in the first place.
+        //
+        // Reading the character is what makes that impossible rather than merely fixed: the
+        // next key anybody adds goes in the string and nothing else has to be told about it.
+        const char key = (s_kbIdx >= 0 && s_kbIdx < N_KEYS) ? KEYS[s_kbIdx] : '\0';
+        if (key == '<') {                                   // backspace (empty -> exit search)
             if (L > 0) { s_str[L - 1] = 0; mark_dirty(); }
             else { app_shell::setCaptured(false); app_shell::openSwitcher(); }   // exit to switcher
-        } else if (s_kbIdx < N_KEYS && KEYS[s_kbIdx] == '_') { // space
+        } else if (key == '_') {                            // space
             if (L > 0 && L < (int)sizeof(s_str) - 1) { s_str[L] = ' '; s_str[L + 1] = 0; }
+            mark_dirty();
+        } else if (key) {                                   // a letter, or the comma
+            if (L < (int)sizeof(s_str) - 1) { s_str[L] = key; s_str[L + 1] = 0; }
             mark_dirty();
         } else {                                            // a suggestion
             const int j = s_kbIdx - N_KEYS;
@@ -2365,6 +2376,20 @@ void settingsview::openWifiSetupPrompt() {
 const char *settingsview::designRowText(int i) {
     if (s_mode != MODE_DESIGN_SELECT || i < 0 || i >= design_item_count()) return nullptr;
     return lv_label_get_text(s_designItems[i]);
+}
+
+// The search keyboard, for the self-test. searchType() puts the ring on the key carrying
+// `c` and presses it through the same handler a knob press reaches, so the test exercises
+// the real dispatch rather than a copy of it.
+const char *settingsview::searchKeys() { return KEYS; }
+
+const char *settingsview::searchType(char c) {
+    const char *at = strchr(KEYS, c);
+    if (!at) return s_str;
+    s_mode  = MODE_SEARCH;
+    s_kbIdx = (int)(at - KEYS);
+    settingsview::onPress();
+    return s_str;
 }
 
 void settingsview::openAboutPage() {
