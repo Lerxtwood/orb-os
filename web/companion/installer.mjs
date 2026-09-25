@@ -3,10 +3,17 @@ const $ = id => document.getElementById(id);
 let releases = [], loader, transport, layout, settingsHash, cacheError = '', busy = false;
 const connectionLog = $('log');
 const connectionDetails = connectionLog.closest('details');
+let logScrollFrame;
 function followConnectionLog() {
-  if (connectionDetails.open) connectionLog.scrollTop = connectionLog.scrollHeight;
+  if (!connectionDetails.open || logScrollFrame !== undefined) return;
+  // Follow after layout, including when opening the details or wrapping lines.
+  logScrollFrame = requestAnimationFrame(() => {
+    logScrollFrame = undefined;
+    if (connectionDetails.open) connectionLog.scrollTop = connectionLog.scrollHeight;
+  });
 }
 connectionDetails.addEventListener('toggle', followConnectionLog);
+new ResizeObserver(followConnectionLog).observe(connectionLog);
 const log = message => {
   connectionLog.textContent = (connectionLog.textContent + message + '\n').slice(-14000);
   followConnectionLog();
