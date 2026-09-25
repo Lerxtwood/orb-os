@@ -1,7 +1,16 @@
 import {FLASH_SIZE, require, identifyLayout, validateRelease, validateImage, validateCache, flashPlan, resetToFirmware} from './layout.mjs';
 const $ = id => document.getElementById(id);
 let releases = [], loader, transport, layout, settingsHash, cacheError = '', busy = false;
-const log = message => { $('log').textContent = ($('log').textContent + message + '\n').slice(-14000); };
+const connectionLog = $('log');
+const connectionDetails = connectionLog.closest('details');
+function followConnectionLog() {
+  if (connectionDetails.open) connectionLog.scrollTop = connectionLog.scrollHeight;
+}
+connectionDetails.addEventListener('toggle', followConnectionLog);
+const log = message => {
+  connectionLog.textContent = (connectionLog.textContent + message + '\n').slice(-14000);
+  followConnectionLog();
+};
 function status(message, error = false) { $('status').textContent = message; $('status').classList.toggle('error', error); }
 function progress(value) { $('progress').hidden = false; $('progress').value = value; }
 function lock(value) {
