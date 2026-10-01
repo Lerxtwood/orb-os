@@ -368,8 +368,6 @@ namespace {
     // drift apart again.
     char      s_netInfo[112] = "";     // last line handed to setNetInfo(), replayed on page open
     char      s_homeCoords[48] = "";   // last value handed to setHomeCoords(), same contract
-    char      s_homeName[160] = "";
-    lv_obj_t *s_lmName = nullptr;
     lv_obj_t *s_lmCoords = nullptr;    // the readout under the Location page's title
     lv_obj_t *s_lmCity   = nullptr;    // the place's NAME, above those coordinates
     lv_obj_t *s_aboutImg  = nullptr;   // decoded fresh each time (see refresh_about()) — cheap, avoids relying on splash_art's shared decode buffer staying valid
@@ -2436,12 +2434,6 @@ void settingsview::setHomeCoords(double lat, double lon, bool set) {
     if (set) snprintf(coords, sizeof(coords), "%.5f, %.5f", lat, lon);
     if (strcmp(coords, s_homeCoords) == 0) return;
     snprintf(s_homeCoords, sizeof(s_homeCoords), "%s", coords);
-    if (s_mode == MODE_LOCATION) refresh_locmenu();
-}
-
-void settingsview::setHomeName(const char *name) {
-    if (strcmp(s_homeName, name ? name : "") == 0) return;
-    snprintf(s_homeName, sizeof(s_homeName), "%s", name ? name : "");
     if (s_mode == MODE_LOCATION) refresh_locmenu();
 }
 
