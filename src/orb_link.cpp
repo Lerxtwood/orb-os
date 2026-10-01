@@ -896,6 +896,10 @@ void dispatch(char *line) {
     else if (!strcmp(line, "glide"))    cmd_glide(arg);
     else if (!strcmp(line, "sweep"))    cmd_sweep(arg);
     else if (!strcmp(line, "sweepaa")) cmd_sweepaa(arg);
+    else if (!strcmp(line, "sweepcache")) {
+        radar::setSweepCacheEnabled(!arg || atoi(arg) != 0);
+        out_reset(); out_str("{\"ok\":true}"); out_send();
+    }
     else if (!strcmp(line, "trailsteps")) cmd_trailsteps(arg);
     else if (!strcmp(line, "get-begin")) cmd_get_begin(arg);
     else if (!strcmp(line, "get-data"))  cmd_get_data();

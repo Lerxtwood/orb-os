@@ -119,6 +119,8 @@ void setGlide(int mode);
 void setSweepAA(int on);
 // How many lines the sweep's trail fan has, live; 0 restores the design's own count.
 void setTrailSteps(int n);
+// Diagnostic A/B switch for the cached vector sweep; never persisted.
+void setSweepCacheEnabled(bool enabled);
 
 // Tell the scope whether the WiFi is up and how long since the last aircraft. It shows a
 // small banner naming the actual culprit once a gap is real (45 s), because a blank scope

@@ -761,6 +761,78 @@ static void wx_sweep_draw_cb(lv_event_t *e) {
     lv_draw_line(dctx, &le, &center, &lead);
 }
 
+// Bake the themed vector fan once, then rotate its cropped alpha image. Drawing
+// twenty overlapping lines through each LVGL strip was the sweep's main CPU cost.
+static lv_img_dsc_t s_sweepCache{};
+static uint8_t *s_sweepCachePixels = nullptr;
+static lv_point_t s_sweepCachePivot{};
+static bool s_sweepCacheEnabled = true;
+
+static void release_sweep_cache() {
+    lv_img_cache_invalidate_src(&s_sweepCache);
+    if (s_sweepCachePixels) heap_caps_free(s_sweepCachePixels);
+    s_sweepCachePixels = nullptr;
+    s_sweepCache = {};
+}
+
+static void rebuild_sweep_cache() {
+    release_sweep_cache();
+    if (!s_canvasActive || !s_sweepCacheEnabled || !customStyled()) return;
+    const auto &rs = theme_style::radar();
+    if (!rs.sweepEnabled || rs.sweepTypeImage) return;
+    // Keep unusual/oversized theme geometry on the original vector renderer.
+    if (rs.sweepLength < 1 || rs.sweepLength > SCREEN_W / 2 ||
+        rs.sweepTrailWidth < 1 || rs.sweepTrailWidth > 32 ||
+        rs.sweepLeadWidth < 1 || rs.sweepLeadWidth > 32) return;
+    const int steps = s_forceTrailSteps > 0 ? s_forceTrailSteps :
+        std::max(1, std::min(60, rs.sweepTrailSteps));
+    if (steps > 60) return;
+    lv_point_t tips[61];
+    int minx = s_cx, maxx = s_cx, miny = s_cy, maxy = s_cy;
+    for (int i = 0; i <= steps; ++i) {
+        tips[i] = rim_point(-(float)i * rs.sweepTrailDeg / steps, rs.sweepLength);
+        minx = std::min(minx, (int)tips[i].x); maxx = std::max(maxx, (int)tips[i].x);
+        miny = std::min(miny, (int)tips[i].y); maxy = std::max(maxy, (int)tips[i].y);
+    }
+    const int pad = std::max(rs.sweepTrailWidth, rs.sweepLeadWidth) + 2;
+    minx -= pad; miny -= pad; maxx += pad; maxy += pad;
+    const int w = maxx - minx + 1, h = maxy - miny + 1;
+    const size_t bytes = LV_CANVAS_BUF_SIZE_TRUE_COLOR_ALPHA(w, h);
+    // Bound the optional allocation, and leave internal RAM for networking.
+    if (bytes > 256 * 1024) return;
+    s_sweepCachePixels = (uint8_t *)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM);
+    if (!s_sweepCachePixels) return;
+    lv_obj_t *canvas = lv_canvas_create(s_parent);
+    if (!canvas) { release_sweep_cache(); return; }
+    lv_obj_add_flag(canvas, LV_OBJ_FLAG_HIDDEN);
+    lv_canvas_set_buffer(canvas, s_sweepCachePixels, w, h, LV_IMG_CF_TRUE_COLOR_ALPHA);
+    lv_canvas_fill_bg(canvas, lv_color_black(), LV_OPA_TRANSP);
+    s_sweepCachePivot = { (lv_coord_t)(s_cx - minx), (lv_coord_t)(s_cy - miny) };
+    lv_draw_line_dsc_t d;
+    lv_draw_line_dsc_init(&d);
+    d.color = lv_color_hex(rs.sweepColor);
+    d.width = rs.sweepTrailWidth;
+    d.round_start = d.round_end = 1;
+    for (int i = steps; i >= 0; --i) {
+        if (i == 0) {
+            d.color = lv_color_hex(rs.sweepLeadColor);
+            d.width = rs.sweepLeadWidth;
+            d.opa = 217;
+        } else {
+            const float frac = 1.0f - (float)i / steps;
+            d.opa = (lv_opa_t)(frac * frac * ((float)rs.sweepOpacity * 2.55f));
+            if (d.opa < 2) continue;
+        }
+        const lv_point_t points[] = {s_sweepCachePivot,
+            {(lv_coord_t)(tips[i].x - minx), (lv_coord_t)(tips[i].y - miny)}};
+        lv_canvas_draw_line(canvas, points, 2, &d);
+    }
+    s_sweepCache = *lv_canvas_get_img(canvas);
+    // The pixels belong to us, not to the temporary canvas object.
+    lv_obj_del(canvas);
+    Serial.printf("[sweep-cache] %dx%d, %u bytes, %d trail lines\n", w, h, (unsigned)bytes, steps);
+}
+
 static void sweep_draw_cb(lv_event_t *e) {
     RADAR_PHASE(RP_SWEEP);
     if (s_loadingPending) return;   // no hand until there is something to sweep over
@@ -786,6 +858,18 @@ static void sweep_draw_cb(lv_event_t *e) {
     // Overridable over the cable, so the trade between how many lines the fan has and what
     // a frame costs can be swept on a running Orb instead of reasoned about. Not persisted.
     if (s_forceTrailSteps > 0) steps = s_forceTrailSteps;
+    if (s_sweepCachePixels) {
+        lv_draw_img_dsc_t image;
+        lv_draw_img_dsc_init(&image);
+        image.angle = (int16_t)lroundf(s_sweepDeg * 10.0f);
+        image.pivot = s_sweepCachePivot;
+        image.antialias = true;
+        lv_area_t area = {
+            (lv_coord_t)(s_cx - image.pivot.x), (lv_coord_t)(s_cy - image.pivot.y),
+            (lv_coord_t)(s_cx - image.pivot.x + s_sweepCache.header.w - 1),
+            (lv_coord_t)(s_cy - image.pivot.y + s_sweepCache.header.h - 1)};
+        lv_draw_img(dctx, &image, &area, &s_sweepCache);
+    } else {
     lv_draw_line_dsc_t ld;
     lv_draw_line_dsc_init(&ld);
     ld.color = trailColor;
@@ -809,6 +893,7 @@ static void sweep_draw_cb(lv_event_t *e) {
     le.round_end = 1;
     lv_point_t lead = rim_point(s_sweepDeg, R);
     lv_draw_line(dctx, &le, &center, &lead);
+    }
 
     // The hub, last so it caps the lines rather than being crossed by them. Part of THIS
     // layer on purpose: it is the point the hand turns about, so it belongs to the hand and
@@ -2537,6 +2622,7 @@ void refreshCustomStyle() {
     // what it has actually absorbed, so a failure here degrades to the live stack
     // rather than to a missing layer.
     rebuild_flat_background();
+    rebuild_sweep_cache();
     apply_grid_visibility();
     applyRadarLayerOrder();
 }
@@ -3212,6 +3298,7 @@ void knobExit() {
     s_selectionRouteCall[0] = 0;
     canvas_release(s_textCanvas, s_textBuf);
     canvas_release(s_flowCanvas, s_flowBuf);
+    release_sweep_cache();
     if (s_cardObj) show(s_cardObj, false);
     if (s_cardImg) show(s_cardImg, false);
     radar_sprite_release();
@@ -3395,8 +3482,17 @@ void setAcInterpMs(uint32_t ms) {
 // have nothing to do with the change, and a single before-and-after cannot tell them apart.
 void setTrailSteps(int n) {
     s_forceTrailSteps = n;
+    rebuild_sweep_cache();
     Serial.printf("[radar] trail lines -> %s%d\n", n > 0 ? "" : "the design's own, currently ", 
                   n > 0 ? n : theme_style::radar().sweepTrailSteps);
+}
+
+void setSweepCacheEnabled(bool enabled) {
+    s_sweepCacheEnabled = enabled;
+    rebuild_sweep_cache();
+    s_pacingStale = true;
+    if (s_sweep) lv_obj_invalidate(s_sweep);
+    Serial.printf("[sweep-cache] %s\n", s_sweepCachePixels ? "active" : "vector fallback");
 }
 
 void setSweepAA(int on) {
