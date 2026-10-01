@@ -179,6 +179,11 @@ static volatile uint32_t     g_rebootAtMs = 0;
 static String                g_pendingSlug;
 static volatile uint32_t     g_applySlugAtMs = 0;                       // !=0: reboot when millis() reaches it (clean start after WiFi config)
 static String                g_tz = TZ_STR;                          // POSIX timezone (web-configurable, NVS); applied via configTzTime
+// The name of wherever the Orb is, as the person who set it would say it ("Leeds, Utah").
+// Beside g_tz because it is loaded in the same block and for the same reason: both are what
+// a position MEANS rather than the position itself. Empty until something names it, which is
+// the honest state for a device handed bare coordinates. THEME_CAPS 54.
+static String                g_locName;
 static volatile bool         g_weatherDirty = false;
 static volatile bool         g_wxRadarDirty = false;
 static volatile bool         g_wxAnimDirty = false;      // new Weather app: frame set ready
@@ -362,65 +367,27 @@ static void adsb_task(void*) {
                 static int failCount = 0;
                 // poll() tries the fallback provider after a primary failure; keep the HUD
                 // healthy through isolated misses and warn only after a sustained outage.
-                // Synthesised traffic, when the active theme asks for it. Straight courses at
-                // fixed speeds, seeded once so the same aircraft persist and actually travel
-                // rather than teleporting each poll — which is what makes trails, sticky
-                // tracking and zone masking all observable without waiting on the sky.
-                // Positions advance by real elapsed time, so it runs at the same pace
-                // whatever the poll interval is.
-                const bool simulated = theme_style::radar().simulate;
-                if (simulated) {
-                    static bool     simInit = false;
-                    static uint32_t simT0 = 0;
-                    struct SimAc { double lat0, lon0; float brgDeg, gsKt, altFt; const char *call; const char *type; };
-                    static SimAc sim[8];
-                    if (!simInit) {
-                        simInit = true;
-                        simT0 = millis();
-                        // Spread around the home point at varied radii and headings, so some
-                        // cross the middle, some skirt the rim, and some pass through
-                        // whatever keep-out areas a design has drawn.
-                        for (int i = 0; i < 8; ++i) {
-                            const float a = (float)i * 45.0f;
-                            const float rKm = 8.0f + (float)(i % 4) * 9.0f;
-                            sim[i].lat0   = g_settings.homeLat + (double)(rKm / 111.0f) * cos(a * (float)M_PI / 180.0f);
-                            sim[i].lon0   = g_settings.homeLon + (double)(rKm / 111.0f) * sin(a * (float)M_PI / 180.0f)
-                                            / cos(g_settings.homeLat * (double)M_PI / 180.0);
-                            sim[i].brgDeg = fmodf(a + 115.0f, 360.0f);   // not radial: they cross the scope
-                            sim[i].gsKt   = 180.0f + (float)(i % 5) * 55.0f;
-                            sim[i].altFt  = 3500.0f + (float)i * 2600.0f;
-                            sim[i].call   = "SIM";
-                            sim[i].type   = "SIM";
-                        }
-                    }
-                    const float hrs = (float)(millis() - simT0) / 3600000.0f;
-                    fresh.clear();
-                    for (int i = 0; i < 8; ++i) {
-                        const float nm  = sim[i].gsKt * hrs;
-                        const float km  = nm * 1.852f;
-                        const float brg = sim[i].brgDeg * (float)M_PI / 180.0f;
-                        Aircraft a;
-                        char hexBuf[8]; snprintf(hexBuf, sizeof(hexBuf), "sim%03d", i);
-                        a.hex     = hexBuf;
-                        char callBuf[10]; snprintf(callBuf, sizeof(callBuf), "SIM%03d", i);
-                        a.flight  = callBuf;
-                        a.type    = "SIM";
-                        a.lat     = sim[i].lat0 + (double)(km / 111.0f) * cos(brg);
-                        a.lon     = sim[i].lon0 + (double)(km / 111.0f) * sin(brg)
-                                    / cos(g_settings.homeLat * (double)M_PI / 180.0);
-                        a.altBaro = sim[i].altFt;
-                        a.onGround = false;
-                        a.track   = sim[i].brgDeg;
-                        a.gs      = sim[i].gsKt;
-                        a.baroRate = 0.0f;
-                        a.squawk  = 1200;
-                        a.seenPos = 0;
-                        a.lastUpdateMs = millis();
-                        fresh.push_back(a);
-                    }
-                }
-                if (simulated || g_adsb.poll(fresh)) {
-                    if (!simulated) Serial.printf("[adsb] fetched %u aircraft\n", (unsigned)fresh.size());
+                // NO SYNTHESISED TRAFFIC. A real Orb shows the real sky, always.
+                //
+                // This used to fabricate eight aircraft whenever the active theme asked for
+                // it, and the flag travelled INSIDE THE THEME FILE. That is the part that
+                // made it indefensible rather than merely untidy: a theme is shared, so one
+                // designer's debugging state became a stranger's device. Fly4Funn reported
+                // his Orb full of SIM00x aircraft on 2026-09-27; he had never asked for
+                // them, he had installed somebody else's theme. Panerai Punk was carrying
+                // the flag in the library at the time.
+                //
+                // Zion, 2026-09-28: "on the real orb, it should always be real aircraft
+                // traffic. There is never, ever a need for fake simulated air traffic."
+                //
+                // Orb Studio keeps the switch, because the reason for it is real: designing
+                // a scope somewhere with no traffic overhead means nothing to design
+                // against. But that is a question about a PREVIEW IN A BROWSER, and it is
+                // answered there. Nothing about it reaches the card, and this device can no
+                // longer invent an aircraft under any circumstances. A theme.json that still
+                // carries the old flag is simply ignored, which is why the parse went too.
+                if (g_adsb.poll(fresh)) {
+                    Serial.printf("[adsb] fetched %u aircraft\n", (unsigned)fresh.size());
                     failCount = 0;
                     adsbBackoffMs = 0;                        // recovered: back to real-time polling
                     feedEverOk = true;                        // a restart now has a known-good state to return to
@@ -660,13 +627,11 @@ static void applyThemeSettings() {
     // no device-side control, so there is nowhere to correct it from if it lands wrong.
     if (rs.deadZonePx >= 0)    g_deadZonePx = (rs.deadZonePx > (int)RADAR_R_OUTER_PX)
                                               ? (int)RADAR_R_OUTER_PX : rs.deadZonePx;
-    // Same flag main.cpp's poll loop reads to decide whether to fabricate traffic (see
-    // "simulated" in the ADS-B poll branch below) — the badge tracks it here so the two
-    // can never drift apart, one deciding what is drawn and the other saying so.
-    radar::setSimulatedBadge(rs.simulate);
-    Serial.printf("[theme] applied: rangeKm=%.0f maxAircraft=%d minAltFt=%d hideGround=%d deadZonePx=%d simulate=%d\n",
-                  (double)g_settings.rangeKm, g_maxAc, g_minAltFt, (int)g_hideGround,
-                  g_deadZonePx, (int)rs.simulate);
+    // The simulated badge went with the thing it warned about. It existed because the
+    // device could be made to show invented aircraft and somebody had to be told; it
+    // cannot any more, so there is nothing to say.
+    Serial.printf("[theme] applied: rangeKm=%.0f maxAircraft=%d minAltFt=%d hideGround=%d deadZonePx=%d\n",
+                  (double)g_settings.rangeKm, g_maxAc, g_minAltFt, (int)g_hideGround, g_deadZonePx);
 }
 
 static void loadSettings() {
@@ -722,6 +687,13 @@ static void loadSettings() {
     if (g_tz == "CET-1CEST,M3.5.0,M10.5.0/3") g_tz = TZ_STR;
     g_bigText          = p.getBool("bigtext", false);
     g_chimeIdx         = p.getInt("chimeIdx", 0);
+    // What this place is CALLED. Every path that sets a location already learns a name:
+    // the Settings search, a Studio setloc, and the IP lookup all hand one to
+    // host_recents_add(). Until now it was thrown away the moment the position was saved,
+    // and the flight tracker had nothing but coordinates to show. Kept as its own pref so
+    // the scope can name the place without reverse-geocoding anything, which is the whole
+    // reason the Orb needs no city database for this (Lerxtwood's request, 2026-09-25).
+    g_locName          = p.getString("homeName", "");
     p.end();
     audio_set_chime(g_chimeIdx);   // no hardware dependency, safe before audio_begin()
     // fonts are baked into the widgets at creation time, so the large-text flag must be
@@ -1007,6 +979,27 @@ void host_wx_zoom_set(int tier) {
     g_wxZoomChanged = true;   // adsb_task refetches with the new range on its next pass
 }
 
+// Remember what this place is called. Separate from persist_location() because a position
+// can arrive without a name (?orb setloc with bare coordinates) and a name must never
+// overwrite a good one with an empty string.
+static void persist_location_name(const char *name) {
+    if (!name || !name[0]) return;
+    g_locName = name;
+    Preferences p;
+    p.begin("capsuleradar", false);
+    p.putString("homeName", name);
+    p.end();
+}
+
+// For the flight tracker's location line (theme_style Radar::locText) and anything else
+// that wants to say where the scope is pointed. False when nothing has ever named it, so
+// the caller can draw nothing rather than an empty plate.
+bool host_location_name(char *out, size_t n) {
+    if (!n) return false;
+    snprintf(out, n, "%s", g_locName.c_str());
+    return out[0] != 0;
+}
+
 // Write a location down. Split out of host_set_location() so the boot-time lookup can save
 // a position WITHOUT the reboot below it: an Orb that restarted on its own because it
 // worked out where it was would be the device reconfiguring itself, which UX-048 forbids.
@@ -1266,6 +1259,7 @@ static bool ip_lookup_location(double &lat, double &lon) {
         char nm[40];
         snprintf(nm, sizeof(nm), "%s%s%s", city, region[0] ? ", " : "", region);
         host_recents_add(nm, la, lo);            // remember where we landed
+        persist_location_name(nm);               // and what it is called
     }
     // Derive + persist the timezone, so the clock reads local wherever this landed.
     const long off = doc["offset"] | 0x7FFFFFFFL;
@@ -1300,7 +1294,7 @@ static bool ip_lookup_location(double &lat, double &lon) {
 // be applied without a restart, and the boot-time lookup already uses them that way.
 void host_set_location_from_studio(const char *name, double lat, double lon,
                                    long tzOffsetSec, bool haveTz) {
-    if (name && name[0]) host_recents_add(name, lat, lon);
+    if (name && name[0]) { host_recents_add(name, lat, lon); persist_location_name(name); }
     // The browser's own timezone, which beats the IP lookup's guess for the same reason the
     // position does. Stored the same way and in the same format; the clock reads local from
     // the next second, with no restart, because tzset() is all that stands behind it.
@@ -1446,6 +1440,7 @@ void host_recents_add(const char *name, double lat, double lon) {
 // Like host_set_location but records the named city in the recents list first (then reboots).
 void host_set_location_named(const char *name, double lat, double lon) {
     host_recents_add(name, lat, lon);
+    persist_location_name(name);
     host_set_location(lat, lon);
 }
 

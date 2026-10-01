@@ -11,6 +11,7 @@
 #include <math.h>
 #include <lvgl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
 #include <unistd.h>
@@ -73,6 +74,17 @@ namespace {
     constexpr int SIM_RECENTS_MAX = 8;
     SimRecent g_recents[SIM_RECENTS_MAX];
     int       g_recentCount = 0;
+}
+
+// Where the simulator pretends to be, for the Flight Tracker's location banner
+// (THEME_CAPS 54). SIM_CITY overrides it, and SIM_CITY="" is how you check what a design
+// does on an Orb that has never been told what its coordinates are called: the banner
+// draws nothing at all rather than an empty plate.
+bool host_location_name(char *out, size_t n) {
+    if (!n) return false;
+    const char *env = getenv("SIM_CITY");
+    snprintf(out, n, "%s", env ? env : "Phoenix, Arizona");
+    return out[0] != 0;
 }
 
 int host_recents_get(char names[][40], double *lats, double *lons, int maxN) {
@@ -938,7 +950,11 @@ int main(int argc, char **argv) {
     // clock: the feature under test is what happens when the CURRENT APP ignores a
     // press, and with no apps registered there is no current app to ignore one. Left
     // off this line, the harness waited forever for a roster that never arrived.
-    if (interactive || wifiShot || knobShot || windShot || rockShot) sim_register_apps(radarScreen);   // live app switcher driven by the virtual knob
+    // gifPath is in this list because a --gif capture is the only way to watch a screen
+    // MOVE, and a screen that moves is usually an app. Without the shell registered the
+    // capture could only ever film the radar, which is what it was doing, and SIM_APP had
+    // nothing to choose between.
+    if (interactive || wifiShot || knobShot || windShot || rockShot || gifPath) sim_register_apps(radarScreen);   // live app switcher driven by the virtual knob
 #if CUSTOM_BOOT_TARGET == 1
     // Set only by the splash push (the clock push clears it, even if a custom
     // splash is still baked in) — so this is genuinely "you just pushed the
@@ -1199,6 +1215,33 @@ int main(int argc, char **argv) {
             printf("[selftest] Settings>Theme: rows=%d blank=%d restarts=%d (expect rows>=2, blank 0, restarts 0)\n", rows, blank, s_restarts);
             printf("[selftest] Settings>Theme: %s\n", (rows >= 2 && blank == 0 && s_restarts == 0) ? "PASS" : "FAIL");
             theme_select::setRestartHook(sim_restart);
+            app_shell::setCaptured(false);
+        }
+
+        // Settings > Location names the place, not just its coordinates (Lerxtwood,
+        // 2026-09-25). Two states, because the second is the one that goes wrong: an Orb
+        // handed bare coordinates has never been told what they mean and must show nothing
+        // there rather than an empty line in the primary ink.
+        {
+            app_shell::setCaptured(false);
+            if (app_shell::browsing()) press();
+            settle();
+            app_shell::selectApp(app_shell::APP_SETTINGS); pump();
+            settingsview::onEnter(); pump();
+            settingsview::openLocationPage(); pump();
+            const char *named = settingsview::locCityText();
+            printf("[selftest] Settings>Location: name line reads \"%s\" (expect the sim's city)\n",
+                   named ? named : "(hidden)");
+            const bool okNamed = named && named[0];
+
+            // Same page, with nothing naming the position.
+            setenv("SIM_CITY", "", 1);
+            settingsview::openLocationPage(); pump();
+            const char *blank = settingsview::locCityText();
+            printf("[selftest] Settings>Location, unnamed: %s (expect hidden)\n",
+                   blank ? "still showing" : "hidden");
+            unsetenv("SIM_CITY");
+            printf("[selftest] Settings>Location: %s\n", (okNamed && !blank) ? "PASS" : "FAIL");
             app_shell::setCaptured(false);
         }
 
@@ -1815,6 +1858,35 @@ int main(int argc, char **argv) {
                 char path[300]; snprintf(path, sizeof(path), "%s-brief.bmp", newsShot);
                 sim_save_frame(path);
                 run = false;
+            }
+        }
+
+        // SIM_APP=<name or index>: start on a chosen app instead of whatever comes up first.
+        // Added for the moving background (THEME_CAPS 55), which lives on the clock and so
+        // could not be watched at all by a --gif capture that always filmed the radar. Useful
+        // beyond that: any screen that has to be watched MOVING, rather than photographed
+        // once, needs a way to be the one on screen while it is filmed.
+        {
+            // Checked every pass rather than set once. The splash finishes on its own clock
+            // and puts the shell back on its own choice afterwards, so a single selection
+            // made while the splash was still up was quietly undone and the capture filmed
+            // whatever the shell preferred. Re-asserting costs a string compare a frame.
+            if (now - start > 2500) {
+                if (const char *want = getenv("SIM_APP")) {
+                    if (strcasecmp(app_shell::name(), want) != 0) {
+                    bool done = false;
+                    for (int i = 0; i < app_shell::count() && !done; ++i) {
+                        app_shell::selectApp(i);
+                        if (!strcasecmp(app_shell::name(), want)) done = true;
+                    }
+                    if (!done) {
+                        const int idx = atoi(want);
+                        app_shell::selectApp(idx >= 0 && idx < app_shell::count() ? idx : 0);
+                    }
+                    if (app_shell::index() == app_shell::APP_CLOCK) clockview::refresh();
+                    lv_timer_handler();
+                    }
+                }
             }
         }
 

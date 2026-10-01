@@ -22,6 +22,9 @@
 #include "custom_radar_sweep.h"  // CUSTOM_SWEEP_IMAGE_PIVOT_X/Y / CUSTOM_SWEEP_IMAGE_CENTER_X/Y — compile-time, coupled to whichever sweep sprite is baked in
 #include "theme_style.h"
 #include "orb_text_case.h"   // ALL CAPS on a finished line, THEME_CAPS 53
+// Where the Orb is, by name, for the location banner (THEME_CAPS 54). Defined in main.cpp
+// on the device and in sim_main.cpp for the simulator, like every other host_ hook here.
+extern bool host_location_name(char *out, size_t n);
 #include "theme_font.h"   // per-theme fonts, with the compiled font as fallback     // per-theme sweep/blip/selection/off-range/center/RTEXT values — see theme_style.h for what's covered vs. stays compile-time
 #include <lvgl.h>
 #include <math.h>
@@ -260,7 +263,6 @@ void noteSelectionDetailArrived();
 static float       s_lastRangeKm = 0.0f;     // current scope range, for the range banner (radar_range_fmt)
 static lv_obj_t   *s_feedWarn   = nullptr;   // "the feed is down, not your Orb" banner
 static lv_obj_t   *s_locationLabel = nullptr; // compact City, State footer
-static lv_obj_t   *s_simBadge   = nullptr;   // "this traffic is made up" mark, see setSimulatedBadge()
 static lv_obj_t   *s_loadTicker = nullptr;   // live elapsed-seconds line under the loading message
 static lv_obj_t   *s_textCanvas = nullptr;   // callsign/stats/route banners (curved+glow capable), a Launch Kit push
 // The selection card: a plate under those banners, parked on the far side of the scope
@@ -1827,7 +1829,6 @@ static void applyRadarLayerOrder() {
     }
     if (s_overlayImg) lv_obj_move_foreground(s_overlayImg);
     if (s_locationLabel) lv_obj_move_foreground(s_locationLabel);
-    if (s_simBadge)   lv_obj_move_foreground(s_simBadge);   // outranks even the glass
 
     // What the stack ACTUALLY is, straight from LVGL, rather than what the order array was
     // supposed to achieve. lv_obj_get_index is the real z-position among siblings, so this
@@ -1950,15 +1951,6 @@ void setFeedNote(const char *note) {
     lv_label_set_text(s_loading, note ? note : "Loading aircraft\nand location data");
 }
 
-// Forced on for as long as the active theme's radar.simulate is true, regardless of what
-// else the theme asks for. There is no theme-side field that can hide this: the whole
-// defect it fixes is a Studio control whose own hint framed it as a preview convenience
-// when it is not, so nothing short of "the device itself refuses to stay quiet about it"
-// closes the gap. Called from main.cpp wherever the theme's settings are applied, so it
-// tracks the SAME flag that decides whether main.cpp fabricates aircraft, not a copy of it.
-void setSimulatedBadge(bool on) {
-    if (s_simBadge) show(s_simBadge, on);
-}
 
 void setRangeLabelVisible(bool v) { s_rangeLblVisible = v; if (s_rangeLbl) show(s_rangeLbl, v && !orb() && !customStyled()); }
 
@@ -2247,19 +2239,6 @@ void init(void *lv_parent) {
     lv_obj_clear_flag(s_overlayImg, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
     lv_obj_center(s_overlayImg);
     lv_obj_add_flag(s_overlayImg, LV_OBJ_FLAG_HIDDEN);
-
-    // "This traffic is made up." Above the glass overlay, above everything: the one label
-    // on this screen no theme JSON can hide, resize, recolor or move, because the whole
-    // point is that it survives an author who forgot they turned Test traffic on, and
-    // an owner who never knew. See setSimulatedBadge(), driven by theme_style::radar().simulate.
-    s_simBadge = make_label(parent, "TEST DATA", &lv_font_montserrat_14,
-                            lv_color_white(), LV_ALIGN_TOP_LEFT, 10, 10);
-    lv_obj_set_style_bg_color(s_simBadge, lv_color_hex(0xC62E2E), 0);
-    lv_obj_set_style_bg_opa(s_simBadge, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(s_simBadge, 4, 0);
-    lv_obj_set_style_pad_hor(s_simBadge, 7, 0);
-    lv_obj_set_style_pad_ver(s_simBadge, 3, 0);
-    lv_obj_add_flag(s_simBadge, LV_OBJ_FLAG_HIDDEN);
 
     s_locationLabel = make_label(parent, "", &lv_font_montserrat_14,
                                   lv_color_hex(0xDDDDDD), LV_ALIGN_BOTTOM_MID, 0, -16);
@@ -3025,6 +3004,21 @@ static void radar_range_fmt(char *out, size_t outSz, const char *fmt) {
     RadarTok toks[] = { { "range", rangeS } };
     radar_fmt_toks(out, outSz, fmt, toks, 1);
 }
+// The location banner: what the place under the crosshair is CALLED. THEME_CAPS 54.
+//
+// No lookup and no city table. host_location_name() reads back the name that was saved
+// alongside the coordinates by whichever path set them, so this costs a string read.
+//
+// Returns false when nothing has ever named this position, and the caller then draws
+// nothing at all: a themed plate with an empty middle is worse than an absent line, and a
+// device given bare coordinates over ?orb setloc genuinely does not know where it is.
+static bool radar_loc_fmt(char *out, size_t outSz, const char *fmt) {
+    char city[48] = "";
+    if (!host_location_name(city, sizeof(city))) { if (outSz) out[0] = 0; return false; }
+    RadarTok toks[] = { { "city", city } };
+    radar_fmt_toks(out, outSz, fmt, toks, 1);
+    return out[0] != 0;
+}
 // Selection banners render into their own transparent canvas (s_textCanvas), not LVGL
 // labels — that is what lets a banner curve along an arc (LVGL has no curved-text
 // primitive) and glow (canvas shadowBlur is not a firmware effect either).
@@ -3067,6 +3061,7 @@ static void refresh_custom_text() {
     bool need = false;
     if (have) for (int i = 0; i < 3; ++i) if (rs.rtext[i].show) need = true;
     if (rs.rtext[3].show) need = true;   // the range banner is scope-wide, selection or not
+    if (rs.locText.show) need = true;    // and so is the location banner (THEME_CAPS 54)
     // The card, and where it sits. Placed before the text so the banners riding it have a
     // centre to be measured from.
     //
@@ -3145,6 +3140,18 @@ static void refresh_custom_text() {
       if (t.upper) orb_upper(buf);   // THEME_CAPS 53
       if (t.curved) rtext_draw_curved(theme_font::radar_text(3), buf, (float)t.curveR, t.arcDeg, lv_color_hex(t.color), t.glow, lv_color_hex(t.glowColor), (lv_opa_t)t.opa);
       else rtext_draw_straight(theme_font::radar_text(3), buf, (float)t.x, (float)t.y, lv_color_hex(t.color), t.glow, lv_color_hex(t.glowColor), t.align, (lv_opa_t)t.opa, curved_text::pill_of(t));
+    }
+    // The location banner, on the same terms as the range banner above: it describes the
+    // scope, not a selection, so it is outside the `have` gate and stays up the whole time.
+    // Drawn last of the five, which only matters where a design overlaps them.
+    if (rs.locText.show) {
+      const theme_style::RadarText &t = rs.locText;
+      char buf[80];
+      if (radar_loc_fmt(buf, sizeof(buf), t.fmt)) {
+        if (t.upper) orb_upper(buf);   // THEME_CAPS 53, same as every other line
+        if (t.curved) rtext_draw_curved(theme_font::radar_loc(), buf, (float)t.curveR, t.arcDeg, lv_color_hex(t.color), t.glow, lv_color_hex(t.glowColor), (lv_opa_t)t.opa);
+        else rtext_draw_straight(theme_font::radar_loc(), buf, (float)t.x, (float)t.y, lv_color_hex(t.color), t.glow, lv_color_hex(t.glowColor), t.align, (lv_opa_t)t.opa, curved_text::pill_of(t));
+      }
     }
     lv_obj_invalidate(s_textCanvas);
 }

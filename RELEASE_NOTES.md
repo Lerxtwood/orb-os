@@ -18,6 +18,74 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.37
+
+- Older and smaller SD cards work again. The Orb runs the card fast, and a card that could
+  not keep up was reported as no card at all rather than simply being run slower. Found by
+  Overcore, who lost a day to a 2 GB card that was never faulty
+
+---
+
+## 2.16.36
+
+- A moving background actually moves. Its frames were being written to the card but never
+  loaded, so the picture sat on its first frame however the theme was set
+
+---
+
+## 2.16.35
+
+- A slow moving background no longer slows the second hand with it. A background set to
+  change once a second, which is what a ticking gear train wants, was setting the whole
+  clock to one frame a second and turning a sweeping hand into a ticking one
+
+---
+
+## 2.16.34
+
+- A clock background can now be a moving picture. Choose an animated GIF for the background
+  in Orb Studio and say how it should play: held still and set going every so often, or
+  running without stopping
+- Held is the one to pick. Between plays it costs nothing at all and the second hand stays
+  exactly as smooth as it is now, where a background that never stops slows it by about a
+  third for as long as it runs
+- Themes made this way still look right on an Orb that has not updated: it shows the first
+  frame, standing still
+
+---
+
+## 2.16.33
+
+- Your Orb now always shows the real sky. It could be told to invent aircraft by a theme,
+  which meant a theme you installed from somebody else could fill your scope with traffic
+  that was never there
+- Orb Studio keeps its Test traffic switch for designing with, and it stays in the browser
+- Found by Fly4Funn, whose Orb was showing eight aircraft he never asked for
+
+## 2.16.32
+
+- Headlines set at an angle now actually appear. They were being drawn nowhere at all, while
+  still reacting to a tap, which is why a story would open if you guessed where one was
+- The app switcher shows the names either side again, instead of only the one you are on.
+  They were appearing only if you happened to give the centre name a glow
+- Both found by Drewzy while building a full theme
+
+## 2.16.31
+
+- Settings, Location now shows the name of where your Orb is set, above the coordinates,
+  so you can check it at a glance instead of reading numbers
+- An Orb that was given bare coordinates and never told what they mean shows nothing there,
+  rather than a blank line
+- The other half of Lerxtwood's request, after the flight tracker line in the last update
+
+## 2.16.30
+
+- Your flight tracker can show the name of the place it is centred on, so the scope says
+  Leeds, Utah rather than leaving you to read coordinates
+- Switch it on in Orb Studio under Flight tracker, Location line: it is off until you ask,
+  and it has every control the other text boxes have, including its own typeface and ALL CAPS
+- Asked for by Lerxtwood, who had already built it in his own copy of the firmware
+
 ## 2.16.29
 
 - City search keys do their own jobs again. Yesterday's comma landed one place along from
