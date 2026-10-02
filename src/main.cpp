@@ -3198,7 +3198,7 @@ void loop() {
                                app_shell::name(), app_shell::browsing(), app_shell::captured());
         input_router::dispatch((int)kd, pressed);           // same 3-mode routing the sim uses
     }
-    input_router::tick();                                    // a settling rock, resolved without new input
+    input_router::tick();                                    // catches a jig even with zero net movement
 
     display::loop();                // drive LVGL (render dirty areas + run timers)
 
