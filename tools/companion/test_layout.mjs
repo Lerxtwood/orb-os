@@ -80,6 +80,11 @@ test('installer migration needs no backup and gates an oversized cache on explic
     const element = id => {
       if (!nodes.has(id)) nodes.set(id, {value: '0', checked: false, textContent: '', hidden: false,
         classList: {toggle() {}}, listeners: {}, replaceChildren() {},
+        closest(selector) {
+          assert.equal(id, 'log');
+          assert.equal(selector, 'details');
+          return element('connection-details');
+        },
         addEventListener(name, fn) { this.listeners[name] = fn; }});
       return nodes.get(id);
     };
@@ -103,6 +108,7 @@ test('installer migration needs no backup and gates an oversized cache on explic
       document: {getElementById: element, createElement: () => ({})},
       navigator: {serial: {requestPort: async () => ({})}},
       window: {addEventListener() {}}, location: {href: 'https://example.com/', origin: 'https://example.com'},
+      ResizeObserver: class { observe() {} },
       SparkMD5: {ArrayBuffer: {hash: () => 'verified'}},
       fakeTools: {ESPLoader: Loader, Transport}, URL, Uint8Array, crypto: {subtle: {digest: async () => new Uint8Array(32)}},
       fetch: async url => String(url).includes('release-index')

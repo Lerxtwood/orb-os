@@ -9,17 +9,18 @@ Reference for **Orb OS + PrintSphere** on the 16 MB ESP32-S3 AMOLED 1.75, using 
 
 Run commands section by section. Stop on errors; do not flash an old binary after a failed build.
 
+For a public release without a local device test, follow sections **1, 5, 6, 7, and 8**. GitHub Actions builds both firmwares from fresh source checkouts. Sections **2–4** are for local builds and device testing; a local Orb build alone does not build PrintSphere or publish a release.
+
 ## 1. Set up your shell
 
 ```powershell
 Set-Location D:\git\Arduino\orb-os
+$ErrorActionPreference = 'Stop'
 $orbPython = Join-Path $PWD '.pio\build-venv\Scripts\python.exe'
 $devicePort = 'COM5'
 
 git status -sb
 git remote -v
-& $orbPython -m platformio --version
-gh auth status
 ```
 
 `origin` should point to `https://github.com/Lerxtwood/orb-os.git`. Always use `-R Lerxtwood/orb-os` with GitHub CLI commands: a fork's default CLI repository can be its upstream.
@@ -36,9 +37,19 @@ If the Python environment does not exist, create it once:
 py -3 -m venv .pio\build-venv
 $orbPython = Join-Path $PWD '.pio\build-venv\Scripts\python.exe'
 & $orbPython -m pip install platformio pyserial
+if ($LASTEXITCODE -ne 0) { throw 'Python dependency installation failed.' }
 ```
 
-Git and GitHub CLI must be installed. Run `gh auth login` if needed. PlatformIO downloads its framework and compiler on the first build. Local installer tests also need Node.js; an existing workstation-specific alternative is shown below.
+Then verify the tools:
+
+```powershell
+& $orbPython -m platformio --version
+if ($LASTEXITCODE -ne 0) { throw 'PlatformIO is not available in the selected Python environment.' }
+gh auth status
+if ($LASTEXITCODE -ne 0) { throw 'Run gh auth login before continuing.' }
+```
+
+Git and GitHub CLI must be installed. PlatformIO downloads its framework and compiler on the first build. Local installer tests also need Node.js 22 or newer; an existing workstation-specific alternative is shown below. In Windows PowerShell, `$ErrorActionPreference` does not stop on a native program's nonzero exit code, so keep the explicit `$LASTEXITCODE` checks.
 
 ## 2. Compile Orb
 
@@ -119,6 +130,7 @@ Run this clone command once, if the destination does not exist:
 
 ```powershell
 git clone https://github.com/Lerxtwood/PrintSphere.git .pio/companion/PrintSphere-source
+if ($LASTEXITCODE -ne 0) { throw 'PrintSphere clone failed.' }
 ```
 
 Then prepare the pinned revision:
@@ -128,8 +140,18 @@ $printerRef = (Get-Content tools/companion/printsphere-ref.txt -Raw).Trim()
 git -C .pio/companion/PrintSphere-source status --short
 # Preserve any edits shown above before changing revisions.
 git -C .pio/companion/PrintSphere-source fetch origin
+if ($LASTEXITCODE -ne 0) { throw 'PrintSphere fetch failed.' }
 git -C .pio/companion/PrintSphere-source checkout --detach $printerRef
 if ($LASTEXITCODE -ne 0) { throw 'Pinned PrintSphere checkout failed.' }
+# For a fully fresh adapted source tree, remove only this generated copy.
+$companionRoot = (Resolve-Path .pio/companion).Path
+$adaptedSource = [IO.Path]::GetFullPath((Join-Path $companionRoot 'PrintSphere'))
+if ([IO.Path]::GetDirectoryName($adaptedSource) -ne $companionRoot) {
+    throw 'Refusing to remove source outside the companion workspace.'
+}
+if (Test-Path -LiteralPath $adaptedSource) {
+    Remove-Item -LiteralPath $adaptedSource -Recurse -Force
+}
 & $orbPython tools/companion/prepare_printsphere.py --source .pio/companion/PrintSphere-source
 if ($LASTEXITCODE -ne 0) { throw 'PrintSphere preparation failed.' }
 ```
@@ -152,7 +174,8 @@ For different ESP-IDF paths:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\companion\build_printsphere.ps1 `
   -IdfPath 'C:\Users\chris\esp\esp-idf-v5.5.4' `
-  -IdfPython 'C:\Users\chris\.espressif\python_env\idf5.5_py3.11_env\Scripts\python.exe'
+  -IdfPython 'C:\Users\chris\.espressif\python_env\idf5.5_py3.11_env\Scripts\python.exe' -Clean
+if ($LASTEXITCODE -ne 0) { throw 'PrintSphere build failed.' }
 ```
 
 Output: `.pio\companion\ps-build\printsphere_idf.bin`. The helper writes only the PrintSphere slot at `0xAD0000`.
@@ -169,17 +192,21 @@ If intentionally changing the PrintSphere revision, commit and push that source 
 
 ```powershell
 git diff --check
+if ($LASTEXITCODE -ne 0) { throw 'Fix whitespace errors before continuing.' }
 & $orbPython tools/companion/test_release.py
+if ($LASTEXITCODE -ne 0) { throw 'Release asset tests failed.' }
 node --test tools/companion/test_layout.mjs
+if ($LASTEXITCODE -ne 0) { throw 'Installer tests failed.' }
 ```
 
 If Node is not on PATH, this workstation also has a copy bundled with Playwright:
 
 ```powershell
 & .\.pio\build-venv\Lib\site-packages\playwright\driver\node.exe --test tools/companion/test_layout.mjs
+if ($LASTEXITCODE -ne 0) { throw 'Installer tests failed.' }
 ```
 
-That alternative requires Playwright to be installed in the environment. CI installs Node itself and also builds/runs the dial, route-cache, and photo-cache C++ regression tests.
+That alternative requires Playwright to be installed in the environment (`& $orbPython -m pip install playwright`). Check that the executable exists with `Test-Path` before using it. Otherwise install Node.js 22 or newer and reopen PowerShell. CI installs Node itself and also builds/runs the dial, route-cache, and photo-cache C++ regression tests.
 
 Test the changed behavior on the device before releasing. For radar/photo work, check first lookup, cached revisits, dial controls, leaving/reentering radar, and memory diagnostics. Check configuration and theme uploads when your changes affect those paths.
 
@@ -204,6 +231,7 @@ git diff --cached --stat
 git diff --cached --check
 git diff --cached
 git commit -m "Describe the firmware behavior changed"
+if ($LASTEXITCODE -ne 0) { throw 'Commit failed.' }
 ```
 
 Do not stage `.pio` outputs or full-device backups. Backups can contain private Wi-Fi and configuration data.
@@ -212,19 +240,25 @@ Fetch and review before pushing:
 
 ```powershell
 git fetch origin
+if ($LASTEXITCODE -ne 0) { throw 'Fetch failed.' }
 git log --oneline --left-right HEAD...origin/main
+```
+
+If the remote advanced, merge its changes, resolve conflicts, and repeat relevant checks **before pushing**. Do not force-push over other work.
+
+```powershell
 git push origin main
 if ($LASTEXITCODE -ne 0) { throw 'Push failed. Resolve the cause before releasing.' }
 git status -sb
 ```
 
-If the remote advanced, merge its changes, resolve conflicts, and repeat relevant checks. Do not force-push over other work.
-
 A push to `main` runs **Check Orb companion build**, but does not publish firmware:
 
 ```powershell
 gh run list -R Lerxtwood/orb-os --workflow webflasher.yml --limit 5
+# Select the run for the commit reported by git rev-parse HEAD.
 $checkRun = Read-Host 'Enter the check workflow run ID for your commit'
+gh run view $checkRun -R Lerxtwood/orb-os --json headSha,headBranch,status,conclusion,url
 gh run watch $checkRun -R Lerxtwood/orb-os --exit-status --interval 30
 if ($LASTEXITCODE -ne 0) { throw 'CI checks did not pass.' }
 ```
@@ -236,13 +270,17 @@ if ($LASTEXITCODE -ne 0) { throw 'CI checks did not pass.' }
 ```powershell
 gh release list -R Lerxtwood/orb-os --limit 10
 git fetch origin --tags
+if ($LASTEXITCODE -ne 0) { throw 'Tag fetch failed.' }
 git status -sb
 git log -1 --oneline
-$releaseTag = Read-Host 'Enter a NEW tag, for example v2.16.30-companion'
+$releaseTag = Read-Host 'Enter a NEW tag, for example v2.16.37-companion'
+if ($releaseTag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+-companion$') { throw 'Use vX.Y.Z-companion.' }
+if (($releaseTag + '-orb').Length -gt 31) { throw 'Version is too long for the firmware descriptor.' }
+if (git status --porcelain) { throw 'Commit or preserve working-tree changes before releasing.' }
 git ls-remote --tags origin "refs/tags/$releaseTag"
 ```
 
-The version is an example, not a fixed next version. If the last command lists an existing tag, choose a new one. Use `vX.Y.Z-companion`. Release the tested commit, with a clean working tree and `main` pushed.
+The version is an example, not a fixed next version. If the last command lists an existing tag, choose a new one; also check `git tag --list $releaseTag` for a local tag. Use `vX.Y.Z-companion`, advancing from the latest companion release and matching the current `FW_VERSION` base when incorporating a newer upstream version. Release the tested commit, with a clean working tree and `main` pushed. Local binaries are not uploaded: CI stamps Orb with the tag without `v`, and PrintSphere with the full tag plus `-orb`.
 
 ### Write release notes
 
@@ -286,10 +324,13 @@ if ($LASTEXITCODE -ne 0) { throw 'Release or installer deployment failed.' }
 
 gh release edit $releaseTag -R Lerxtwood/orb-os `
   --title $releaseTag --notes-file .pio/companion/release-notes.md
+if ($LASTEXITCODE -ne 0) { throw 'Release notes update failed.' }
 gh release view $releaseTag -R Lerxtwood/orb-os
 ```
 
 Both the `release` job and `pages / deploy` job must succeed. Attach notes after the workflow has created the release.
+
+Editing release notes replaces the generated body. Keep the installer link, hardware requirements, and installation instructions your users need in your notes.
 
 ## 8. Verify the live installer
 
@@ -324,6 +365,7 @@ for part in manifest['parts']:
     print(part['path'], 'verified')
 print(expected, 'is available from the web installer')
 '@ | & $orbPython - $releaseTag
+if ($LASTEXITCODE -ne 0) { throw 'Live release verification failed.' }
 ```
 
 Compare the manifest's commit with `git rev-parse "$releaseTag^{commit}"`. The web installer flashes separate images at fixed addresses; never upload a private full-device backup as a release asset.
@@ -333,6 +375,8 @@ Compare the manifest's commit with `git rev-parse "$releaseTag^{commit}"`. The w
 ```powershell
 gh run view $releaseRun -R Lerxtwood/orb-os --log-failed
 ```
+
+For a failed `main` check, substitute `$checkRun`. Read the first failing step: an installer test failure prevents compilation and publication. The previously observed `connectionLog.closest is not a function` was an outdated mock DOM in `test_layout.mjs`; fix the harness when browser APIs change, then rerun tests and push the fix. Do not skip the checks to publish.
 
 For a transient failure:
 
@@ -347,6 +391,8 @@ gh workflow run release.yml -R Lerxtwood/orb-os --ref main -f "tag=$releaseTag"
 ```
 
 That checks out the specified tag, not your latest untagged edits. For a source fix, commit it and publish a new version rather than moving an already-published tag.
+
+The release manifest records the checked-out tag's commit, including for manual dispatch. If firmware publication succeeded but Pages failed, rerun the failed job or deploy `companion-pages.yml` as below; no replacement firmware tag is needed. Rebuilding an existing published tag can replace its assets, so use it only for an intentional rebuild of that same source.
 
 ## 10. Publish installer-only changes
 
