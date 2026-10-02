@@ -17,6 +17,11 @@ For the 16 MiB ESP32-S3 AMOLED 1.75 device. Orb remains the normal firmware;
 select **Printer**, then press to reboot into PrintSphere. From v2.16.27-companion,
 jig the dial to open **Return to Orb**, then press the dial
 to confirm. Turn to cancel, or let the menu close after eight seconds.
+From v2.16.38-companion, turn either way and reverse within 250 ms to open
+the menu immediately, with no limit on the length of either turn. The same
+45 ms minimum reversal gap as Orb filters encoder bounce. Continued gesture
+movement is absorbed until the dial has been quiet for 350 ms; a subsequent
+turn cancels the menu. A fresh press after the menu opens confirms the return.
 Only the running firmware serves its web interface.
 
 PrintSphere's dial uses Orb's GPIO18(A)/17(B)/16(button) wiring and gesture timing.
@@ -123,6 +128,7 @@ test does not flash hardware. `smoke.py` exercises real Orb configuration pages 
 both existing USB/HTTP theme-file transports using a temporary folder.
 
 `test_dial.cpp` runs the production quadrature decoder and gesture router with
-direction changes, contact chatter, slow reversals, long scrolling runs, menu
-timeout/cancellation, early presses, and millisecond wrap. Compile with a host
+direction changes, contact chatter, slow reversals, unrestricted turn lengths,
+gesture-tail draining, menu timeout/cancellation, early presses, and millisecond
+wrap. Compile with a host
 C++17 compiler and `-Itools/companion`. Its tests also run in both CI workflows.

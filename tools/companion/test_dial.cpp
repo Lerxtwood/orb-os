@@ -35,10 +35,10 @@ int main() {
     assert(r.needs_poll(d.snapshot()));
     turn(d, -direction, 1100);
     auto pending = r.poll(d.snapshot(),1100);
-    assert(!pending.opened && pending.turn == 0);
+    assert(pending.opened && pending.turn == 0);
     assert(!r.poll(d.snapshot(),1259).opened);
     auto menu = r.poll(d.snapshot(),1260);
-    assert(menu.opened && menu.turn == 0);
+    assert(r.menu_open() && !menu.opened && menu.turn == 0);
     assert(!r.poll(d.snapshot(),1261).confirmed);
     d.button(false, 1300);
     auto confirm = r.poll(d.snapshot(),1300);
@@ -73,25 +73,48 @@ int main() {
   {
     Decoder d; Router r; d.seed(3,true,0);
     turn(d,1,1000); turn(d,-1,1100); assert(r.poll(d.snapshot(),1260).opened);
-    turn(d,1,1500); auto action=r.poll(d.snapshot(),1500);
+    r.poll(d.snapshot(),1610); // let the gesture tail settle before a cancel turn
+    turn(d,1,1700); auto action=r.poll(d.snapshot(),1700);
     assert(action.closed && !action.confirmed && action.turn == 0); // turn cancels
-    d.button(false,1700); assert(!r.poll(d.snapshot(),1700).confirmed);
+    d.button(false,1900); assert(!r.poll(d.snapshot(),1900).confirmed);
   }
   {
     Decoder d; Router r; d.seed(3,true,0);
     turn(d,1,1000); r.poll(d.snapshot(),1000);
-    turn(d,-1,1100); assert(r.poll(d.snapshot(),1100).turn==0);
+    turn(d,-1,1100); assert(r.poll(d.snapshot(),1100).opened);
     turn(d,-1,1150); turn(d,-1,1200);
-    auto action=r.poll(d.snapshot(),1260); // deliberate reverse scrolling is not a jig
+    auto action=r.poll(d.snapshot(),1260); // continued return stroke is absorbed
     assert(!action.opened && action.turn == 0);
-    assert(r.poll(d.snapshot(),1451).turn == -2); // net held movement, no bounce
+    assert(r.poll(d.snapshot(),1610).turn == 0 && r.menu_open());
   }
   {
     Decoder d; Router r; d.seed(3,true,0);
     for (int n=0;n<5;++n) turn(d,1,1000+n*100);
-    turn(d,-1,1500); assert(!r.poll(d.snapshot(),1700).opened);
-    turn(d,1,3000); turn(d,-1,3100); // pause resets an earlier long scrolling run
-    assert(r.poll(d.snapshot(),3260).opened);
+    turn(d,-1,1500); assert(r.poll(d.snapshot(),1500).opened);
+  }
+  for (int direction : {-1, 1}) {
+    Decoder d; Router r; d.seed(3,true,0);
+    for (int n=0;n<10;++n) turn(d,direction,1000+n*50);
+    for (int n=0;n<8;++n) turn(d,-direction,1550+n*50);
+    // Both long strokes can arrive between UI polls; neither has a travel limit.
+    auto action = r.poll(d.snapshot(),2200);
+    assert(action.opened && action.turn == 0 && !action.confirmed);
+    // Queued movement after a blocked frame extends draining before its expiry.
+    turn(d,-direction,2500);
+    assert(!r.poll(d.snapshot(),3000).closed && r.menu_open());
+    // Net-zero motion also extends the quiet period even without a new jig.
+    turn(d,-direction,3050); turn(d,direction,3070);
+    assert(!r.poll(d.snapshot(),3400).closed);
+    assert(!r.poll(d.snapshot(),3749).closed);
+    assert(!r.poll(d.snapshot(),3750).closed);
+    turn(d,direction,3800);
+    assert(r.poll(d.snapshot(),3800).closed);
+  }
+  {
+    Decoder d; Router r; d.seed(3,true,0);
+    turn(d,1,1000); turn(d,-1,1300); // slow reversal remains ordinary navigation
+    auto action = r.poll(d.snapshot(),1551);
+    assert(!action.opened && action.turn == 0 && !r.menu_open());
   }
   {
     Decoder d; Router r; d.seed(3,true,0xFFFFF000U);

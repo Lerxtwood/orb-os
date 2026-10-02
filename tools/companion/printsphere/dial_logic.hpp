@@ -47,22 +47,18 @@ class Decoder {
     state_.position += direction;
     state_.turn_at = now;
     const uint32_t gap = now - last_detent_at_;
-    const bool fresh = gap > 900;
-    if (!fresh && last_direction_ != 0 && direction != last_direction_ && run_length_ <= 2 &&
-        gap >= 45 && gap <= 250) {
+    // Match Orb: either-direction reversal, with no limit on turn distance.
+    if (last_direction_ != 0 && direction != last_direction_ && gap >= 45 && gap <= 250) {
       state_.rock_at = now;
       state_.rock_position = state_.position;
       ++state_.rock_sequence;
     }
-    run_length_ = (!fresh && direction == last_direction_) ? run_length_ + 1 : 1;
-    // Long scrolling need not grow the counter without bound.
-    if (run_length_ > 3) run_length_ = 3;
     last_direction_ = direction;
     last_detent_at_ = now;
   }
   Snapshot state_{};
   uint8_t previous_ab_ = 3;
-  int travel_ = 0, last_direction_ = 0, run_length_ = 0;
+  int travel_ = 0, last_direction_ = 0;
   uint32_t last_detent_at_ = 0, last_button_edge_ = 0;
   bool button_down_ = false;
 };
@@ -89,8 +85,17 @@ class Router {
     seen_press_ = input.press_sequence;
     result.activity = delta != 0 || pressed;
     if (menu_open_) {
+      const bool moving = delta != 0 || input.turn_at != last_menu_turn_at_ ||
+                          input.rock_sequence != seen_rock_;
       seen_rock_ = input.rock_sequence;
-      if (now - opened_at_ >= 8000 || delta != 0) {
+      last_menu_turn_at_ = input.turn_at;
+      // A continued return stroke must not immediately dismiss the menu.
+      // Inspect queued movement before expiry, including after a slow UI frame.
+      if (draining_) {
+        if (moving) last_motion_at_ = now;
+        else if (now - last_motion_at_ >= 350) draining_ = false;
+      }
+      if (now - opened_at_ >= 8000 || (delta != 0 && !draining_)) {
         menu_open_ = false;
         result.closed = true;
       } else if (pressed && static_cast<int32_t>(input.press_at - opened_at_) > 0) {
@@ -100,24 +105,14 @@ class Router {
       return result;
     }
     if (input.rock_sequence != seen_rock_) {
-      const int32_t after = input.position - input.rock_position;
-      const int32_t distance = after < 0 ? -after : after;
-      if (distance > 1) {
-        seen_rock_ = input.rock_sequence;
-        delta += held_;
-        held_ = 0;
-      } else if (now - input.rock_at < 160) {
-        held_ += delta;
-        return result;
-      } else {
-        seen_rock_ = input.rock_sequence;
-        held_ = 0;
-        menu_open_ = true;
-        opened_at_ = now;
-        result.opened = true;
-        result.activity = true;
-        return result;  // A press queued before the menu appeared cannot confirm.
-      }
+      seen_rock_ = input.rock_sequence;
+      held_ = 0;
+      menu_open_ = draining_ = true;
+      opened_at_ = last_motion_at_ = now;
+      last_menu_turn_at_ = input.turn_at;
+      result.opened = true;
+      result.activity = true;
+      return result;  // A press queued before the menu appeared cannot confirm.
     }
     result.pressed = pressed;
     // Wait out the complete reversal window before showing any page movement.
@@ -133,6 +128,7 @@ class Router {
  private:
   int32_t last_position_ = 0, held_ = 0;
   uint32_t seen_rock_ = 0, seen_press_ = 0, opened_at_ = 0;
-  bool menu_open_ = false, returning_ = false;
+  uint32_t last_motion_at_ = 0, last_menu_turn_at_ = 0;
+  bool menu_open_ = false, returning_ = false, draining_ = false;
 };
 }  // namespace printsphere::dial
