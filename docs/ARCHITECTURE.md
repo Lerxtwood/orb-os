@@ -41,13 +41,11 @@ full-screen apps (one LVGL screen each):
 - Jig: turn either way, then reverse within 250 ms to open the app switcher. Neither
   movement has a tick limit, and no stop or settle is required. Reversals under 45 ms
   are rejected as encoder bounce. This works in every app, including Settings.
-  After opening, remaining jig movement is swallowed until the dial has been quiet
-  for 350 ms, confirmed by an input-free poll. Queued movement is checked before
-  releasing this guard, so a slow frame cannot leak the return stroke into navigation.
-  The menu stays on its initial selection during that return stroke.
-  Its first navigation after a jig requires two ticks in the same direction within
-  350 ms; the first is absorbed to reject a late isolated tick. A reversal or pause
-  starts this confirmation over. Once confirmed, navigation is one tick per item.
+  After opening, the immediate gesture tail is swallowed for a fixed 350 ms.
+  Turning does not extend this deadline, and it expires without an input-free
+  dispatch. Afterward every tick navigates one item, including the first slow tick
+  or a direction change. There is no extra two-tick confirmation. Continued
+  movement beyond the brief guard counts as navigation.
 - Turn: scroll within the current app, or cycle apps while the switcher is open.
   A push commits into the shown app.
 - Push: run the current app's `onPress` handler.

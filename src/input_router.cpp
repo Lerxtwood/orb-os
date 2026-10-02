@@ -2,9 +2,9 @@
 #include "knob_help.h"
 #include "wind_notice.h"
 #include "update_ui.h"
-#include <lvgl.h>       // lv_tick_get — a millisecond clock both targets have
+#include <lvgl.h>       // lv_tick_get â€” a millisecond clock both targets have
 #if defined(ESP_PLATFORM)
-#include "display.h"   // markInput — input-to-glass timing
+#include "display.h"   // markInput â€” input-to-glass timing
 #endif
 #include "app_shell.h"
 #include "knob.h"
@@ -39,69 +39,25 @@ namespace {
 constexpr uint32_t ROCK_WINDOW_MS = 250;
 uint32_t s_firedAt = 0;
 
-// The return stroke may continue after its first detent opens the menu. Discard
-// that tail until the dial has been quiet for this long, then allow navigation.
-constexpr uint32_t ROCK_QUIET_MS = 350;
+// Absorb only the immediate gesture tail. The deadline is fixed when the menu
+// opens: movement cannot extend it, and expiry needs no input-free dispatch.
+// Once it expires every detent belongs to navigation, including slow turns.
+constexpr uint32_t ROCK_TAIL_MS = 350;
 bool s_drainingRock = false;
-uint32_t s_lastRockMotionMs = 0;
-int32_t s_lastRawPosition = 0;
-int32_t s_lastDetentCount = 0;
-bool s_primingMenu = false;
-int s_primeDirection = 0;
-uint32_t s_primeMs = 0;
+uint32_t s_rockOpenedMs = 0;
 
 void open_from_rock() {
     s_drainingRock = true;
-    s_lastRockMotionMs = lv_tick_get();
-    s_lastRawPosition = knob::rawPosition();
-    s_lastDetentCount = knob::detentCount();
-    s_primingMenu = true;
-    s_primeDirection = 0;
+    s_rockOpenedMs = lv_tick_get();
     app_shell::openSwitcher();
 }
 
-int first_menu_turn(int delta) {
-    if (!s_primingMenu || delta == 0) return delta;
-    const uint32_t now = lv_tick_get();
-    const int dir = delta > 0 ? 1 : -1;
-    if (dir == s_primeDirection && (uint32_t)(now - s_primeMs) < ROCK_QUIET_MS) {
-        // A second tick confirms navigation. The first was already absorbed.
-        s_primingMenu = false;
-        return delta;
-    }
-    // A fresh run (or reversal) absorbs its first tick. Handle batched detents
-    // too: a two-tick poll should move one item, not jump two items.
-    s_primeDirection = dir;
-    s_primeMs = now;
-    const int remainder = delta - dir;
-    if (remainder != 0) s_primingMenu = false;
-    return remainder;
-}
-
-bool drain_rock_tail(int delta, bool rock) {
+bool drain_rock_tail() {
     if (!s_drainingRock) return false;
-    const uint32_t now = lv_tick_get();
-    const int32_t raw = knob::rawPosition();
-    const int32_t detents = knob::detentCount();
-    // Raw travel catches partial ticks; committed detents also cover the simulator
-    // and a net-zero reversal. Every observed movement extends the quiet period.
-    const bool moving = delta != 0 || rock || raw != s_lastRawPosition ||
-                        detents != s_lastDetentCount;
-    s_lastRawPosition = raw;
-    s_lastDetentCount = detents;
-    if (moving) {
-        // Inspect queued movement BEFORE expiry. A slow render may have kept us
-        // from polling for longer than the quiet period while the dial kept turning.
-        s_lastRockMotionMs = now;
-        return true;
-    }
-    // Only an input-free poll can finish draining. The first movement after a
-    // blocked frame is therefore swallowed even if the old deadline has passed.
-    if ((uint32_t)(now - s_lastRockMotionMs) >= ROCK_QUIET_MS) {
+    if ((uint32_t)(lv_tick_get() - s_rockOpenedMs) >= ROCK_TAIL_MS) {
         s_drainingRock = false;
-        return false;
     }
-    return true;
+    return s_drainingRock;
 }
 
 bool take_rock() {
@@ -160,10 +116,8 @@ void input_router::dispatch(int delta, bool pressed) {
     // free to keep meaning "open the app menu" here as everywhere else. Without that, a
     // theme could strand somebody on a screen that will not take no for an answer, which is
     // the thing CUT-05 exists to forbid.
-    // A press/auto-commit or another route out of the menu ends its entry filter.
-    if (!app_shell::browsing()) s_primingMenu = false;
     bool rock = take_rock();
-    if (drain_rock_tail(delta, rock)) {
+    if (drain_rock_tail()) {
         delta = 0;
         rock = false;
     }
@@ -176,7 +130,6 @@ void input_router::dispatch(int delta, bool pressed) {
 
     // The switcher owns input while open. Reversals here only browse apps.
     if (app_shell::browsing()) {
-        delta = first_menu_turn(delta);
         if (delta != 0) app_shell::browseTurn(delta);
         if (pressed)    app_shell::browsePress();
         return;
