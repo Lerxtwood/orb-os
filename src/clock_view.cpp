@@ -1854,8 +1854,8 @@ static void beat_cb(lv_timer_t * /*t*/) {
     if (!s_beat) return;
     if (lv_scr_act() != s_screen || orb_screen_covered()) return;
     if (theme_audio::tickCount() <= 0) return;
-    struct tm ti;
-    time_for_face(&ti);
+    // s_noTime READ, not refreshed. The drawing callback maintains it; calling time_for_face
+    // again here would be a second clock read per wake for an answer that changes about never.
     if (s_noTime) return;
 
     struct timeval tv; gettimeofday(&tv, nullptr);
@@ -1865,11 +1865,17 @@ static void beat_cb(lv_timer_t * /*t*/) {
         size_t n = 0;
         if (const uint8_t *pcm = theme_audio::nextTick(n)) audio_play_pcm(pcm, n, false, audio_tick_level());
     }
-    // Aim at the next second. A short hop when it is close, so the click lands on the second
-    // rather than up to a timer period after it; a long one in between, so this costs nothing
-    // while it waits.
+
+    // ONE wake per second, aimed AT the boundary rather than short of it.
+    //
+    // This used to stop 40 ms early and then poll every 5 ms, which is thirteen wakes a
+    // second instead of one, every one of them on the same task that draws. On a stepping
+    // dial that is invisible; on a sweeping one those wakes land in the middle of the hand's
+    // own frames and Zion saw it stutter. An LVGL timer fires at or after its period, so
+    // aiming at the boundary wakes on it or a few milliseconds after, which is what the
+    // click wants anyway and costs a twelfth of the interruptions.
     const uint32_t toGo = (uint32_t)((1000000 - tv.tv_usec) / 1000);
-    lv_timer_set_period(s_beat, toGo > 60 ? toGo - 40 : 5);
+    lv_timer_set_period(s_beat, toGo < 5 ? 5 : toGo);
 }
 
 static void tick_cb(lv_timer_t * /*t*/) {
@@ -2025,7 +2031,7 @@ float clockview::minuteStepSecs() { return STEP_SECS; }
 float clockview::railwayStopStart() { return STOP_AT; }
 uint32_t clockview::beatAim(long usec) {
     const uint32_t toGo = (uint32_t)((1000000 - usec) / 1000);
-    return toGo > 60 ? toGo - 40 : 5;
+    return toGo < 5 ? 5 : toGo;
 }
 long  clockview::beatSlot(long sec, long usec, int beat) {
     const int b = beat >= 2 ? beat : 1;

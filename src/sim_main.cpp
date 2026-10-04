@@ -1425,10 +1425,14 @@ int main(int argc, char **argv) {
                     if (off > latest) latest = off;
                     if (off < earliest) earliest = off;
                 }
-                const bool aimed = latest <= 6000L && earliest >= -60000L;
+                // And how OFTEN it wakes, which is the cost it imposes on the hand that is
+                // drawing beside it. One a second is the whole design; it was thirteen.
+                long wakes = 0, at = 0;
+                while (at < 1000000L) { wakes++; at += (long)clockview::beatAim(at) * 1000L; }
+                const bool aimed = latest <= 6000L && earliest >= -6000L && wakes <= 2;
                 printf("[selftest] the tick's timer lands on the second: %s"
-                       " (at worst %ld ms late, %ld ms early)\n",
-                       aimed ? "PASS" : "FAIL", latest / 1000, -earliest / 1000);
+                       " (at worst %ld ms late, %ld ms early, and wakes %ld time a second)\n",
+                       aimed ? "PASS" : "FAIL", latest / 1000, -earliest / 1000, wakes);
             }
             }
         }

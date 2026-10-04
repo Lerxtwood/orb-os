@@ -18,6 +18,13 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.52
+
+- A ticking clock no longer disturbs a sweeping second hand. Its tick was waking thirteen
+  times a second to keep its timing; one is enough and the hand gets the rest
+
+---
+
 ## 2.16.51
 
 - The clock's tick keeps its own time now, instead of riding the drawing. It used to land up
