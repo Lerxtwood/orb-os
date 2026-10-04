@@ -1343,6 +1343,12 @@ static uint32_t sweep_period() {
 
 static lv_color_t *s_under = nullptr;
 static int  s_underMin = -1, s_underHr = -1;   // what minute this cache is of
+// Minutes-of-the-hour, fractional, that the cache was composed at. The minute hand lives
+// in the cache, so for the whole life of a cache that hand cannot move. Holding one cache
+// per whole minute is what made the Orb's minute hand jump a full division at the top of
+// the minute instead of creeping, which is right for a railway dial and wrong for every
+// other sweeping one. Jean-Paul Stringaro spotted it against Studio, 2026-09-29.
+static float s_underMins = -1.0f;
 static bool s_prevSecValid = false;
 static lv_area_t s_prevSec = { 0, 0, 0, 0 };
 static float s_prevAng = 0.0f;
@@ -1436,6 +1442,36 @@ static bool sprite_span(int dy, float ang, float cx, float cy, int pivotX, int p
     return true;
 }
 
+// How stale the cached minute hand is allowed to get, in fractional minutes.
+//
+// The minute hand is in the cache, so it only moves when the cache is rebuilt. Rebuilding
+// once a whole minute makes it jump a division; rebuilding every frame would cost a full
+// compose thirty times a second and there would be no sweep left. The honest limit is the
+// screen: rebuild once the tip has travelled about a pixel, and the hand reads as creeping
+// because nothing finer than a pixel can be shown anyway.
+//
+// reach is the hand's own length past the pivot, in pixels, so a short hand on a sub-dial
+// rebuilds less often than a long one that spans the glass. 6 degrees a minute is the
+// minute hand's rate, so a pixel at radius r takes (1 / (r * 6 * DEG2RAD)) minutes.
+//
+// A railway design is exempt and keeps the whole-minute cache: there the jump is the point.
+static float cache_minutes_allowed() {
+    const theme_style::Clock &cs = theme_style::clock();
+    if (cs.secondRailway && cs.secondSweep) return 1.0f;   // the step IS the design
+    const theme_style::Hand &hd = cs.hand[1];
+    if (!hd.show) return 1.0f;                             // no minute hand, nothing to creep
+    CustomSprite spr = custom_hand(1);
+    if (!spr.data) return 1.0f;
+    // The longer side of the sprite away from its pivot: that is what sweeps the biggest arc.
+    const float up = (float)hd.pivotY, down = (float)(spr.h - hd.pivotY);
+    const float reach = up > down ? up : down;
+    if (reach < 8.0f) return 1.0f;                         // too short for a pixel to matter
+    const float mins = 1.0f / (reach * 6.0f * DEG2RAD);
+    // Never more often than a tenth of a second's worth of work, never less often than once
+    // a minute. The floor is what protects the sweep on a very long hand.
+    return mins < 0.05f ? 0.05f : (mins > 1.0f ? 1.0f : mins);
+}
+
 // Compose the dial without its second hand and keep it. Once a minute, not once a frame.
 static bool rebuild_under(const struct tm *ti) {
     if (!s_buf) return false;
@@ -1455,6 +1491,7 @@ static bool rebuild_under(const struct tm *ti) {
     memcpy(s_under, s_buf, (size_t)SCREEN_W * SCREEN_H * sizeof(lv_color_t));
     s_underHr = ti->tm_hour;
     s_underMin = ti->tm_min;
+    s_underMins = (float)ti->tm_min + (float)ti->tm_sec / 60.0f;
     s_prevSecValid = false;
     s_fullNext = true;
     return true;
@@ -1725,9 +1762,16 @@ static void tick_cb(lv_timer_t * /*t*/) {
     }
 
     if (sweep_possible()) {
-        // The cache is of one minute. When the minute rolls, the hour and minute hands have
-        // moved and everything under the second hand has to be composed again.
-        if (!s_under || ti.tm_min != s_underMin || ti.tm_hour != s_underHr) {
+        // The cache holds the hour and minute hands, so it has to be recomposed before
+        // either of them is visibly out of date. On a railway dial that is once a whole
+        // minute and the hand steps, which is the design. Everywhere else it is roughly
+        // every three seconds, which is how long the minute hand's tip takes to travel one
+        // pixel, and the hand reads as creeping the way a mechanical watch does.
+        const float nowMins = (float)ti.tm_min + (float)ti.tm_sec / 60.0f;
+        float aged = nowMins - s_underMins;
+        if (aged < 0.0f) aged += 60.0f;                    // the hour rolled under us
+        const bool stale = s_underMins < 0.0f || aged >= cache_minutes_allowed();
+        if (!s_under || stale || ti.tm_hour != s_underHr) {
             if (!rebuild_under(&ti)) { redraw(&ti); return; }
             // First frame after a rebuild repaints everything, because everything changed.
             // Same path as any other frame, just with the whole dial as its box.
@@ -1749,10 +1793,11 @@ static void tick_cb(lv_timer_t * /*t*/) {
 // the fields behind them, so the test reads as the behaviour it protects.
 bool  clockview::faceHasTime() { struct tm ti; time_for_face(&ti); return !s_noTime; }
 float clockview::handSeconds(float wallSeconds) { return railway_seconds(wallSeconds); }
+float clockview::cacheMinutesAllowed() { return cache_minutes_allowed(); }
 
 void clockview::setSweep(int mode) {
     s_forceSweep = mode;
-    s_underMin = -1; s_underHr = -1; s_prevSecValid = false;
+    s_underMin = -1; s_underHr = -1; s_underMins = -1.0f; s_prevSecValid = false;
     retime();
 #if defined(ESP_PLATFORM)
     const bool ok = sweep_possible();
@@ -1772,7 +1817,7 @@ void clockview::refresh() {
 static void apply_face() {
     // The cache belongs to the old theme's dial. Dropping the minute stamp forces a rebuild
     // rather than sweeping a new second hand over somebody else's face.
-    s_underMin = -1; s_underHr = -1; s_prevSecValid = false;
+    s_underMin = -1; s_underHr = -1; s_underMins = -1.0f; s_prevSecValid = false;
     // ...and what the last face COST. Nothing about how often this screen redraws is stored
     // with a design or carried between them: it is measured, here, from whatever is on the
     // glass now. A heavy dial must not leave a light one running at its pace.

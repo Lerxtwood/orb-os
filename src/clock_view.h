@@ -25,4 +25,9 @@ namespace clockview {
     // which is that second itself unless THIS design asked for the railway stop.
     bool      faceHasTime();
     float     handSeconds(float wallSeconds);
+    // How stale the sweep cache, and so the minute hand inside it, is allowed to get, in
+    // fractional minutes. Exposed for the self-test: a sweeping design has to come back
+    // under a minute or its minute hand steps instead of creeping, and a railway design
+    // has to come back at exactly a minute because there the step is the design.
+    float     cacheMinutesAllowed();
 }

@@ -18,6 +18,16 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.38
+
+- On a sweeping clock the minute hand now creeps the whole time, the way a mechanical watch
+  does. It used to hold still and jump a whole division at the top of the minute, which is
+  correct for a railway dial and wrong for every other design. Railway dials still step,
+  because there the step is the point. Found by Jean-Paul Stringaro, who noticed the Orb and
+  Orb Studio disagreeing
+
+---
+
 ## 2.16.37
 
 - Older and smaller SD cards work again. The Orb runs the card fast, and a card that could

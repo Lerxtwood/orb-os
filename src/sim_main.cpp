@@ -1299,6 +1299,17 @@ int main(int argc, char **argv) {
                    (double)clockview::handSeconds(58.5f));
             printf("[selftest] the clock keeps its time, and the stop stays home: %s\n",
                    (lost == 0 && linear) ? "PASS" : "FAIL");
+
+            // The minute hand lives in the sweep cache, so it can only move when that cache
+            // is rebuilt. Holding one cache per whole minute made it jump a division at the
+            // top of the minute rather than creep, which is right for a railway dial and
+            // wrong for every other sweeping one. This is the guard on that: a design that
+            // did not ask for the stop has to refresh inside a minute.
+            const float allowed = clockview::cacheMinutesAllowed();
+            const bool creeps = allowed > 0.0f && allowed < 1.0f;
+            printf("[selftest] the minute hand creeps rather than steps: %s"
+                   " (cache refreshes every %.2f min, about %.1f s)\n",
+                   creeps ? "PASS" : "FAIL", (double)allowed, (double)(allowed * 60.0f));
         }
 
         // ---- every key on the city search keyboard does its own job ------------------
