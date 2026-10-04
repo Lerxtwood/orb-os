@@ -42,6 +42,9 @@ namespace clockview {
     // Which beat of the second a given instant falls in. Exposed so the self-test can hold the
     // one piece of arithmetic that decides how often a theme ticks.
     long      beatSlot(long sec, long usec, int beat);
+    // How long the tick's own timer waits, from a given point in the second. Exposed because
+    // the whole value of that timer is that it lands on the second and nothing else.
+    uint32_t  beatAim(long usec);
     // Whether a design whose full compose costs this many milliseconds can afford to animate
     // the minute hand's step, rather than clicking it over in one move.
     bool      stepAffordable(float composeMs);

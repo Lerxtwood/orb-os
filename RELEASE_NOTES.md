@@ -18,6 +18,14 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.51
+
+- The clock's tick keeps its own time now, instead of riding the drawing. It used to land up
+  to a sixth of a second from where it belonged, which was heard as clicks dropping
+- Found by Zion
+
+---
+
 ## 2.16.50
 
 - A theme's tick is now carried as whole seconds rather than single clicks, so a fast

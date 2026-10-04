@@ -1358,6 +1358,18 @@ static void draw_custom(const struct tm *ti) { compose_custom(ti, false, true); 
 // a quarter of each, and a sweep becomes affordable rather than impossible.
 
 static lv_timer_t *s_tick = nullptr;
+// The tick has its own timer, and that is the point of it.
+//
+// It used to fire from the drawing callback, which ties the sound to whatever the dial costs
+// to compose. On a design that sweeps, that callback runs on the sweep's own period, which is
+// anything from 33 to 150 ms and adapts, so the tick landed up to a sixth of a second from
+// where it belonged and the amount varied second to second. On one that does not sweep, the
+// callback also redraws the whole face, between 70 and 250 ms of work, in the same task.
+//
+// A clock's tick is the one sound on this device where timing IS the content. So it is its
+// own timer, it draws nothing, and it re-aims itself at the next whole second every time it
+// fires. Zion: "i'm still hearing clicks drop."
+static lv_timer_t *s_beat = nullptr;
 // A rolling average of what one sweep frame costs, in milliseconds, measured end to end
 // including everything LVGL then does with it.
 static float s_sweepMs = 45.0f;
@@ -1832,6 +1844,34 @@ static void retime(void) {
     lv_timer_set_period(s_tick, sweep_possible() ? sweep_period() : 1000);
 }
 
+// One click a second, from whichever set the worn theme shipped. Nothing else.
+//
+// Guarded like the drawing callback, so an Orb showing another app or sitting under the wind
+// screen is silent. Driven by the second CHANGING rather than by this firing, and re-aimed at
+// the next whole second afterwards, so the interval between two clicks is the clock's own and
+// not this timer's.
+static void beat_cb(lv_timer_t * /*t*/) {
+    if (!s_beat) return;
+    if (lv_scr_act() != s_screen || orb_screen_covered()) return;
+    if (theme_audio::tickCount() <= 0) return;
+    struct tm ti;
+    time_for_face(&ti);
+    if (s_noTime) return;
+
+    struct timeval tv; gettimeofday(&tv, nullptr);
+    static long lastSec = -1;
+    if ((long)tv.tv_sec != lastSec) {
+        lastSec = (long)tv.tv_sec;
+        size_t n = 0;
+        if (const uint8_t *pcm = theme_audio::nextTick(n)) audio_play_pcm(pcm, n, false, audio_tick_level());
+    }
+    // Aim at the next second. A short hop when it is close, so the click lands on the second
+    // rather than up to a timer period after it; a long one in between, so this costs nothing
+    // while it waits.
+    const uint32_t toGo = (uint32_t)((1000000 - tv.tv_usec) / 1000);
+    lv_timer_set_period(s_beat, toGo > 60 ? toGo - 40 : 5);
+}
+
 static void tick_cb(lv_timer_t * /*t*/) {
     if (lv_scr_act() != s_screen) return;
     // ...and not while something is drawn over the top of it. The guard above catches
@@ -1845,45 +1885,6 @@ static void tick_cb(lv_timer_t * /*t*/) {
     if (orb_screen_covered()) return;
     struct tm ti;
     time_for_face(&ti);
-
-    // THE TICK. One click a second, from whichever set the worn theme shipped.
-    //
-    // Sounded HERE, the instant the second is seen, rather than after the face is drawn.
-    //
-    // It was deliberately after the draw for one release, because Zion asked for the hand to
-    // move first and the sound to follow, the way a real mechanism does. On the glass that
-    // read as too long a gap, and the reason is the compose: a full dial costs between 70 and
-    // 250 ms depending on the design, so "just after the hand" was a quarter of a second
-    // after it on a busy theme, which is not a mechanism, it is a lag. His call, 2026-10-05:
-    // the click and the hand at exactly the same instant.
-    //
-    // This is the closest the two can be. The audio task is waiting on a semaphore and starts
-    // within a millisecond or two, and the hand reaches the panel when LVGL next flushes, so
-    // firing at the top of the callback puts both as near the second as the device can manage.
-    // ONE take a second, always.
-    //
-    // For two releases this played a take per BEAT, so a watch recorded at four a second
-    // fired four clips a second. Studio cuts differently now: a take is a whole second with
-    // however many clicks belong in it, which is both what Zion asked for and the better
-    // arrangement. A click rings for 200-400 ms, and at four a second a clip-per-click was
-    // chopped to 250 ms and then cut off again here when the next one was asked for, so every
-    // tail was truncated twice. Inside a one-second take the clicks ring into each other
-    // exactly as recorded, and pinning each take to its own second is what stops a recording
-    // at 1.04 s a tick walking away from the second hand.
-    //
-    // theme_style still READS tickRate, because a parameter that has shipped is never
-    // withdrawn (TC-008) and an Orb may be wearing a theme that still carries one. Nothing
-    // acts on it.
-    if (!s_noTime) {
-        struct timeval tv; gettimeofday(&tv, nullptr);
-        const long slot = (long)tv.tv_sec;
-        static long lastSlot = -1;
-        if (slot != lastSlot) {
-            lastSlot = slot;
-            size_t n = 0;
-            if (const uint8_t *pcm = theme_audio::nextTick(n)) audio_play_pcm(pcm, n, false, audio_tick_level());
-        }
-    }
 
     // THEME_CAPS 55. Advancing a background frame changes every pixel beneath the hand, so
     // the cache of what is under it is now a picture of the wrong background. Dropping it is
@@ -2022,6 +2023,10 @@ float clockview::minuteHandMins(bool railway, int min, int sec) { return minute_
 float clockview::minuteStepEase(float wallSecs) { return minute_step_ease(wallSecs); }
 float clockview::minuteStepSecs() { return STEP_SECS; }
 float clockview::railwayStopStart() { return STOP_AT; }
+uint32_t clockview::beatAim(long usec) {
+    const uint32_t toGo = (uint32_t)((1000000 - usec) / 1000);
+    return toGo > 60 ? toGo - 40 : 5;
+}
 long  clockview::beatSlot(long sec, long usec, int beat) {
     const int b = beat >= 2 ? beat : 1;
     return sec * b + (usec * b) / 1000000L;
@@ -2172,6 +2177,10 @@ void clockview::init() {
 
     apply_face();
     s_tick = lv_timer_create(tick_cb, 1000, nullptr);
+    // Guarded, because this builder runs again when a theme is applied and two beat timers
+    // would play the set twice a second, half a beat apart, which would sound exactly like
+    // the stutter it is here to remove.
+    if (!s_beat) s_beat = lv_timer_create(beat_cb, 20, nullptr);
     retime();
 }
 

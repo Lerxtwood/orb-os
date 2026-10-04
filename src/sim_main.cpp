@@ -1410,6 +1410,25 @@ int main(int argc, char **argv) {
                 }
                 printf("[selftest] a tick take is one whole second: %s (fires %ld time a second)\n",
                        n == 1 ? "PASS" : "FAIL", n);
+
+                // And that its timer always lands ON the second, never long after it.
+                //
+                // Not "never past": inside the last stretch it polls, so it may step a few
+                // milliseconds beyond. That is the design. What must never happen is a wait
+                // that carries well past the second, because the click would then arrive late
+                // AND the piece already playing would be cut by its own successor. Walked
+                // across a whole second.
+                long latest = 0, earliest = 1000000L;
+                for (long us = 0; us < 1000000L; us += 997) {
+                    const long after = us + (long)clockview::beatAim(us) * 1000L;
+                    const long off = after - 1000000L;          // + is late, - is early
+                    if (off > latest) latest = off;
+                    if (off < earliest) earliest = off;
+                }
+                const bool aimed = latest <= 6000L && earliest >= -60000L;
+                printf("[selftest] the tick's timer lands on the second: %s"
+                       " (at worst %ld ms late, %ld ms early)\n",
+                       aimed ? "PASS" : "FAIL", latest / 1000, -earliest / 1000);
             }
             }
         }
