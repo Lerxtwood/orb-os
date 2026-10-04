@@ -1325,6 +1325,36 @@ int main(int argc, char **argv) {
                    onMark ? "PASS" : "FAIL");
             printf("[selftest] and a sweeping one still creeps between them: %s\n",
                    creepsSmooth ? "PASS" : "FAIL");
+
+            // The step is animated over about five frames instead of jumping. The one thing
+            // it must not cost is the second hand's glide, and this is what holds that: the
+            // whole step window has to sit inside the stop, where the second hand is already
+            // parked at 12. If anybody shortens the stop or lengthens the step, this fails
+            // before it reaches the glass.
+            const float stepLen  = clockview::minuteStepSecs();
+            const float stepFrom = 60.0f - stepLen;
+            const bool  inStop   = stepFrom >= clockview::railwayStopStart();
+            printf("[selftest] the minute hand's step happens while the second hand is parked:"
+                   " %s (steps from %.2f s, the stop starts at %.2f s)\n",
+                   inStop ? "PASS" : "FAIL", (double)stepFrom, (double)clockview::railwayStopStart());
+
+            // And it has to be a movement: away from the old mark, past the new one, back
+            // onto it. Sampled across the window the way the device will sample it.
+            bool  starts = clockview::minuteStepEase(stepFrom - 0.01f) < 0.0f;   // not yet
+            bool  rests  = clockview::minuteStepEase(30.0f) < 0.0f;              // mid-minute
+            float peak = 0.0f, last = 0.0f;
+            int   frames = 0;
+            for (int i = 1; i < 6; ++i) {
+                const float e = clockview::minuteStepEase(stepFrom + stepLen * (float)i / 6.0f);
+                if (e < 0.0f) continue;
+                if (e > peak) peak = e;
+                last = e; frames++;
+            }
+            const bool moves = starts && rests && frames >= 4 && peak > 1.0f && peak < 1.25f
+                            && last > 0.9f;
+            printf("[selftest] and it reads as a movement, not a jump: %s"
+                   " (%d frames, overshoots to %.2f, settles at %.2f)\n",
+                   moves ? "PASS" : "FAIL", frames, (double)peak, (double)last);
         }
 
         // ---- every key on the city search keyboard does its own job ------------------

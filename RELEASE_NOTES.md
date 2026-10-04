@@ -18,6 +18,14 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.40
+
+- On a Swiss railway clock the minute hand now travels across to the next mark instead of
+  appearing on it: a quick snap with a slight settle, the way a station clock does
+- It moves while the second hand is already waiting at the top, so the sweep is untouched
+
+---
+
 ## 2.16.39
 
 - On a Swiss railway clock the minute hand now sits exactly on a minute mark and moves at the

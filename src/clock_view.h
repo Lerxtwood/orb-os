@@ -33,4 +33,10 @@ namespace clockview {
     // Where the minute hand belongs, in minutes-of-the-hour. Exposed for the self-test:
     // a railway dial has to land on a whole minute at every second of the minute.
     float     minuteHandMins(bool railway, int min, int sec);
+    // How far through its step the minute hand is at a given wall second, or -1 when it is
+    // not stepping, and how long the step lasts. Exposed so the self-test can hold the step
+    // window inside the railway stop, where the second hand is parked.
+    float     minuteStepEase(float wallSecs);
+    float     minuteStepSecs();
+    float     railwayStopStart();
 }

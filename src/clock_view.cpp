@@ -1161,6 +1161,10 @@ void clock_view_reset_bg_anim() {
     s_bgFrame     = 0;
 }
 
+// How far through the minute hand's step we are, 0 to about 1.1, or -1 when it is not
+// stepping. Only a railway dial ever sets it. See minute_step_ease().
+static float s_stepEase = -1.0f;
+
 // Where the minute hand belongs, in minutes-of-the-hour, for a given wall clock reading.
 //
 // Two rules, and the gap between them is the whole of what Jean-Paul Stringaro reported.
@@ -1234,7 +1238,10 @@ static void compose_custom(const struct tm *ti, bool skipSecond, bool withOverla
     const theme_style::Clock &csA = theme_style::clock();
     const bool railwayNow = csA.secondRailway && csA.secondSweep;
     const float sec = ti->tm_sec;
-    const float mins = minute_hand_mins(railwayNow, ti->tm_min, ti->tm_sec);
+    float mins = minute_hand_mins(railwayNow, ti->tm_min, ti->tm_sec);
+    // Mid-step, the hand is between this minute and the next. Whole minutes resume the
+    // instant the step ends, so it always comes to rest on a mark.
+    if (railwayNow && s_stepEase >= 0.0f) mins = (float)ti->tm_min + s_stepEase;
     const float hrs = (ti->tm_hour % 12) + mins / 60.0f;
     const float ang[5] = { hrs * 30.0f, mins * 6.0f, sec * 6.0f, 0.0f, 0.0f };
     // Geometry, draw order, and the per-hand show gate come from the active theme at
@@ -1713,10 +1720,40 @@ static float second_now() {
 // a pause in a glide and Studio only ever writes the pair together. This was blamed for the
 // hands flashing to twelve in September 2026 and was innocent: that was the clock read
 // underneath it (orb_time.h), and the self-test in sim_main.cpp now holds both apart.
+static const float STOP_AT = 58.5f;   // the second hand parks here and waits for the roll
 static float railway_seconds(float secs) {
     const theme_style::Clock &cs = theme_style::clock();
     if (!cs.secondRailway || !cs.secondSweep) return secs;
-    return secs >= 58.5f ? 60.0f : secs * (60.0f / 58.5f);
+    return secs >= STOP_AT ? 60.0f : secs * (60.0f / STOP_AT);
+}
+
+// The step, drawn rather than jumped. A real railway minute hand takes a moment to cross
+// the gap, and without that moment it simply appears on the far side: correct, and lifeless.
+//
+// It runs in the last STEP_SECS of the stop, BEFORE the minute rolls, not after it. That is
+// the whole trick. From 58.5 s the second hand is already parked at 12, so the full composes
+// this needs cost nothing visible: no other hand is moving. Animating after the roll would
+// have frozen the first third of a second of the second hand's glide, which is the one thing
+// this must not touch. The hand therefore sits a little past its mark for the last third of
+// a second of the minute, which is also what a real one does while it is stepping.
+//
+// Driven by the clock rather than by a frame count, so it lands on the mark at the roll
+// whether the device gets five frames into the window or three.
+static const float STEP_SECS = 0.36f;    // about 5 frames at the ~72 ms a full compose takes
+
+// Fast away, a slight overshoot, then settle: the standard back ease, which is what a hand
+// with momentum behind it does. Peaks near 1.10 around t=0.73 and returns to 1 at t=1.
+static float ease_out_back(float t) {
+    const float c1 = 1.70158f, c3 = c1 + 1.0f;
+    const float u = t - 1.0f;
+    return 1.0f + c3 * u * u * u + c1 * u * u;
+}
+
+// Where in its step the minute hand is for a given wall second, or -1 when it is not
+// stepping. The window is asserted to sit inside the stop by the simulator self-test.
+static float minute_step_ease(float wallSecs) {
+    const float t = (wallSecs - (60.0f - STEP_SECS)) / STEP_SECS;
+    return (t > 0.0f && t < 1.0f) ? ease_out_back(t) : -1.0f;
 }
 
 // A tick a second, or a frame every 40 ms while sweeping.
@@ -1795,10 +1832,19 @@ static void tick_cb(lv_timer_t * /*t*/) {
         // 2.16.38 shipped. The minute roll is an event, so test for the event.
         const theme_style::Clock &csR = theme_style::clock();
         const bool railwayDial = csR.secondRailway && csR.secondSweep;
+        // Read the clock ONCE: the step window and the second hand have to agree about
+        // which instant this frame is, or the hand can step against a different second
+        // than the one it is drawn beside.
+        const float wall = second_now();
         float aged = 0.0f;
         bool stale;
         if (railwayDial) {
-            stale = (ti.tm_min != s_underMin);
+            // Each frame of the step moves the hand, so each one needs the cache rebuilt.
+            // When the step ends, one more rebuild puts the hand exactly on the new mark.
+            const float ease = minute_step_ease(wall);
+            const bool  wasStepping = s_stepEase >= 0.0f;
+            s_stepEase = ease;
+            stale = ease >= 0.0f || wasStepping || ti.tm_min != s_underMin;
         } else {
             const float nowMins = (float)ti.tm_min + (float)ti.tm_sec / 60.0f;
             aged = nowMins - s_underMins;
@@ -1815,7 +1861,7 @@ static void tick_cb(lv_timer_t * /*t*/) {
             s_prevSecValid = true;
         }
         sweep_pad_for_shadow();
-        sweep_frame(railway_seconds(second_now()));
+        sweep_frame(railway_seconds(wall));
         return;
     }
     redraw(&ti);
@@ -1830,6 +1876,9 @@ bool  clockview::faceHasTime() { struct tm ti; time_for_face(&ti); return !s_noT
 float clockview::handSeconds(float wallSeconds) { return railway_seconds(wallSeconds); }
 float clockview::cacheMinutesAllowed() { return cache_minutes_allowed(); }
 float clockview::minuteHandMins(bool railway, int min, int sec) { return minute_hand_mins(railway, min, sec); }
+float clockview::minuteStepEase(float wallSecs) { return minute_step_ease(wallSecs); }
+float clockview::minuteStepSecs() { return STEP_SECS; }
+float clockview::railwayStopStart() { return STOP_AT; }
 
 void clockview::setSweep(int mode) {
     s_forceSweep = mode;
