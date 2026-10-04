@@ -406,7 +406,8 @@ namespace theme_style {
 //      It is an ordinary TextSlot, so it has every control the other lines have, including
 //      the pill, the arc and ALL CAPS. An Orb below this level ignores it entirely.
 //
-//  57  how fast the tick beats: 1, 2 or 4 times a second. A mechanical watch runs at 2 or 4
+//  57  how fast the tick beats: 1, 2, 4, 5, 6 or 8 times a second (18,000 beats an hour
+//      is five a second, 21,600 is six, 28,800 is eight). A mechanical watch runs at 2 or 4
 //      and that beat is what its sweeping second hand is made of; played back at 1 it is the
 //      same movement at a quarter speed. Measured from the recording's own gaps by Studio.
 //  56  the clock's own tick, as a bank of recordings. A theme may ship tick1.pcm through
@@ -483,7 +484,7 @@ struct Clock {
     // top. Without this the border sat at one fixed angle while the hand moved, lining up
     // once an hour by coincidence.
     int       plateFollow = 0;
-    // THEME_CAPS 57. How many times a second the clock's tick set is played: 1, 2 or 4.
+    // THEME_CAPS 57. How many times a second the clock's tick set is played: 1, 2, 4, 5, 6 or 8.
     //
     // One is a clock. A mechanical watch beats at 2 or 4, and that faster beat IS the sweep
     // of its second hand, so a set of takes recorded off a watch and played back once a

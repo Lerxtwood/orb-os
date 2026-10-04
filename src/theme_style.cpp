@@ -526,7 +526,11 @@ void load() {
             // and a rate of 0 would be a division by zero in the timer that reads it.
             if (doc["tickRate"].is<int>()) {
                 const int r = doc["tickRate"].as<int>();
-                s_clock.tickRate = (r == 2 || r == 4) ? r : 1;
+                // The rates real movements run at. Horology counts beats per hour and each of
+                // these is a standard: 18,000 bph is five a second and is what most vintage
+                // pocket watches run at, 21,600 is six, 28,800 is eight. This was 1, 2 and 4,
+                // which between them describe almost no actual watch.
+                s_clock.tickRate = (r == 2 || r == 4 || r == 5 || r == 6 || r == 8) ? r : 1;
             }
             // THEME_CAPS 55, the moving background. Clamped here rather than trusted: the
             // frame count decides how many files are looked for and how much PSRAM the SD

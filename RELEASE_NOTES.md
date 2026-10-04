@@ -18,6 +18,14 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.49
+
+- A tick can now beat at the rates real movements actually run at: five a second for an
+  18,000 beat watch, six for 21,600, eight for 28,800, as well as one, two and four
+- Found by Zion, whose vintage pocket watch beats five times a second and had nowhere to land
+
+---
+
 ## 2.16.48
 
 - A theme's tick can now beat two or four times a second as well as once, so a recording made
