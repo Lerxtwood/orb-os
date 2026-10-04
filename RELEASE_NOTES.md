@@ -18,6 +18,12 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.55
+
+- The Orb now says which part of redrawing its dial is slow, not just that it is
+
+---
+
 ## 2.16.54
 
 - The Orb now reports how often it has to redraw its whole dial, and how long that takes, so

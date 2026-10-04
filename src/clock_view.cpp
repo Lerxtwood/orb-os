@@ -1174,6 +1174,10 @@ void clock_view_reset_bg_anim() {
 // stepping. Only a railway dial ever sets it. See minute_step_ease().
 static float s_stepEase = -1.0f;
 
+// What a full compose spends its time on, summed since the last report. See the stopwatches
+// in compose_custom.
+static float s_phPlate = 0.0f, s_phText = 0.0f, s_phHands = 0.0f, s_phRest = 0.0f;
+
 // Where the minute hand belongs, in minutes-of-the-hour, for a given wall clock reading.
 //
 // Two rules, and the gap between them is the whole of what Jean-Paul Stringaro reported.
@@ -1201,6 +1205,13 @@ static void compose_custom(const struct tm *ti, bool skipSecond, bool withOverla
     const float p_sec = ti->tm_sec, p_min = ti->tm_min + p_sec / 60.0f;
     const float p_hr = (ti->tm_hour % 12) + p_min / 60.0f;
     const float followAng[4] = { 0.0f, p_hr * 30.0f, p_min * 6.0f, p_sec * 6.0f };
+#if defined(ESP_PLATFORM)
+    // WHERE the 85 ms goes. A recompose stops a sweeping hand dead, so the only question
+    // worth asking about it is which part is expensive, and that cannot be guessed: the plate
+    // is a memcpy, the banners are text, the hands are rotations and the glass is a blend over
+    // every pixel on the screen. Measured per phase, reported with the interval in tick_cb.
+    const uint32_t ph0 = micros();
+#endif
     const int pf = theme_style::clock().plateFollow;
     if (plate) {
         if (pf > 0 && pf < 4) blit_plate_rot(plate, followAng[pf]);
@@ -1235,7 +1246,14 @@ static void compose_custom(const struct tm *ti, bool skipSecond, bool withOverla
             }
         }
     };
+#if defined(ESP_PLATFORM)
+    s_phPlate += (float)(micros() - ph0) / 1000.0f;
+    const uint32_t ph1 = micros();
+#endif
     if (!theme_style::clock().textOverHands) draw_banners();
+#if defined(ESP_PLATFORM)
+    s_phText += (float)(micros() - ph1) / 1000.0f;
+#endif
 
     // kind 3/4 = the two static image layers — same pivot/center/blend metadata as
     // a hand, just always angle 0 (they never rotate, see custom_sprite.cpp).
@@ -1244,6 +1262,9 @@ static void compose_custom(const struct tm *ti, bool skipSecond, bool withOverla
     // start at 12:02:15 and the hand drew a quarter of the way to the 3, and stayed there.
     // Whole minutes for railway, fractional for everything else, where the creep is the
     // point. The hour hand follows from mins, so on a railway dial it steps with it.
+#if defined(ESP_PLATFORM)
+    const uint32_t ph2 = micros();
+#endif
     const theme_style::Clock &csA = theme_style::clock();
     const bool railwayNow = csA.secondRailway && csA.secondSweep;
     const float sec = ti->tm_sec;
@@ -1325,6 +1346,10 @@ static void compose_custom(const struct tm *ti, bool skipSecond, bool withOverla
         if (spr.data) blend_custom_hand(spr.data, spr.w, spr.h, hd.pivotX, hd.pivotY,
                                         (float)hd.centerX, (float)hd.centerY, ang[k], hd.blend);
     }
+#if defined(ESP_PLATFORM)
+    s_phHands += (float)(micros() - ph2) / 1000.0f;
+    const uint32_t ph3 = micros();
+#endif
     if (cs.textOverHands) draw_banners();
 
     // Row by row and inside the clip, so a sweeping hand pays for its own box rather than
@@ -1991,11 +2016,14 @@ static void tick_cb(lv_timer_t * /*t*/) {
                 if (lastMs) { gapSum += (float)(nowMs - lastMs); tookSum += took; runs++; }
                 lastMs = nowMs;
                 if (runs >= 8) {
-                    Serial.printf("[sweep] the dial is recomposed every %.1f s and takes %.0f ms,"
-                                  " so the hand stops for %.0f%% of the time\n",
-                                  gapSum / runs / 1000.0f, tookSum / runs,
-                                  100.0f * (tookSum / runs) / (gapSum / runs));
+                    const float avg = tookSum / runs;
+                    Serial.printf("[sweep] recomposed every %.1f s, %.0f ms each (hand stops %.0f%% of the time)"
+                                  " -> plate %.0f  text %.0f  hands %.0f  glass %.0f\n",
+                                  gapSum / runs / 1000.0f, avg, 100.0f * avg / (gapSum / runs),
+                                  s_phPlate / runs, s_phText / runs, s_phHands / runs,
+                                  avg - (s_phPlate + s_phText + s_phHands) / runs);
                     runs = 0; gapSum = 0; tookSum = 0;
+                    s_phPlate = 0; s_phText = 0; s_phHands = 0; s_phRest = 0;
                 }
             }
 #endif
