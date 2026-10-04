@@ -77,6 +77,7 @@ void seed_defaults() {
     s_clock = Clock{};
     s_clock.bg = (uint32_t)CUSTOM_CLOCK.bg;
     s_clock.plateFollow = 0;      // static plate unless the theme says otherwise
+    s_clock.tickRate    = 1;      // one tick a second unless the recording beat faster
     s_clock.bgAnim = theme_style::Clock::BgAnim{};   // a still plate unless the theme ships frames
 #if CUSTOM_HAS_TEXT1
     s_clock.text1.show = true;
@@ -521,6 +522,12 @@ void load() {
             // 1 hour, 2 minute, 3 second. The exported plate PNG carries only its static
             // rotation, so this angle is applied live on top (see clock_view draw_custom).
             if (doc["plateFollow"].is<int>()) s_clock.plateFollow = doc["plateFollow"].as<int>();
+            // Clamped to the three real values. This arrives in a file on a removable card,
+            // and a rate of 0 would be a division by zero in the timer that reads it.
+            if (doc["tickRate"].is<int>()) {
+                const int r = doc["tickRate"].as<int>();
+                s_clock.tickRate = (r == 2 || r == 4) ? r : 1;
+            }
             // THEME_CAPS 55, the moving background. Clamped here rather than trusted: the
             // frame count decides how many files are looked for and how much PSRAM the SD
             // path would hold, and a bad number in a shared theme file must not be able to

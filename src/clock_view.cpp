@@ -1860,10 +1860,17 @@ static void tick_cb(lv_timer_t * /*t*/) {
     // This is the closest the two can be. The audio task is waiting on a semaphore and starts
     // within a millisecond or two, and the hand reaches the panel when LVGL next flushes, so
     // firing at the top of the callback puts both as near the second as the device can manage.
+    // THEME_CAPS 57: once a second, or twice, or four times, whichever the recording beat at.
+    // Counted in BEATS rather than seconds so the three cases are one piece of arithmetic
+    // instead of three branches, and so a rate change takes effect on the next beat rather
+    // than at the next whole second.
+    const int beat = theme_style::clock().tickRate >= 2 ? theme_style::clock().tickRate : 1;
     if (!s_noTime) {
-        static int lastTickSec = -1;
-        if (ti.tm_sec != lastTickSec) {
-            lastTickSec = ti.tm_sec;
+        struct timeval tv; gettimeofday(&tv, nullptr);
+        const long slot = (long)tv.tv_sec * beat + (long)(((long)tv.tv_usec * beat) / 1000000L);
+        static long lastSlot = -1;
+        if (slot != lastSlot) {
+            lastSlot = slot;
             size_t n = 0;
             if (const uint8_t *pcm = theme_audio::nextTick(n)) audio_play_pcm(pcm, n, false, audio_tick_level());
         }
@@ -1966,9 +1973,15 @@ static void tick_cb(lv_timer_t * /*t*/) {
         sweep_frame(railway_seconds(wall));
         return;
     }
-    redraw(&ti);
+    // The FACE still moves once a second even when the sound beats faster. A watch running at
+    // four does not move its hand four times; the beat is what its sweep is made of, and the
+    // hand it drives still steps once. Drawing four times a second would also cost four full
+    // composes, which is the whole of this screen's budget spent on frames identical to each
+    // other. Unchanged at beat 1, so no existing theme draws any differently.
+    static int lastDrawnSec = -1;
+    if (beat <= 1 || ti.tm_sec != lastDrawnSec) { lastDrawnSec = ti.tm_sec; redraw(&ti); }
 
-    // AIM THE NEXT FRAME AT THE SECOND ITSELF.
+    // AIM THE NEXT FRAME AT THE BEAT ITSELF.
     //
     // A clock that is not sweeping asked for a frame every 1000 ms, and 1000 ms from WHENEVER
     // the timer was last set, which is an arbitrary phase against the real second. So the hand
@@ -1977,12 +1990,17 @@ static void tick_cb(lv_timer_t * /*t*/) {
     // out still looks like a second hand. Giving the clock a voice made it obvious: Zion
     // heard the tick land about half a second away from where the hand moved.
     //
+    // Aimed at the BEAT, which is the second when a theme ticks once and a quarter of it when
+    // the recording came off a watch running at four.
+    //
     // Re-aimed every frame rather than set once, because the device's clock and LVGL's timer
     // are not the same clock and will drift apart over hours.
     if (s_tick && !sweep_possible()) {
         struct timeval tv; gettimeofday(&tv, nullptr);
-        uint32_t ms = (uint32_t)((1000000 - tv.tv_usec) / 1000);
-        if (ms < 50) ms += 1000;        // too close to be worth chasing; take the next one
+        const uint32_t usPerBeat = 1000000u / (uint32_t)beat;
+        const uint32_t into = (uint32_t)tv.tv_usec % usPerBeat;
+        uint32_t ms = (usPerBeat - into) / 1000u;
+        if (ms < 20) ms += usPerBeat / 1000u;   // too close to chase; take the one after
         lv_timer_set_period(s_tick, ms);
     }
 }
@@ -1999,6 +2017,10 @@ float clockview::minuteHandMins(bool railway, int min, int sec) { return minute_
 float clockview::minuteStepEase(float wallSecs) { return minute_step_ease(wallSecs); }
 float clockview::minuteStepSecs() { return STEP_SECS; }
 float clockview::railwayStopStart() { return STOP_AT; }
+long  clockview::beatSlot(long sec, long usec, int beat) {
+    const int b = beat >= 2 ? beat : 1;
+    return sec * b + (usec * b) / 1000000L;
+}
 bool  clockview::stepAffordable(float composeMs) { return step_affordable(composeMs); }
 
 void clockview::setSweep(int mode) {

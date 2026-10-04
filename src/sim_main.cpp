@@ -1397,6 +1397,29 @@ int main(int argc, char **argv) {
                 printf("[selftest] the tick set plays in order and loops: %s"
                        " (%d takes over %d seconds, each used %d times, loops every %d s)\n",
                        (inOrder && even) ? "PASS" : "FAIL", N, DRAWS, used[0], N);
+
+            // How often a theme ticks. One a second is a clock; a mechanical watch beats at
+            // 2 or 4, and getting this wrong plays a watch at a quarter speed or a clock at
+            // four times its own. One second of microseconds, counted.
+            {
+                bool ok = true;
+                int seen[5] = {0};
+                for (const int beat : {1, 2, 4}) {
+                    long first = clockview::beatSlot(1000, 0, beat), n = 1, last = first;
+                    for (long us = 0; us < 1000000L; us += 97) {      // a prime step, so no
+                        const long sl = clockview::beatSlot(1000, us, beat);   // boundary is
+                        if (sl != last) { n++; last = sl; }                    // ever skipped
+                    }
+                    seen[beat] = (int)n;
+                    if (n != beat) ok = false;
+                }
+                // And a nonsense rate off a card must not divide by zero or fire wildly.
+                const bool safe = clockview::beatSlot(1000, 0, 0) == 1000
+                               && clockview::beatSlot(1000, 999999, 0) == 1000;
+                printf("[selftest] a theme ticks as often as its recording beat: %s"
+                       " (1/s gives %d, 2/s gives %d, 4/s gives %d; a rate of 0 falls back to 1: %s)\n",
+                       (ok && safe) ? "PASS" : "FAIL", seen[1], seen[2], seen[4], safe ? "yes" : "no");
+            }
             }
         }
 

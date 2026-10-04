@@ -18,6 +18,15 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.48
+
+- A theme's tick can now beat two or four times a second as well as once, so a recording made
+  from a mechanical watch runs at the speed its movement actually ran at
+- The face still moves once a second, because a watch beating four times does not move its
+  hand four times
+
+---
+
 ## 2.16.47
 
 - The clock's tick now sounds at the same instant the second hand moves, instead of just
