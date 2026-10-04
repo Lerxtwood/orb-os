@@ -1860,14 +1860,23 @@ static void tick_cb(lv_timer_t * /*t*/) {
     // This is the closest the two can be. The audio task is waiting on a semaphore and starts
     // within a millisecond or two, and the hand reaches the panel when LVGL next flushes, so
     // firing at the top of the callback puts both as near the second as the device can manage.
-    // THEME_CAPS 57: once a second, or twice, or four times, whichever the recording beat at.
-    // Counted in BEATS rather than seconds so the three cases are one piece of arithmetic
-    // instead of three branches, and so a rate change takes effect on the next beat rather
-    // than at the next whole second.
-    const int beat = theme_style::clock().tickRate >= 2 ? theme_style::clock().tickRate : 1;
+    // ONE take a second, always.
+    //
+    // For two releases this played a take per BEAT, so a watch recorded at four a second
+    // fired four clips a second. Studio cuts differently now: a take is a whole second with
+    // however many clicks belong in it, which is both what Zion asked for and the better
+    // arrangement. A click rings for 200-400 ms, and at four a second a clip-per-click was
+    // chopped to 250 ms and then cut off again here when the next one was asked for, so every
+    // tail was truncated twice. Inside a one-second take the clicks ring into each other
+    // exactly as recorded, and pinning each take to its own second is what stops a recording
+    // at 1.04 s a tick walking away from the second hand.
+    //
+    // theme_style still READS tickRate, because a parameter that has shipped is never
+    // withdrawn (TC-008) and an Orb may be wearing a theme that still carries one. Nothing
+    // acts on it.
     if (!s_noTime) {
         struct timeval tv; gettimeofday(&tv, nullptr);
-        const long slot = (long)tv.tv_sec * beat + (long)(((long)tv.tv_usec * beat) / 1000000L);
+        const long slot = (long)tv.tv_sec;
         static long lastSlot = -1;
         if (slot != lastSlot) {
             lastSlot = slot;
@@ -1978,8 +1987,7 @@ static void tick_cb(lv_timer_t * /*t*/) {
     // hand it drives still steps once. Drawing four times a second would also cost four full
     // composes, which is the whole of this screen's budget spent on frames identical to each
     // other. Unchanged at beat 1, so no existing theme draws any differently.
-    static int lastDrawnSec = -1;
-    if (beat <= 1 || ti.tm_sec != lastDrawnSec) { lastDrawnSec = ti.tm_sec; redraw(&ti); }
+    redraw(&ti);
 
     // AIM THE NEXT FRAME AT THE BEAT ITSELF.
     //
@@ -1990,17 +1998,14 @@ static void tick_cb(lv_timer_t * /*t*/) {
     // out still looks like a second hand. Giving the clock a voice made it obvious: Zion
     // heard the tick land about half a second away from where the hand moved.
     //
-    // Aimed at the BEAT, which is the second when a theme ticks once and a quarter of it when
-    // the recording came off a watch running at four.
+    // Aimed at the second, which is also when the tick fires.
     //
     // Re-aimed every frame rather than set once, because the device's clock and LVGL's timer
     // are not the same clock and will drift apart over hours.
     if (s_tick && !sweep_possible()) {
         struct timeval tv; gettimeofday(&tv, nullptr);
-        const uint32_t usPerBeat = 1000000u / (uint32_t)beat;
-        const uint32_t into = (uint32_t)tv.tv_usec % usPerBeat;
-        uint32_t ms = (usPerBeat - into) / 1000u;
-        if (ms < 20) ms += usPerBeat / 1000u;   // too close to chase; take the one after
+        uint32_t ms = (uint32_t)((1000000 - tv.tv_usec) / 1000);
+        if (ms < 20) ms += 1000;        // too close to chase; take the one after
         lv_timer_set_period(s_tick, ms);
     }
 }

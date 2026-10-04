@@ -18,6 +18,13 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.50
+
+- A theme's tick is now carried as whole seconds rather than single clicks, so a fast
+  mechanism keeps the natural ring of each click instead of having it cut short
+
+---
+
 ## 2.16.49
 
 - A tick can now beat at the rates real movements actually run at: five a second for an

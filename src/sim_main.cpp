@@ -1398,27 +1398,18 @@ int main(int argc, char **argv) {
                        " (%d takes over %d seconds, each used %d times, loops every %d s)\n",
                        (inOrder && even) ? "PASS" : "FAIL", N, DRAWS, used[0], N);
 
-            // How often a theme ticks. One a second is a clock; a mechanical watch beats at
-            // 2 or 4, and getting this wrong plays a watch at a quarter speed or a clock at
-            // four times its own. One second of microseconds, counted.
+            // A take is a whole second and plays once a second, whatever the mechanism
+            // inside it was doing. beatSlot is kept because a theme in the field may still
+            // carry a rate; nothing acts on it. Checked at 1 so a change of mind here cannot
+            // pass unnoticed.
             {
-                bool ok = true;
-                int seen[5] = {0};
-                for (const int beat : {1, 2, 4}) {
-                    long first = clockview::beatSlot(1000, 0, beat), n = 1, last = first;
-                    for (long us = 0; us < 1000000L; us += 97) {      // a prime step, so no
-                        const long sl = clockview::beatSlot(1000, us, beat);   // boundary is
-                        if (sl != last) { n++; last = sl; }                    // ever skipped
-                    }
-                    seen[beat] = (int)n;
-                    if (n != beat) ok = false;
+                long n = 1, last = clockview::beatSlot(1000, 0, 1);
+                for (long us = 0; us < 1000000L; us += 97) {
+                    const long sl = clockview::beatSlot(1000, us, 1);
+                    if (sl != last) { n++; last = sl; }
                 }
-                // And a nonsense rate off a card must not divide by zero or fire wildly.
-                const bool safe = clockview::beatSlot(1000, 0, 0) == 1000
-                               && clockview::beatSlot(1000, 999999, 0) == 1000;
-                printf("[selftest] a theme ticks as often as its recording beat: %s"
-                       " (1/s gives %d, 2/s gives %d, 4/s gives %d; a rate of 0 falls back to 1: %s)\n",
-                       (ok && safe) ? "PASS" : "FAIL", seen[1], seen[2], seen[4], safe ? "yes" : "no");
+                printf("[selftest] a tick take is one whole second: %s (fires %ld time a second)\n",
+                       n == 1 ? "PASS" : "FAIL", n);
             }
             }
         }
