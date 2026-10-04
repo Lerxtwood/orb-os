@@ -1310,6 +1310,21 @@ int main(int argc, char **argv) {
             printf("[selftest] the minute hand creeps rather than steps: %s"
                    " (cache refreshes every %.2f min, about %.1f s)\n",
                    creeps ? "PASS" : "FAIL", (double)allowed, (double)(allowed * 60.0f));
+
+            // And the half of that which 2.16.38 got wrong. A railway minute hand has to be
+            // ON a mark for every second of the minute, not just at the top of it: giving it
+            // the seconds fraction left it parked wherever the Orb happened to boot. Checked
+            // across the whole minute, because the original fault only showed at startup.
+            bool onMark = true, creepsSmooth = false;
+            for (int sec = 0; sec < 60; ++sec) {
+                if (fabsf(clockview::minuteHandMins(true, 7, sec) - 7.0f) > 0.0001f) onMark = false;
+            }
+            creepsSmooth = fabsf(clockview::minuteHandMins(false, 7, 30) - 7.5f) < 0.0001f
+                        && fabsf(clockview::minuteHandMins(false, 7, 15) - 7.25f) < 0.0001f;
+            printf("[selftest] a railway minute hand sits on a mark all minute: %s\n",
+                   onMark ? "PASS" : "FAIL");
+            printf("[selftest] and a sweeping one still creeps between them: %s\n",
+                   creepsSmooth ? "PASS" : "FAIL");
         }
 
         // ---- every key on the city search keyboard does its own job ------------------

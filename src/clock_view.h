@@ -30,4 +30,7 @@ namespace clockview {
     // under a minute or its minute hand steps instead of creeping, and a railway design
     // has to come back at exactly a minute because there the step is the design.
     float     cacheMinutesAllowed();
+    // Where the minute hand belongs, in minutes-of-the-hour. Exposed for the self-test:
+    // a railway dial has to land on a whole minute at every second of the minute.
+    float     minuteHandMins(bool railway, int min, int sec);
 }

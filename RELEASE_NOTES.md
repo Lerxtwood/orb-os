@@ -18,6 +18,15 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.39
+
+- On a Swiss railway clock the minute hand now sits exactly on a minute mark and moves at the
+  top of the minute, wherever the Orb was in the minute when you switched it on. Since the
+  last update it could come to rest partway between two marks and step at the wrong moment
+- Found by Jean-Paul Stringaro
+
+---
+
 ## 2.16.38
 
 - On a sweeping clock the minute hand now creeps the whole time, the way a mechanical watch

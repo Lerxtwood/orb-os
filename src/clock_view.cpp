@@ -1161,6 +1161,17 @@ void clock_view_reset_bg_anim() {
     s_bgFrame     = 0;
 }
 
+// Where the minute hand belongs, in minutes-of-the-hour, for a given wall clock reading.
+//
+// Two rules, and the gap between them is the whole of what Jean-Paul Stringaro reported.
+// A railway dial's minute hand sits ON a mark, so it takes whole minutes and no seconds
+// fraction: it cannot come to rest partway between two marks just because that is where
+// the Orb happened to be switched on. Every other sweeping dial creeps, so it takes the
+// fraction. Shared with the simulator self-test so the rule is checked, not just written.
+static float minute_hand_mins(bool railway, int min, int sec) {
+    return railway ? (float)min : (float)min + (float)sec / 60.0f;
+}
+
 // overlay has to go back on TOP of the second hand and so cannot be baked into that cache.
 static void compose_custom(const struct tm *ti, bool skipSecond, bool withOverlay) {
     // Decode the plate first: it's the whole visible dial and the largest buffer,
@@ -1215,7 +1226,16 @@ static void compose_custom(const struct tm *ti, bool skipSecond, bool withOverla
 
     // kind 3/4 = the two static image layers — same pivot/center/blend metadata as
     // a hand, just always angle 0 (they never rotate, see custom_sprite.cpp).
-    const float sec = ti->tm_sec, mins = ti->tm_min + sec / 60.0f, hrs = (ti->tm_hour % 12) + mins / 60.0f;
+    // A railway dial's minute hand sits ON a minute mark and never between two. Giving it
+    // the seconds fraction put it wherever the clock happened to be when the Orb booted:
+    // start at 12:02:15 and the hand drew a quarter of the way to the 3, and stayed there.
+    // Whole minutes for railway, fractional for everything else, where the creep is the
+    // point. The hour hand follows from mins, so on a railway dial it steps with it.
+    const theme_style::Clock &csA = theme_style::clock();
+    const bool railwayNow = csA.secondRailway && csA.secondSweep;
+    const float sec = ti->tm_sec;
+    const float mins = minute_hand_mins(railwayNow, ti->tm_min, ti->tm_sec);
+    const float hrs = (ti->tm_hour % 12) + mins / 60.0f;
     const float ang[5] = { hrs * 30.0f, mins * 6.0f, sec * 6.0f, 0.0f, 0.0f };
     // Geometry, draw order, and the per-hand show gate come from the active theme at
     // runtime (theme_style, fed by /themes/<slug>/clock_style.json) rather than from the
@@ -1767,10 +1787,25 @@ static void tick_cb(lv_timer_t * /*t*/) {
         // minute and the hand steps, which is the design. Everywhere else it is roughly
         // every three seconds, which is how long the minute hand's tip takes to travel one
         // pixel, and the hand reads as creeping the way a mechanical watch does.
-        const float nowMins = (float)ti.tm_min + (float)ti.tm_sec / 60.0f;
-        float aged = nowMins - s_underMins;
-        if (aged < 0.0f) aged += 60.0f;                    // the hour rolled under us
-        const bool stale = s_underMins < 0.0f || aged >= cache_minutes_allowed();
+        //
+        // Railway is a SEPARATE test, not a one-minute budget. Measuring elapsed time from
+        // the last rebuild meant the step landed a whole minute after the previous one,
+        // which is wherever the Orb happened to boot: start at 12:02:15 and it stepped at
+        // :15 past every minute, never at the top. Jean-Paul Stringaro caught it the day
+        // 2.16.38 shipped. The minute roll is an event, so test for the event.
+        const theme_style::Clock &csR = theme_style::clock();
+        const bool railwayDial = csR.secondRailway && csR.secondSweep;
+        float aged = 0.0f;
+        bool stale;
+        if (railwayDial) {
+            stale = (ti.tm_min != s_underMin);
+        } else {
+            const float nowMins = (float)ti.tm_min + (float)ti.tm_sec / 60.0f;
+            aged = nowMins - s_underMins;
+            if (aged < 0.0f) aged += 60.0f;                // the hour rolled under us
+            stale = s_underMins < 0.0f || aged >= cache_minutes_allowed();
+        }
+        (void)aged;
         if (!s_under || stale || ti.tm_hour != s_underHr) {
             if (!rebuild_under(&ti)) { redraw(&ti); return; }
             // First frame after a rebuild repaints everything, because everything changed.
@@ -1794,6 +1829,7 @@ static void tick_cb(lv_timer_t * /*t*/) {
 bool  clockview::faceHasTime() { struct tm ti; time_for_face(&ti); return !s_noTime; }
 float clockview::handSeconds(float wallSeconds) { return railway_seconds(wallSeconds); }
 float clockview::cacheMinutesAllowed() { return cache_minutes_allowed(); }
+float clockview::minuteHandMins(bool railway, int min, int sec) { return minute_hand_mins(railway, min, sec); }
 
 void clockview::setSweep(int mode) {
     s_forceSweep = mode;
