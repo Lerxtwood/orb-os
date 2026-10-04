@@ -1739,21 +1739,31 @@ static float railway_seconds(float secs) {
 //
 // Driven by the clock rather than by a frame count, so it lands on the mark at the roll
 // whether the device gets five frames into the window or three.
-static const float STEP_SECS = 0.36f;    // about 5 frames at the ~72 ms a full compose takes
+static const float STEP_SECS = 0.60f;    // about 8 frames at the ~72 ms a full compose takes
 
-// Fast away, a slight overshoot, then settle: the standard back ease, which is what a hand
-// with momentum behind it does. Peaks near 1.10 around t=0.73 and returns to 1 at t=1.
-static float ease_out_back(float t) {
-    const float c1 = 1.70158f, c3 = c1 + 1.0f;
-    const float u = t - 1.0f;
-    return 1.0f + c3 * u * u * u + c1 * u * u;
+// Ease in, ease out, no overshoot: smoothstep.
+//
+// This was easeOutBack, and at this frame rate that was simply wrong. A back ease puts most
+// of its travel in the first instant, so the first frame alone covered 71% of the gap, the
+// second overshot to 103%, and the last three crawled backwards by a few percent each. Five
+// frames shaped like that do not read as one movement, they read as two: a jump to about the
+// middle, then a small correction onto the mark. Zion described it as "dut dut", which is
+// precisely what those numbers draw.
+//
+// A step this short cannot afford a curve that spends its frames unevenly. Smoothstep moves
+// at most 18% of the gap in any one frame and is symmetric, so the hand accelerates away and
+// decelerates in, which is what momentum looks like when you only have eight frames to say
+// it with. The overshoot went with it: at eight frames a settle is a second motion, not a
+// flourish.
+static float ease_step(float t) {
+    return t * t * (3.0f - 2.0f * t);
 }
 
 // Where in its step the minute hand is for a given wall second, or -1 when it is not
 // stepping. The window is asserted to sit inside the stop by the simulator self-test.
 static float minute_step_ease(float wallSecs) {
     const float t = (wallSecs - (60.0f - STEP_SECS)) / STEP_SECS;
-    return (t > 0.0f && t < 1.0f) ? ease_out_back(t) : -1.0f;
+    return (t > 0.0f && t < 1.0f) ? ease_step(t) : -1.0f;
 }
 
 // A tick a second, or a frame every 40 ms while sweeping.

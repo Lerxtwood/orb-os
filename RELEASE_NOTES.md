@@ -18,6 +18,14 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.41
+
+- The railway minute hand's step is one smooth movement again. In the last update it moved
+  most of the way in a single frame and then corrected itself, which looked like two jerks
+- Found by Zion
+
+---
+
 ## 2.16.40
 
 - On a Swiss railway clock the minute hand now travels across to the next mark instead of
