@@ -1845,25 +1845,16 @@ static void tick_cb(lv_timer_t * /*t*/) {
     struct tm ti;
     time_for_face(&ti);
 
-    // THE TICK. One click a second, from whichever bank the worn theme shipped.
+    // THE TICK. One click a second, from whichever set the worn theme shipped.
     //
-    // Here, rather than in any of the draw paths, for two reasons. It is after both guards
-    // above, so an Orb showing another app or sitting under the wind screen is silent, which
-    // is what you want from a device that is a clock only some of the time. And it is before
-    // the split into the sweep path and the plain redraw, so a design ticks the same whether
-    // or not its second hand sweeps, instead of inheriting the frame rate of its own hand.
-    //
-    // Driven by the second CHANGING, not by the frame: this runs many times a second while
-    // sweeping and once a second otherwise, and the tick has to be one per second in both.
-    // A clock that does not know the time does not tick, because a tick is a claim about the
-    // time as much as the hands are.
+    // DECIDED here and SOUNDED at the bottom, after the face has been drawn. Zion asked for
+    // the hand to move first and the sound to follow, which is the order a real clock does it
+    // in: the mechanism moves, and the sound of it reaches you afterwards. Playing before the
+    // draw put the click ahead of the hand by however long the compose took.
+    bool fireTick = false;
     if (!s_noTime) {
         static int lastTickSec = -1;
-        if (ti.tm_sec != lastTickSec) {
-            lastTickSec = ti.tm_sec;
-            size_t n = 0;
-            if (const uint8_t *pcm = theme_audio::nextTick(n)) audio_play_pcm(pcm, n);
-        }
+        if (ti.tm_sec != lastTickSec) { lastTickSec = ti.tm_sec; fireTick = true; }
     }
 
     // THEME_CAPS 55. Advancing a background frame changes every pixel beneath the hand, so
@@ -1961,9 +1952,29 @@ static void tick_cb(lv_timer_t * /*t*/) {
         }
         sweep_pad_for_shadow();
         sweep_frame(railway_seconds(wall));
+        if (fireTick) { size_t n = 0; if (const uint8_t *pcm = theme_audio::nextTick(n)) audio_play_pcm(pcm, n); }
         return;
     }
     redraw(&ti);
+    if (fireTick) { size_t n = 0; if (const uint8_t *pcm = theme_audio::nextTick(n)) audio_play_pcm(pcm, n); }
+
+    // AIM THE NEXT FRAME AT THE SECOND ITSELF.
+    //
+    // A clock that is not sweeping asked for a frame every 1000 ms, and 1000 ms from WHENEVER
+    // the timer was last set, which is an arbitrary phase against the real second. So the hand
+    // stepped at, say, .47 past every second, for as long as that theme was worn. Nobody
+    // noticed while the hand was the only thing moving, because a second hand half a second
+    // out still looks like a second hand. Giving the clock a voice made it obvious: Zion
+    // heard the tick land about half a second away from where the hand moved.
+    //
+    // Re-aimed every frame rather than set once, because the device's clock and LVGL's timer
+    // are not the same clock and will drift apart over hours.
+    if (s_tick && !sweep_possible()) {
+        struct timeval tv; gettimeofday(&tv, nullptr);
+        uint32_t ms = (uint32_t)((1000000 - tv.tv_usec) / 1000);
+        if (ms < 50) ms += 1000;        // too close to be worth chasing; take the next one
+        lv_timer_set_period(s_tick, ms);
+    }
 }
 
 // Redraw now, whatever the second says. For coming back from a screen that covered this one

@@ -18,6 +18,15 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.45
+
+- A clock that does not sweep now moves its second hand exactly on the second. It used to
+  step at whatever moment its timer happened to fall on, up to a second away
+- Its tick now sounds just after the hand moves rather than just before, the way a real one does
+- Found by Zion
+
+---
+
 ## 2.16.44
 
 - A theme's tick recordings now play in the order they were given, looping, rather than being
