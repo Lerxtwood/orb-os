@@ -35,8 +35,9 @@ static const size_t S_BUF_LEN = SR / 2 * 2;   // up to 500 ms, stereo interleave
 // enough answer to feel immediate and still far longer than the DMA needs to stay fed.
 static const size_t WRITE_CHUNK = SR / 32 * 2;
 static volatile int  s_vol = 60;     // 0..100
-// Per-sound trims, against s_vol. 30 is the default for both, and the reasoning is in audio.h.
-static volatile int  s_tickPct  = 30;
+// Per-sound trims, against s_vol. The tick starts at 20 and the chime at 30; the reasoning
+// is in audio.h.
+static volatile int  s_tickPct  = 20;
 static volatile int  s_chimePct = 30;
 // The trim for the sound currently being handed to the task. Set beside s_pcm and read by the
 // playback, exactly as s_pcm and s_cue already are.

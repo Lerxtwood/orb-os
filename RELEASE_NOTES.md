@@ -18,6 +18,13 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.53
+
+- A theme's tick now starts at 20% rather than 30%, so a clock that arrives ticking is quiet
+  enough to live with before you have touched anything
+
+---
+
 ## 2.16.52
 
 - A ticking clock no longer disturbs a sweeping second hand. Its tick was waking thirteen

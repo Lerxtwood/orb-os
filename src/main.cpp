@@ -103,10 +103,11 @@ static RadarSettings         g_settings;
 static WiFiManager           g_wm;
 static int                   g_brightnessDay = BRIGHTNESS_DEFAULT;   // user brightness (web/NVS)
 static int                   g_volume = 60;                          // alert volume 0..100 (web/NVS)
-// The clock's tick and the hourly chime, each 0..100 against g_volume, 0 being off. Thirty
-// by default and deliberately low: a theme that arrives ticking at full volume is one
-// somebody switches off rather than turns down. Zion, 2026-10-04.
-static int                   g_tickVol = 30;
+// The clock's tick and the hourly chime, each 0..100 against g_volume, 0 being off.
+// Deliberately low: a theme that arrives ticking at full volume is one somebody switches off
+// rather than turns down. The tick is quieter than the chime because it is in the room all
+// day where a chime is an event once an hour. Zion, 2026-10-05.
+static int                   g_tickVol = 20;
 static int                   g_chimeVol = 30;
 static bool                  g_muted  = false;                       // mute alert pings
 static int                   g_chimeIdx = 0;                         // selected chime (Settings/NVS)
@@ -665,7 +666,7 @@ static void loadSettings() {
     g_settings.rangeKm = p.getFloat("rangeKm", RANGE_KM_DEFAULT);
     g_brightnessDay    = p.getInt("bright", BRIGHTNESS_DEFAULT);
     g_volume           = p.getInt("vol", 60);
-    g_tickVol          = p.getInt("tickVol", 30);
+    g_tickVol          = p.getInt("tickVol", 20);
     g_chimeVol         = p.getInt("chimeVol", 30);
     audio_set_tick_level(g_tickVol);
     audio_set_chime_level(g_chimeVol);

@@ -36,9 +36,13 @@ void audio_play(AudioCue cue);      // non-blocking: signals the playback task
 void audio_play_pcm(const uint8_t *pcm, size_t bytes, bool ignoreMute = false, int trimPct = 100);
 
 // How loud the clock's tick and the hourly chime are, each against the device volume, 0..100.
-// Zero is off. Both default to 30, deliberately low: a theme that arrives ticking at full
-// volume is one somebody turns off rather than turns down, and the quiet version is the one
-// that earns its place on a desk.
+// Zero is off.
+//
+// Deliberately low, because a theme that arrives ticking at full volume is one somebody
+// switches off rather than turns down, and the quiet version is the one that earns its place
+// on a desk. The TICK starts at 20 and the chime at 30: a chime is an event once an hour and
+// a tick is a thing in the room all day, so the tick has to be quieter than feels right when
+// you are listening for it. Zion's number, after living with it.
 void audio_set_tick_level(int pct);
 int  audio_tick_level();
 void audio_set_chime_level(int pct);
