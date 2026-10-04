@@ -18,6 +18,14 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.43
+
+- A theme can now carry the sound of its own clock ticking. It holds several recordings of
+  one real click and plays a different one each second, so it never settles into a loop
+- Themes without them are silent, exactly as before
+
+---
+
 ## 2.16.42
 
 - The railway minute hand no longer stutters. Designs light enough to draw it move it

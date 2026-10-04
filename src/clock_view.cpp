@@ -7,6 +7,14 @@
 // applied at boot, so getLocalTime() returns local time.
 #include "clock_view.h"
 #include "display.h"      // orb_screen_covered(): do not redraw under a cover
+#include "theme_audio.h"  // the theme's tick bank
+#ifdef ARDUINO
+#include "audio.h"
+#else
+// The simulator builds no audio module. Compiled out rather than faked, the same way
+// theme_audio and wind_notice do it.
+#define audio_play_pcm(p, n) ((void)0)
+#endif
 #ifdef ARDUINO
 #include <Arduino.h>
 #include <esp_heap_caps.h>
@@ -1836,6 +1844,27 @@ static void tick_cb(lv_timer_t * /*t*/) {
     if (orb_screen_covered()) return;
     struct tm ti;
     time_for_face(&ti);
+
+    // THE TICK. One click a second, from whichever bank the worn theme shipped.
+    //
+    // Here, rather than in any of the draw paths, for two reasons. It is after both guards
+    // above, so an Orb showing another app or sitting under the wind screen is silent, which
+    // is what you want from a device that is a clock only some of the time. And it is before
+    // the split into the sweep path and the plain redraw, so a design ticks the same whether
+    // or not its second hand sweeps, instead of inheriting the frame rate of its own hand.
+    //
+    // Driven by the second CHANGING, not by the frame: this runs many times a second while
+    // sweeping and once a second otherwise, and the tick has to be one per second in both.
+    // A clock that does not know the time does not tick, because a tick is a claim about the
+    // time as much as the hands are.
+    if (!s_noTime) {
+        static int lastTickSec = -1;
+        if (ti.tm_sec != lastTickSec) {
+            lastTickSec = ti.tm_sec;
+            size_t n = 0;
+            if (const uint8_t *pcm = theme_audio::nextTick(n)) audio_play_pcm(pcm, n);
+        }
+    }
 
     // THEME_CAPS 55. Advancing a background frame changes every pixel beneath the hand, so
     // the cache of what is under it is now a picture of the wrong background. Dropping it is

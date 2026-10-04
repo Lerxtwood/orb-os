@@ -29,6 +29,39 @@ namespace theme_audio {
 // becomes active, on the same path that applies the rest of its settings.
 void load();
 
+// The clock's own tick, as a BANK of recordings rather than one.
+//
+// A clock heard for an hour is the hardest sound on this device to get right, because the ear
+// is extremely good at finding a loop. One recording played every second is a one second loop
+// and it is audible within about a minute: it stops sounding like a clock and starts sounding
+// like a sample. So a theme ships several takes of the same real click, and the Orb plays a
+// different one each second.
+//
+// NOT round robin, despite being asked for in those words, and this is the one place worth
+// arguing with the brief. Cycling 1-2-3-4-5-6 is still a loop, just a six second one, and six
+// seconds is well inside what somebody notices at a desk. This plays a SHUFFLE BAG: the clips
+// are shuffled, played through once each so no take is starved, then reshuffled, with the
+// first of a new shuffle never equal to the last of the old one. No period to find, and no
+// clip ever doubled back to back, which is the artefact pure randomness would give.
+//
+// Same format as every other sound here: raw PCM, 16 kHz, 16-bit signed, stereo interleaved.
+// At 64,000 bytes a second a 150 ms click is about 9.6 KB, so a bank of six costs under 60 KB
+// and is held in memory like the winding tick rather than streamed like a chime.
+constexpr int TICK_SLOTS_MAX = 8;
+
+// How many takes the worn theme actually shipped. Zero means it does not tick, which is every
+// theme written before this one.
+int tickCount();
+
+// The next click to play, chosen by the shuffle above. Null when the theme ships none.
+// Advances the bag, so call it once per tick and not for a preview.
+const uint8_t *nextTick(size_t &bytes);
+
+// Simulator only: the sequence the bag WOULD deal for n clips, without needing any audio
+// loaded. The organic feel is the entire point of the bank, so it is checked rather than
+// asserted in a comment.
+void testBag(int n, uint8_t *out, int draws);
+
 // Null when this theme ships no winding sound, which is the normal case.
 //
 // The chime is deliberately NOT here. It belongs to the device rather than to the worn theme

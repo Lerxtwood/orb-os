@@ -406,6 +406,10 @@ namespace theme_style {
 //      It is an ordinary TextSlot, so it has every control the other lines have, including
 //      the pill, the arc and ALL CAPS. An Orb below this level ignores it entirely.
 //
+//  56  the clock's own tick, as a bank of recordings. A theme may ship tick1.pcm through
+//      tick8.pcm, several takes of one real click, and the Orb plays a different one each
+//      second from a shuffle bag so there is no loop for the ear to find. Optional: a theme
+//      that ships none is silent, which is every theme before this one.
 //  55  a moving background. The clock plate can carry extra frames, clock_plate_01.png
 //      upwards, and the theme says how they play. Frame nought is the ordinary plate, so a
 //      theme built this way still looks right on an Orb that has never heard of this: it
@@ -416,7 +420,7 @@ namespace theme_style {
 //      third of the hand's smoothness for as long as it runs. Holding on frame nought and
 //      playing now and then costs exactly nothing in between, because a still background is
 //      the case the cache was built for. Zion's design, 2026-09-28.
-constexpr int THEME_CAPS = 55;
+constexpr int THEME_CAPS = 56;
 
 // The most extra background frames a theme may name. Not a storage limit, which Studio
 // enforces in bytes because only Studio knows the resolution: this is the ceiling on how
