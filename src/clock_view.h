@@ -39,4 +39,7 @@ namespace clockview {
     float     minuteStepEase(float wallSecs);
     float     minuteStepSecs();
     float     railwayStopStart();
+    // Whether a design whose full compose costs this many milliseconds can afford to animate
+    // the minute hand's step, rather than clicking it over in one move.
+    bool      stepAffordable(float composeMs);
 }

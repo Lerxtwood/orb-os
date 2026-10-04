@@ -18,6 +18,16 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.42
+
+- The railway minute hand no longer stutters. Designs light enough to draw it move it
+  smoothly; heavier ones click it over in one clean move instead of jerking twice
+- Fixed a design whose minute hand sits above its second hand drawing that hand a fraction
+  off its mark on every frame
+- Found by Zion
+
+---
+
 ## 2.16.41
 
 - The railway minute hand's step is one smooth movement again. In the last update it moved

@@ -1376,6 +1376,17 @@ static int  s_underMin = -1, s_underHr = -1;   // what minute this cache is of
 // the minute instead of creeping, which is right for a railway dial and wrong for every
 // other sweeping one. Jean-Paul Stringaro spotted it against Studio, 2026-09-29.
 static float s_underMins = -1.0f;
+// What a full compose actually costs on this design, rolling average, milliseconds. The
+// sweep has measured itself for a long time; the compose never did, and a figure noted for
+// a plain dial (72 ms) got quoted at a busy one that takes three or four times that. The
+// minute hand's step is paid for in whole composes, so this is the number that decides
+// whether the step can be animated at all.
+#if defined(ESP_PLATFORM)
+static float s_composeMs = 0.0f;     // measured on the device, nothing assumed
+#else
+static float s_composeMs = 20.0f;    // the simulator composes in software, and fast
+#endif
+static bool s_stepTold = false;
 static bool s_prevSecValid = false;
 static lv_area_t s_prevSec = { 0, 0, 0, 0 };
 static float s_prevAng = 0.0f;
@@ -1607,7 +1618,15 @@ static void sweep_frame(float secs) {
         struct tm ti;
         time_for_face(&ti);
         {
-            const float p_sec = (float)ti.tm_sec, p_min = ti.tm_min + p_sec / 60.0f;
+            // The SAME minute rule the cache was built with. This recomputed it with the
+            // plain creeping formula, so on a design that draws its minute hand above the
+            // second hand the cache placed that hand on its mark and this put it back on
+            // the creep, a fraction of a degree away, every frame. 2.16.39 fixed the rule
+            // in compose_custom and missed its twin here, which is the kind of thing having
+            // one shared helper is supposed to prevent.
+            const bool rwAbove = cs.secondRailway && cs.secondSweep;
+            float p_min = minute_hand_mins(rwAbove, ti.tm_min, ti.tm_sec);
+            if (rwAbove && s_stepEase >= 0.0f) p_min = (float)ti.tm_min + s_stepEase;
             const float p_hr = (ti.tm_hour % 12) + p_min / 60.0f;
             const float above[5] = { p_hr * 30.0f, p_min * 6.0f, ang, 0.0f, 0.0f };
             bool past = false;
@@ -1759,6 +1778,24 @@ static float ease_step(float t) {
     return t * t * (3.0f - 2.0f * t);
 }
 
+// Whether this design can afford to ANIMATE the step at all.
+//
+// Every frame of the step is a whole compose, because the minute hand lives inside the
+// sweep cache. A plain dial composes in about 72 ms and gets eight frames; a busy one with
+// pictures takes three or four times that and gets two. Two frames is the worst of both
+// worlds: not a movement, and not the clean click it replaced. Zion saw exactly that, twice,
+// and described it both times as one big jump followed by a small one, which is what two
+// frames of any curve look like.
+//
+// So the step animates only where there are frames to animate it with, and clicks over in
+// one move everywhere else. Measured per design, not assumed, and re-measured as the design
+// changes.
+static const int STEP_MIN_FRAMES = 6;
+static bool step_affordable(float composeMs) {
+    if (composeMs <= 0.0f) return false;   // nothing measured yet; do not gamble on the first
+    return (STEP_SECS * 1000.0f / composeMs) >= (float)STEP_MIN_FRAMES;
+}
+
 // Where in its step the minute hand is for a given wall second, or -1 when it is not
 // stepping. The window is asserted to sit inside the stop by the simulator self-test.
 static float minute_step_ease(float wallSecs) {
@@ -1851,7 +1888,18 @@ static void tick_cb(lv_timer_t * /*t*/) {
         if (railwayDial) {
             // Each frame of the step moves the hand, so each one needs the cache rebuilt.
             // When the step ends, one more rebuild puts the hand exactly on the new mark.
-            const float ease = minute_step_ease(wall);
+            const bool  canAnimate = step_affordable(s_composeMs);
+#if defined(ESP_PLATFORM)
+            if (!s_stepTold && s_composeMs > 0.0f) {
+                s_stepTold = true;
+                Serial.printf("[step] a compose costs %.0f ms on this design, so the minute "
+                              "hand's step %s (needs %d frames in %.0f ms)\n",
+                              s_composeMs,
+                              canAnimate ? "is animated" : "clicks over in one move",
+                              STEP_MIN_FRAMES, STEP_SECS * 1000.0f);
+            }
+#endif
+            const float ease = canAnimate ? minute_step_ease(wall) : -1.0f;
             const bool  wasStepping = s_stepEase >= 0.0f;
             s_stepEase = ease;
             stale = ease >= 0.0f || wasStepping || ti.tm_min != s_underMin;
@@ -1863,7 +1911,19 @@ static void tick_cb(lv_timer_t * /*t*/) {
         }
         (void)aged;
         if (!s_under || stale || ti.tm_hour != s_underHr) {
+#if defined(ESP_PLATFORM)
+            const uint32_t c0 = micros();
+#endif
             if (!rebuild_under(&ti)) { redraw(&ti); return; }
+#if defined(ESP_PLATFORM)
+            // Same shape as the sweep's own meter below: the WORK, not the gap between
+            // frames, so it cannot feed back into the period that schedules it.
+            {
+                const float took = (float)(micros() - c0) / 1000.0f;
+                if (took < 2000.0f)
+                    s_composeMs = (s_composeMs <= 0.0f) ? took : s_composeMs + 0.2f * (took - s_composeMs);
+            }
+#endif
             // First frame after a rebuild repaints everything, because everything changed.
             // Same path as any other frame, just with the whole dial as its box.
             s_prevSec.x1 = 0; s_prevSec.y1 = 0;
@@ -1889,6 +1949,7 @@ float clockview::minuteHandMins(bool railway, int min, int sec) { return minute_
 float clockview::minuteStepEase(float wallSecs) { return minute_step_ease(wallSecs); }
 float clockview::minuteStepSecs() { return STEP_SECS; }
 float clockview::railwayStopStart() { return STOP_AT; }
+bool  clockview::stepAffordable(float composeMs) { return step_affordable(composeMs); }
 
 void clockview::setSweep(int mode) {
     s_forceSweep = mode;

@@ -1363,6 +1363,18 @@ int main(int argc, char **argv) {
             printf("[selftest] and it reads as one movement, not a stutter: %s"
                    " (%d frames, biggest single step %.0f%% of the gap, ends at %.0f%%)\n",
                    moves ? "PASS" : "FAIL", frames, (double)(biggest * 100.0f), (double)(last * 100.0f));
+
+            // The decision that stops a stutter ever reaching the glass again. A design is
+            // only animated when its compose leaves room for real frames; otherwise the hand
+            // clicks over in one move, which is honest, and was never the thing anybody
+            // complained about. The 250 ms case is the one Zion actually has.
+            const bool fastOk  = clockview::stepAffordable(72.0f);    // a plain dial
+            const bool busyNo  = !clockview::stepAffordable(250.0f);  // his Swiss Railway
+            const bool coldNo  = !clockview::stepAffordable(0.0f);    // nothing measured yet
+            printf("[selftest] a slow design clicks over instead of stuttering: %s"
+                   " (72 ms compose animates=%d, 250 ms animates=%d, unmeasured animates=%d)\n",
+                   (fastOk && busyNo && coldNo) ? "PASS" : "FAIL",
+                   fastOk ? 1 : 0, busyNo ? 0 : 1, coldNo ? 0 : 1);
         }
 
         // ---- every key on the city search keyboard does its own job ------------------
