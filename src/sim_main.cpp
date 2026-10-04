@@ -1377,33 +1377,21 @@ int main(int argc, char **argv) {
                    (fastOk && busyNo && coldNo) ? "PASS" : "FAIL",
                    fastOk ? 1 : 0, busyNo ? 0 : 1, coldNo ? 0 : 1);
 
-            // The tick bank. A clock is heard for hours, so the only thing that matters is
-            // that the ear cannot find a pattern in it. Three properties, all checkable:
-            // nothing repeats back to back, every take gets used equally, and there is no
-            // fixed period, which is exactly what plain round robin would have.
+            // The tick set plays in the order it was given and loops, which is what the
+            // recordings are: six consecutive seconds off one real clock, kept in sequence.
             {
                 const int N = 6, DRAWS = 600;
                 static uint8_t seq[600];
                 theme_audio::testBag(N, seq, DRAWS);
-                bool backToBack = false;
-                for (int i = 1; i < DRAWS; ++i) if (seq[i] == seq[i-1]) backToBack = true;
+                bool inOrder = true;
+                for (int i = 0; i < DRAWS; ++i) if (seq[i] != (uint8_t)(i % N)) inOrder = false;
                 int used[8] = {0};
                 for (int i = 0; i < DRAWS; ++i) used[seq[i]]++;
-                int lo = DRAWS, hi = 0;
-                for (int i = 0; i < N; ++i) { if (used[i] < lo) lo = used[i]; if (used[i] > hi) hi = used[i]; }
-                // Would a listener hear a loop? Check every period up to 60 s for a stretch
-                // that repeats itself. Plain 1-2-3-4-5-6 would be caught at period 6.
-                int looped = 0;
-                for (int period = 1; period <= 60 && !looped; ++period) {
-                    bool same = true;
-                    for (int i = period; i < DRAWS && same; ++i) if (seq[i] != seq[i-period]) same = false;
-                    if (same) looped = period;
-                }
-                const bool organic = !backToBack && looped == 0 && lo == hi;
-                printf("[selftest] the tick bank has no pattern to hear: %s"
-                       " (%d takes over %d seconds, each used %d times, no clip twice running,"
-                       " no repeating period up to 60 s)\n",
-                       organic ? "PASS" : "FAIL", N, DRAWS, lo);
+                bool even = true;
+                for (int i = 0; i < N; ++i) if (used[i] != DRAWS/N) even = false;
+                printf("[selftest] the tick set plays in order and loops: %s"
+                       " (%d takes over %d seconds, each used %d times, loops every %d s)\n",
+                       (inOrder && even) ? "PASS" : "FAIL", N, DRAWS, used[0], N);
             }
         }
 

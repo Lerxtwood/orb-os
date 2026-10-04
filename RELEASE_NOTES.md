@@ -18,6 +18,13 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.44
+
+- A theme's tick recordings now play in the order they were given, looping, rather than being
+  shuffled. Six takes recorded off one clock are a passage, not a bag of samples
+
+---
+
 ## 2.16.43
 
 - A theme can now carry the sound of its own clock ticking. It holds several recordings of
