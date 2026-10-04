@@ -1977,6 +1977,26 @@ static void tick_cb(lv_timer_t * /*t*/) {
                 const float took = (float)(micros() - c0) / 1000.0f;
                 if (took < 2000.0f)
                     s_composeMs = (s_composeMs <= 0.0f) ? took : s_composeMs + 0.2f * (took - s_composeMs);
+
+                // SAY IT OUT LOUD, every eighth rebuild.
+                //
+                // A recompose is the one thing on this screen that stops the sweep dead: the
+                // whole dial is redrawn and the hand cannot move while it happens. How often
+                // that is depends on the minute hand's reach, and how long it takes depends
+                // on the design, so neither can be worked out from here. Zion is watching a
+                // sweep stutter about every seven seconds and asked to be sure rather than
+                // told; this is the Orb answering for itself.
+                static uint32_t lastMs = 0, runs = 0; static float gapSum = 0, tookSum = 0;
+                const uint32_t nowMs = millis();
+                if (lastMs) { gapSum += (float)(nowMs - lastMs); tookSum += took; runs++; }
+                lastMs = nowMs;
+                if (runs >= 8) {
+                    Serial.printf("[sweep] the dial is recomposed every %.1f s and takes %.0f ms,"
+                                  " so the hand stops for %.0f%% of the time\n",
+                                  gapSum / runs / 1000.0f, tookSum / runs,
+                                  100.0f * (tookSum / runs) / (gapSum / runs));
+                    runs = 0; gapSum = 0; tookSum = 0;
+                }
             }
 #endif
             // First frame after a rebuild repaints everything, because everything changed.

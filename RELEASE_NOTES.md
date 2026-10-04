@@ -18,6 +18,13 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.54
+
+- The Orb now reports how often it has to redraw its whole dial, and how long that takes, so
+  a sweep that hesitates can be measured instead of guessed at
+
+---
+
 ## 2.16.53
 
 - A theme's tick now starts at 20% rather than 30%, so a clock that arrives ticking is quiet
