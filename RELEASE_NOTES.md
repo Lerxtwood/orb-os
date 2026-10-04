@@ -18,6 +18,15 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.46
+
+- Settings, Sound now has its own level for the clock's tick and for the hourly chime, each
+  with an OFF position, so a theme that ticks can be made quiet or silent without muting the Orb
+- Both start at 30%, low enough that a theme arriving with a tick is one you turn up rather
+  than one you switch off
+
+---
+
 ## 2.16.45
 
 - A clock that does not sweep now moves its second hand exactly on the second. It used to

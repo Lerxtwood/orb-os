@@ -13,7 +13,8 @@
 #else
 // The simulator builds no audio module. Compiled out rather than faked, the same way
 // theme_audio and wind_notice do it.
-#define audio_play_pcm(p, n) ((void)0)
+#define audio_play_pcm(p, n, m, t) ((void)0)
+#define audio_tick_level() 100
 #endif
 #ifdef ARDUINO
 #include <Arduino.h>
@@ -1952,11 +1953,11 @@ static void tick_cb(lv_timer_t * /*t*/) {
         }
         sweep_pad_for_shadow();
         sweep_frame(railway_seconds(wall));
-        if (fireTick) { size_t n = 0; if (const uint8_t *pcm = theme_audio::nextTick(n)) audio_play_pcm(pcm, n); }
+        if (fireTick) { size_t n = 0; if (const uint8_t *pcm = theme_audio::nextTick(n)) audio_play_pcm(pcm, n, false, audio_tick_level()); }
         return;
     }
     redraw(&ti);
-    if (fireTick) { size_t n = 0; if (const uint8_t *pcm = theme_audio::nextTick(n)) audio_play_pcm(pcm, n); }
+    if (fireTick) { size_t n = 0; if (const uint8_t *pcm = theme_audio::nextTick(n)) audio_play_pcm(pcm, n, false, audio_tick_level()); }
 
     // AIM THE NEXT FRAME AT THE SECOND ITSELF.
     //

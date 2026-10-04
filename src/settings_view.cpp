@@ -37,6 +37,10 @@ extern bool host_location_name(char *out, size_t n);
 extern void host_recents_add(const char *name, double lat, double lon);
 extern int  host_get_volume();
 extern void host_set_volume(int v, bool save);
+extern int  host_tick_volume();
+extern void host_set_tick_volume(int v, bool save);
+extern int  host_chime_volume();
+extern void host_set_chime_volume(int v, bool save);
 extern bool host_sound_radar();
 extern void host_sound_set_radar(bool on);
 extern bool host_sound_chime();
@@ -187,7 +191,12 @@ namespace {
     #define WHEEL_FADE     (chrome().wheelFade)
 
     // --- sound submenu ---
-    enum { SND_RADAR = 0, SND_CHIME, SND_CHIME_SEL, SND_VOLUME, SND_BACK, SND_COUNT };
+    enum { SND_RADAR = 0, SND_CHIME, SND_CHIME_SEL, SND_CHIME_VOL, SND_TICK_VOL, SND_VOLUME, SND_BACK, SND_COUNT };
+    // Which level the one slider page is adjusting. Three sliders that look identical and
+    // behave identically do not want three pages: the page is the control, and this is what
+    // it is pointed at.
+    enum VolTarget { VOL_MASTER = 0, VOL_TICK, VOL_CHIME };
+    int s_volTarget = VOL_MASTER;
 
     constexpr int VOL_STEP = 10;
 
@@ -357,6 +366,7 @@ namespace {
     lv_obj_t *s_designItems[theme_select::MAX_THEMES + 1] = { nullptr };   // installed themes + Back
     lv_obj_t *s_designNoticePage = nullptr;   // "restarting..." heads-up, shown right before the reboot
     lv_obj_t *s_volPage = nullptr;   // volume adjuster
+    lv_obj_t *s_volTitle = nullptr;  // retitled per target: Volume / Tick level / Chime level
     lv_obj_t *s_volFill = nullptr;
     lv_obj_t *s_volPct  = nullptr;
     lv_obj_t *s_plateImg = nullptr;    // themed background, built on enter / freed on exit
@@ -698,6 +708,16 @@ namespace {
         lv_label_set_text(s_sndItems[SND_CHIME], b);
         snprintf(b, sizeof(b), "Audio: %s", host_chime_name(host_chime_index()));
         lv_label_set_text(s_sndItems[SND_CHIME_SEL], b);
+        // OFF rather than 0%, because zero is a state and not a quantity: somebody scanning
+        // this menu wants to know whether the clock ticks, not what number it ticks at.
+        const int cv = host_chime_volume();
+        snprintf(b, sizeof(b), "Chime level   %s", cv ? "" : "OFF");
+        if (cv) snprintf(b, sizeof(b), "Chime level   %d%%", cv);
+        lv_label_set_text(s_sndItems[SND_CHIME_VOL], b);
+        const int tv = host_tick_volume();
+        snprintf(b, sizeof(b), "Tick level   %s", tv ? "" : "OFF");
+        if (tv) snprintf(b, sizeof(b), "Tick level   %d%%", tv);
+        lv_label_set_text(s_sndItems[SND_TICK_VOL], b);
         snprintf(b, sizeof(b), "Volume   %d%%", host_get_volume());
         lv_label_set_text(s_sndItems[SND_VOLUME], b);
         lv_label_set_text(s_sndItems[SND_BACK], "Back");
@@ -801,8 +821,11 @@ namespace {
     void refresh_vol() {
         lv_obj_set_width(s_volFill, (lv_coord_t)(4 + s_vol * (236 - 4) / 100));
         char buf[8];
-        snprintf(buf, sizeof(buf), "%d%%", s_vol);
+        if (s_vol == 0) snprintf(buf, sizeof(buf), "OFF");
+        else            snprintf(buf, sizeof(buf), "%d%%", s_vol);
         lv_label_set_text(s_volPct, buf);
+        if (s_volTitle) lv_label_set_text(s_volTitle,
+            s_volTarget == VOL_TICK ? "Tick level" : s_volTarget == VOL_CHIME ? "Chime level" : "Volume");
     }
 
     void refresh_locmenu() {
@@ -1306,7 +1329,12 @@ void settingsview::onTurn(int delta) {
         s_vol += delta * VOL_STEP;
         if (s_vol < 0) s_vol = 0;
         if (s_vol > 100) s_vol = 100;
-        host_set_volume(s_vol, false);      // live preview level
+        // Live, so the number on screen and the thing in the room agree while turning. Not
+        // saved until Back, which is what makes turning it all the way down and back up again
+        // cost nothing.
+        if (s_volTarget == VOL_TICK)       host_set_tick_volume(s_vol, false);
+        else if (s_volTarget == VOL_CHIME) host_set_chime_volume(s_vol, false);
+        else                               host_set_volume(s_vol, false);
         refresh_vol();
     } else if (s_mode == MODE_WIFI_LIST) {
         const int total = wifi_item_count();
@@ -1537,8 +1565,14 @@ void settingsview::onPress() {
             s_chimeSel = host_chime_index();
             show_page(MODE_CHIME_SELECT);
             host_chime_preview(s_chimeSel);             // preview the current pick on entry
+        } else if (s_sndSel == SND_CHIME_VOL) {
+            s_volTarget = VOL_CHIME; s_vol = host_chime_volume();
+            show_page(MODE_VOLUME);
+        } else if (s_sndSel == SND_TICK_VOL) {
+            s_volTarget = VOL_TICK; s_vol = host_tick_volume();
+            show_page(MODE_VOLUME);
         } else if (s_sndSel == SND_VOLUME) {
-            s_vol = host_get_volume();
+            s_volTarget = VOL_MASTER; s_vol = host_get_volume();
             show_page(MODE_VOLUME);
         } else {                                        // Back -> exit Settings to the app switcher
             app_shell::setCaptured(false);
@@ -1571,8 +1605,9 @@ void settingsview::onPress() {
         // transitional page — the device reboots before this could ever fire; only
         // reachable at all on the sim, and only if something presses during that instant
     } else if (s_mode == MODE_VOLUME) {
-        host_set_volume(s_vol, true);
-        host_sound_preview_beep();                      // hear the new level
+        if (s_volTarget == VOL_TICK)       host_set_tick_volume(s_vol, true);
+        else if (s_volTarget == VOL_CHIME) host_set_chime_volume(s_vol, true);
+        else                             { host_set_volume(s_vol, true); host_sound_preview_beep(); }
         app_shell::setCaptured(false);      // back always exits to the switcher, not one level up
         app_shell::openSwitcher();
     } else if (s_mode == MODE_LOCATION) {
@@ -2141,6 +2176,7 @@ void settingsview::init() {
     lv_obj_set_size(s_volPage, SCREEN_W, SCREEN_H); lv_obj_center(s_volPage);
     lv_obj_clear_flag(s_volPage, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_t *vlabel = lv_label_create(s_volPage);
+    s_volTitle = vlabel;
     lv_label_set_text(vlabel, "Volume");
     lv_obj_set_style_text_color(vlabel, C_WHITE, 0);
     lv_obj_set_style_text_font(vlabel, &lv_font_montserrat_20, 0);
