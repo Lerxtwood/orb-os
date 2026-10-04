@@ -18,6 +18,14 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.47
+
+- The clock's tick now sounds at the same instant the second hand moves, instead of just
+  after it
+- Found by Zion
+
+---
+
 ## 2.16.46
 
 - Settings, Sound now has its own level for the clock's tick and for the hourly chime, each

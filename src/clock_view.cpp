@@ -1848,14 +1848,25 @@ static void tick_cb(lv_timer_t * /*t*/) {
 
     // THE TICK. One click a second, from whichever set the worn theme shipped.
     //
-    // DECIDED here and SOUNDED at the bottom, after the face has been drawn. Zion asked for
-    // the hand to move first and the sound to follow, which is the order a real clock does it
-    // in: the mechanism moves, and the sound of it reaches you afterwards. Playing before the
-    // draw put the click ahead of the hand by however long the compose took.
-    bool fireTick = false;
+    // Sounded HERE, the instant the second is seen, rather than after the face is drawn.
+    //
+    // It was deliberately after the draw for one release, because Zion asked for the hand to
+    // move first and the sound to follow, the way a real mechanism does. On the glass that
+    // read as too long a gap, and the reason is the compose: a full dial costs between 70 and
+    // 250 ms depending on the design, so "just after the hand" was a quarter of a second
+    // after it on a busy theme, which is not a mechanism, it is a lag. His call, 2026-10-05:
+    // the click and the hand at exactly the same instant.
+    //
+    // This is the closest the two can be. The audio task is waiting on a semaphore and starts
+    // within a millisecond or two, and the hand reaches the panel when LVGL next flushes, so
+    // firing at the top of the callback puts both as near the second as the device can manage.
     if (!s_noTime) {
         static int lastTickSec = -1;
-        if (ti.tm_sec != lastTickSec) { lastTickSec = ti.tm_sec; fireTick = true; }
+        if (ti.tm_sec != lastTickSec) {
+            lastTickSec = ti.tm_sec;
+            size_t n = 0;
+            if (const uint8_t *pcm = theme_audio::nextTick(n)) audio_play_pcm(pcm, n, false, audio_tick_level());
+        }
     }
 
     // THEME_CAPS 55. Advancing a background frame changes every pixel beneath the hand, so
@@ -1953,11 +1964,9 @@ static void tick_cb(lv_timer_t * /*t*/) {
         }
         sweep_pad_for_shadow();
         sweep_frame(railway_seconds(wall));
-        if (fireTick) { size_t n = 0; if (const uint8_t *pcm = theme_audio::nextTick(n)) audio_play_pcm(pcm, n, false, audio_tick_level()); }
         return;
     }
     redraw(&ti);
-    if (fireTick) { size_t n = 0; if (const uint8_t *pcm = theme_audio::nextTick(n)) audio_play_pcm(pcm, n, false, audio_tick_level()); }
 
     // AIM THE NEXT FRAME AT THE SECOND ITSELF.
     //
