@@ -1190,7 +1190,16 @@ static float minute_hand_mins(bool railway, int min, int sec) {
 }
 
 // overlay has to go back on TOP of the second hand and so cannot be baked into that cache.
-static void compose_custom(const struct tm *ti, bool skipSecond, bool withOverlay) {
+// `stopKind` is the hand this compose stops BELOW: that hand, and everything above it in the
+// draw order, is left out and redrawn later by whoever owns the cache being built.
+//
+//   -1  draw the whole face (the plain redraw path)
+//    2  stop below the second hand  -> s_under, which a sweep frame restores from
+//    1  stop below the minute hand  -> s_noMin, which a minute move restores from
+//
+// It was a bool called skipSecond. Two caches need two stop points, and the second one is what
+// stops the whole dial being recomposed every few seconds just to creep one hand.
+static void compose_custom(const struct tm *ti, int stopKind, bool withOverlay) {
     // Decode the plate first: it's the whole visible dial and the largest buffer,
     // so it gets first claim on PSRAM. (Text is now a baked font, not a giant
     // atlas, so the old "overlay first" ordering is no longer needed.) The overlay
@@ -1286,11 +1295,14 @@ static void compose_custom(const struct tm *ti, bool skipSecond, bool withOverla
     // all the shadows on the face and then standing the hands on top is the same choice a
     // watch photographer makes with a diffuser, and it costs a second short loop.
     if (cs.shadowOn) {
-        bool sawSecondSh = false;
+        bool pastStopSh = false;
         for (int i = 0; i < cs.orderN; ++i) {
             const int k = cs.order[i];
-            if (skipSecond && k == 2) { sawSecondSh = true; continue; }
-            if (skipSecond && sawSecondSh) continue;   // above the sweeping hand: drawn per frame
+            // Shadows are ALL laid down before any hand, so the shadow of a hand this compose
+            // stops below has to be left out with it, or restoring that hand later would leave
+            // its old shadow printed underneath.
+            if (stopKind >= 0 && k == stopKind) { pastStopSh = true; continue; }
+            if (stopKind >= 0 && pastStopSh) continue;   // above the stop: drawn later
             if (k < 0 || k > 2) continue;              // statics do not cast; they are the face
             const theme_style::Hand &hd = cs.hand[k];
             if (!hd.show) continue;
@@ -1330,16 +1342,17 @@ static void compose_custom(const struct tm *ti, bool skipSecond, bool withOverla
                                       (float)(hd.centerY + cs.shadowDY), ang[k]);
         }
     }
-    bool sawSecond = false;
+    bool pastStop = false;
     for (int i = 0; i < cs.orderN; ++i) {
         const int k = cs.order[i];
         if (k < 0 || k > 4) continue;
-        // Stop at the second hand. Everything from there up is redrawn on every sweep frame,
-        // clipped to the hand's own box, which is what lets a design order a hand ABOVE its
-        // second hand and still sweep. Zion: "there's never a reason to not have a feature
-        // we get working not work for all the themes."
-        if (skipSecond && sawSecond) continue;
-        if (skipSecond && k == 2) { sawSecond = true; continue; }
+        // Stop below the hand this cache is for. Everything from there up is redrawn by
+        // whoever owns the cache, clipped to the rows that hand actually covers, which is what
+        // lets a design order a hand ABOVE another and still have both move cheaply. Zion:
+        // "there's never a reason to not have a feature we get working not work for all the
+        // themes."
+        if (stopKind >= 0 && pastStop) continue;
+        if (stopKind >= 0 && k == stopKind) { pastStop = true; continue; }
         const theme_style::Hand &hd = cs.hand[k];
         if (!hd.show) continue;
         CustomSprite spr = custom_hand(k);
@@ -1368,7 +1381,7 @@ static void compose_custom(const struct tm *ti, bool skipSecond, bool withOverla
     }
 }
 
-static void draw_custom(const struct tm *ti) { compose_custom(ti, false, true); }
+static void draw_custom(const struct tm *ti) { compose_custom(ti, -1, true); }
 
 // ---- the smooth second hand -------------------------------------------------
 //
@@ -1415,6 +1428,26 @@ static uint32_t sweep_period() {
 }
 
 static lv_color_t *s_under = nullptr;
+// The dial with NO minute hand on it, and nothing above the minute hand either.
+//
+// s_under is rebuilt whenever the minute hand has to creep a pixel, which on a long hand is
+// every three seconds, and a rebuild is a whole dial: 28 ms reading the plate out of flash,
+// 44 ms turning the hands, 19 ms copying the result. 92 ms measured on Zion's Orb, during
+// which a sweeping second hand cannot move at all, which is seen as a stutter every few
+// seconds.
+//
+// Almost none of that work is needed. The plate has not changed and the hour hand has barely
+// moved. So this holds everything below the minute hand, and moving the minute means
+// restoring only the rows it covers out of here and drawing it again. 30,000 pixels instead
+// of 217,000, and no flash read.
+//
+// Rebuilt only when something under the minute hand actually changes: the hour, the
+// background frame, or the theme.
+static lv_color_t *s_noMin = nullptr;
+static int  s_noMinHr = -1;
+static bool s_noMinValid = false;
+// The angle the minute hand was last drawn at, so a move knows what to wipe.
+static float s_prevMinAng = -1000.0f;
 static int  s_underMin = -1, s_underHr = -1;   // what minute this cache is of
 // Minutes-of-the-hour, fractional, that the cache was composed at. The minute hand lives
 // in the cache, so for the whole life of a cache that hand cannot move. Holding one cache
@@ -1471,9 +1504,9 @@ static bool sweep_possible() {
 }
 
 // The box the second hand can reach at this angle, padded by a pixel for the bilinear tap.
-static lv_area_t second_box(float angDeg) {
-    const theme_style::Hand &hd = theme_style::clock().hand[2];
-    CustomSprite spr = custom_hand(2);
+static lv_area_t hand_box(int kind, float angDeg) {
+    const theme_style::Hand &hd = theme_style::clock().hand[kind];
+    CustomSprite spr = custom_hand(kind);
     const int sw = spr.data ? spr.w : 0, sh = spr.data ? spr.h : 0;
     const float px = (float)hd.pivotX, py = (float)hd.pivotY;
     const float th = angDeg * DEG2RAD, ct = cosf(th), st = sinf(th);
@@ -1557,6 +1590,16 @@ static float cache_minutes_allowed() {
 }
 
 // Compose the dial without its second hand and keep it. Once a minute, not once a frame.
+// Where the minute hand points right now, by the same rule compose_custom uses. One function,
+// because a cache that disagrees with the compose about this would leave a hand drawn twice.
+static float minute_angle_now(const struct tm *ti) {
+    const theme_style::Clock &cs = theme_style::clock();
+    const bool rw = cs.secondRailway && cs.secondSweep;
+    float mins = minute_hand_mins(rw, ti->tm_min, ti->tm_sec);
+    if (rw && s_stepEase >= 0.0f) mins = (float)ti->tm_min + s_stepEase;
+    return mins * 6.0f;
+}
+
 static bool rebuild_under(const struct tm *ti) {
     if (!s_buf) return false;
     if (!s_under) {
@@ -1570,14 +1613,145 @@ static bool rebuild_under(const struct tm *ti) {
         // cache would be a wrong one.
         if (!s_under) return false;
     }
+    if (!s_noMin) {
+        const size_t bytes = (size_t)SCREEN_W * SCREEN_H * sizeof(lv_color_t);
+#if defined(ESP_PLATFORM)
+        s_noMin = (lv_color_t *)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+        s_noMin = (lv_color_t *)malloc(bytes);
+#endif
+        // Not fatal. Without it every minute move costs a full rebuild, which is exactly what
+        // happened before this existed, so the clock is slower and not wrong.
+    }
     clip_reset();
-    compose_custom(ti, true, false);
+    // The lower cache first, from the same compose: stop below the minute hand, keep that,
+    // then carry on up to the second hand for s_under. Two memcpys and one compose rather
+    // than two composes.
+    if (s_noMin) {
+        compose_custom(ti, 1, false);
+        memcpy(s_noMin, s_buf, (size_t)SCREEN_W * SCREEN_H * sizeof(lv_color_t));
+        s_noMinHr = ti->tm_hour;
+        s_noMinValid = true;
+    }
+    clip_reset();
+    compose_custom(ti, 2, false);
     memcpy(s_under, s_buf, (size_t)SCREEN_W * SCREEN_H * sizeof(lv_color_t));
     s_underHr = ti->tm_hour;
     s_underMin = ti->tm_min;
     s_underMins = (float)ti->tm_min + (float)ti->tm_sec / 60.0f;
+    s_prevMinAng = minute_angle_now(ti);
     s_prevSecValid = false;
     s_fullNext = true;
+    return true;
+}
+
+// MOVE THE MINUTE HAND WITHOUT REBUILDING THE DIAL.
+//
+// The same trick the sweep uses on the second hand, applied one layer down. Restore only the
+// rows the minute hand covers, out of the cache that has no minute hand in it, draw the hand
+// again, and copy those rows back. 30,000 pixels rather than 217,000, and no plate read.
+//
+// Measured before this, on Zion's Orb: 92 ms every 3.7 seconds, with a sweeping second hand
+// frozen for all of it. One frame at the 14 fps he was getting is 71 ms, so the stall did not
+// fit inside a frame and was seen.
+//
+// Returns false when it cannot be done, and every caller falls back to the full rebuild. That
+// is the whole safety story here: no cache, no sprite, no hand, nothing stale, just slower.
+static bool refresh_minute(const struct tm *ti, float ang) {
+    if (!s_buf || !s_under || !s_noMin || !s_noMinValid) return false;
+    if (s_noMinHr != ti->tm_hour) return false;      // the hour hand moved; that is under us
+    const theme_style::Clock &cs = theme_style::clock();
+    const theme_style::Hand &hd = cs.hand[1];
+    if (!hd.show) return false;
+    CustomSprite spr = custom_hand(1);
+    if (!spr.data) return false;
+    if (s_prevMinAng < -900.0f) return false;        // nothing to restore from yet
+
+    lv_area_t box = hand_box(1, ang);
+    area_join(box, hand_box(1, s_prevMinAng));
+    if (box.x2 < box.x1 || box.y2 < box.y1) return false;
+
+    const bool shadow = cs.shadowOn && custom_shadow(1).data;
+    // STATIC, not on the stack, for the reason sweep_frame gives: two arrays of 466 ints is
+    // 3.7 KB on a task whose headroom is measured in single kilobytes. Only one of these runs
+    // at a time.
+    static int runLo[SCREEN_H], runHi[SCREEN_H];
+    const float angs[2] = { s_prevMinAng, ang };
+    for (int y = box.y1; y <= box.y2; ++y) {
+        int lo = 1 << 20, hi = -(1 << 20), a, b;
+        for (int i = 0; i < 2; ++i) {
+            if (sprite_span(y, angs[i], (float)hd.centerX, (float)hd.centerY,
+                            hd.pivotX, hd.pivotY, spr.w, spr.h, a, b)) {
+                if (a < lo) lo = a;
+                if (b > hi) hi = b;
+            }
+            if (shadow && sprite_span(y, angs[i], (float)(hd.centerX + cs.shadowDX),
+                                      (float)(hd.centerY + cs.shadowDY),
+                                      hd.pivotX, hd.pivotY, spr.w, spr.h, a, b)) {
+                if (a < lo) lo = a;
+                if (b > hi) hi = b;
+            }
+        }
+        if (lo < box.x1) lo = box.x1;
+        if (hi > box.x2) hi = box.x2;
+        runLo[y] = lo; runHi[y] = hi;
+        if (hi < lo) continue;
+        memcpy(&s_buf[y * SCREEN_W + lo], &s_noMin[y * SCREEN_W + lo],
+               (size_t)(hi - lo + 1) * sizeof(lv_color_t));
+    }
+
+    // Everything from the minute hand up to the second hand, drawn into exactly what was
+    // wiped. Shadows first, as the full compose does, then the hands in the design's order.
+    s_clipX0 = box.x1; s_clipY0 = box.y1; s_clipX1 = box.x2; s_clipY1 = box.y2;
+    s_runLo = runLo; s_runHi = runHi;
+    const float mins = minute_hand_mins(cs.secondRailway && cs.secondSweep, ti->tm_min, ti->tm_sec);
+    const float hrs  = (ti->tm_hour % 12) + mins / 60.0f;
+    const float all[5] = { hrs * 30.0f, ang, 0.0f, 0.0f, 0.0f };
+    if (cs.shadowOn) {
+        bool past = false;
+        for (int i = 0; i < cs.orderN; ++i) {
+            const int k = cs.order[i];
+            if (k == 2) break;                       // the sweep owns everything from here up
+            if (k < 0 || k > 2) continue;
+            if (!past) { if (k == 1) past = true; else continue; }
+            const theme_style::Hand &oh = cs.hand[k];
+            if (!oh.show) continue;
+            CustomSprite sh = custom_shadow(k);
+            if (sh.data) blend_shadow(sh.data, sh.w, sh.h, oh.pivotX, oh.pivotY,
+                                      (float)(oh.centerX + cs.shadowDX),
+                                      (float)(oh.centerY + cs.shadowDY), all[k]);
+        }
+    }
+    {
+        bool past = false;
+        for (int i = 0; i < cs.orderN; ++i) {
+            const int k = cs.order[i];
+            if (k == 2) break;
+            if (k < 0 || k > 4) continue;
+            if (!past) { if (k == 1) past = true; else continue; }
+            const theme_style::Hand &oh = cs.hand[k];
+            if (!oh.show) continue;
+            CustomSprite os = custom_hand(k);
+            if (os.data) blend_custom_hand(os.data, os.w, os.h, oh.pivotX, oh.pivotY,
+                                           (float)oh.centerX, (float)oh.centerY, all[k], oh.blend);
+        }
+    }
+    clip_reset();
+
+    // Back into the cache the sweep restores from, the same rows and no more.
+    for (int y = box.y1; y <= box.y2; ++y) {
+        if (runHi[y] < runLo[y]) continue;
+        memcpy(&s_under[y * SCREEN_W + runLo[y]], &s_buf[y * SCREEN_W + runLo[y]],
+               (size_t)(runHi[y] - runLo[y] + 1) * sizeof(lv_color_t));
+    }
+    s_prevMinAng = ang;
+    s_underMin = ti->tm_min;
+    s_underMins = (float)ti->tm_min + (float)ti->tm_sec / 60.0f;
+    // The next sweep frame repaints its whole box rather than trusting what was in s_buf
+    // around the second hand, because this has just rewritten part of it.
+    s_prevSecValid = false;
+    s_fullNext = true;
+    lv_obj_invalidate_area(s_canvas, &box);
     return true;
 }
 
@@ -1591,9 +1765,9 @@ static void sweep_frame(float secs) {
     const theme_style::Hand &hd = cs.hand[2];
     const float ang = secs * 6.0f;
 
-    lv_area_t box = second_box(ang);
+    lv_area_t box = hand_box(2, ang);
     if (s_prevSecValid) area_join(box, s_prevSec);
-    s_prevSec = second_box(ang);
+    s_prevSec = hand_box(2, ang);
     s_prevSecValid = true;
 
     s_clipX0 = box.x1; s_clipY0 = box.y1; s_clipX1 = box.x2; s_clipY1 = box.y2;
@@ -1991,6 +2165,37 @@ static void tick_cb(lv_timer_t * /*t*/) {
         }
         (void)aged;
         if (!s_under || stale || ti.tm_hour != s_underHr) {
+            // The cheap road first: if the only thing that moved is the minute hand, move it
+            // in place instead of recomposing the dial around it. Falls through to the full
+            // rebuild on any doubt, which is what makes this safe to try.
+            if (s_under && stale && ti.tm_hour == s_underHr) {
+#if defined(ESP_PLATFORM)
+                const uint32_t m0 = micros();
+#endif
+                const bool moved = refresh_minute(&ti, minute_angle_now(&ti));
+#if defined(ESP_PLATFORM)
+                if (moved) {
+                    // Reported beside the full rebuild, because the whole question is which of
+                    // the two the clock is actually doing and what each costs.
+                    static uint32_t mLast = 0, mRuns = 0; static float mGap = 0, mTook = 0;
+                    const uint32_t mNow = millis();
+                    if (mLast) { mGap += (float)(mNow - mLast); mTook += (float)(micros() - m0) / 1000.0f; mRuns++; }
+                    mLast = mNow;
+                    if (mRuns >= 8) {
+                        Serial.printf("[sweep] minute moved in place every %.1f s, %.0f ms each"
+                                      " (hand stops %.0f%% of the time)\n",
+                                      mGap / mRuns / 1000.0f, mTook / mRuns,
+                                      100.0f * (mTook / mRuns) / (mGap / mRuns));
+                        mRuns = 0; mGap = 0; mTook = 0;
+                    }
+                }
+#endif
+                if (moved) {
+                sweep_pad_for_shadow();
+                sweep_frame(railway_seconds(wall));
+                return;
+                }
+            }
 #if defined(ESP_PLATFORM)
             const uint32_t c0 = micros();
 #endif
@@ -2017,7 +2222,7 @@ static void tick_cb(lv_timer_t * /*t*/) {
                 lastMs = nowMs;
                 if (runs >= 8) {
                     const float avg = tookSum / runs;
-                    Serial.printf("[sweep] recomposed every %.1f s, %.0f ms each (hand stops %.0f%% of the time)"
+                    Serial.printf("[sweep] FULL recompose every %.1f s, %.0f ms each (hand stops %.0f%% of the time)"
                                   " -> plate %.0f  text %.0f  hands %.0f  glass %.0f\n",
                                   gapSum / runs / 1000.0f, avg, 100.0f * avg / (gapSum / runs),
                                   s_phPlate / runs, s_phText / runs, s_phHands / runs,

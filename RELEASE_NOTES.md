@@ -18,6 +18,13 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.56
+
+- A sweeping second hand no longer hesitates every few seconds. The dial used to be redrawn
+  in full just to creep the minute hand; now that hand moves in place and the rest is left alone
+
+---
+
 ## 2.16.55
 
 - The Orb now says which part of redrawing its dial is slow, not just that it is
