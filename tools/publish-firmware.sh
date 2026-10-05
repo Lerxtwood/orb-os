@@ -11,7 +11,23 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-STUDIO="${STUDIO_DIR:-$HOME/Developer/hf-sites/buildtheorb/app/public/firmware}"
+# --beta publishes into public/firmware/beta instead, which only the administrator's Studio
+# offers. For a day spent chasing one fault on a real Orb: twelve releases is right for the
+# person holding the device and wrong for everybody watching, and an update prompt that
+# arrives twelve times stops meaning anything.
+#
+# Promoting is the same command without the flag. Nothing copies beta to stable on its own,
+# deliberately: a build becomes public because somebody decided it was, not because it was
+# the last one built.
+BETA=0
+for a in "$@"; do [ "$a" = "--beta" ] && BETA=1; done
+
+PUBLIC="${STUDIO_DIR:-$HOME/Developer/hf-sites/buildtheorb/app/public/firmware}"
+STUDIO="$PUBLIC"
+if [ "$BETA" = "1" ]; then
+  STUDIO="$PUBLIC/beta"
+  mkdir -p "$STUDIO"
+fi
 PIO="${PIO:-$HOME/.platformio/penv/bin/pio}"
 BUILD=".pio/build/esp32-s3-amoled-175"
 
@@ -106,7 +122,11 @@ cat "$STUDIO/manifest.json"
 #
 # So the script says what is left rather than trusting anyone to remember, and it says it
 # after checking, because a reminder that fires when it is not needed gets ignored.
-DIST_MANIFEST="$(dirname "$STUDIO")/../dist/client/firmware/manifest.json"
+# Derived from PUBLIC, never from STUDIO: a beta publish writes one folder deeper, and
+# deriving this from there pointed the check at a path that does not exist, which reads as
+# "the bundle is stale" every single time.
+DIST_MANIFEST="$(dirname "$PUBLIC")/../dist/client/firmware/manifest.json"
+[ "$BETA" = "1" ] && DIST_MANIFEST="$(dirname "$PUBLIC")/../dist/client/firmware/beta/manifest.json"
 DIST_VERSION="$(grep -o '"version"[^,]*' "$DIST_MANIFEST" 2>/dev/null | grep -o '[0-9][0-9.]*' || echo "none")"
 if [ "$DIST_VERSION" != "$VERSION" ]; then
   echo
