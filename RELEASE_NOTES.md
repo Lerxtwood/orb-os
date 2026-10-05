@@ -18,6 +18,13 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.57
+
+- The tick's level control now behaves the way hearing does. The bottom of the range used to
+  do almost nothing; 10% is now only just audible, which is what it should always have meant
+
+---
+
 ## 2.16.56
 
 - A sweeping second hand no longer hesitates every few seconds. The dial used to be redrawn

@@ -39,9 +39,9 @@ static volatile int  s_vol = 60;     // 0..100
 // is in audio.h.
 static volatile int  s_tickPct  = 20;
 static volatile int  s_chimePct = 30;
-// The trim for the sound currently being handed to the task. Set beside s_pcm and read by the
-// playback, exactly as s_pcm and s_cue already are.
-static volatile int  s_trim = 100;
+// The trim for the sound currently being handed to the task, as a GAIN rather than a percent.
+// Set beside s_pcm and read by the playback, exactly as s_pcm and s_cue already are.
+static volatile float s_trimGain = 1.0f;
 static volatile bool s_muted = false;
 static volatile int  s_cue = -1;
 static SemaphoreHandle_t s_sem = nullptr;
@@ -209,7 +209,7 @@ static size_t gen_beep(int16_t *buf, size_t cap, float freq, int ms, float amp) 
 static void play_pcm(const uint8_t *data, size_t bytes) {
     if (!s_buf || !data || bytes < 2) return;
     const uint32_t myGen = s_gen;
-    const float g = (s_vol / 100.0f) * (s_trim / 100.0f);
+    const float g = (s_vol / 100.0f) * s_trimGain;
     const int16_t *src = (const int16_t *)data;
     const size_t totalSamples = bytes / 2;
     size_t i = 0;
@@ -409,7 +409,16 @@ void audio_play_pcm(const uint8_t *pcm, size_t bytes, bool ignoreMute, int trimP
     // Nothing at all at zero, rather than a buffer of silence pushed through the amplifier
     // once a second for as long as the Orb is switched on.
     if (trimPct <= 0) return;
-    s_trim = trimPct > 100 ? 100 : trimPct;
+    // SQUARED, because hearing is not linear and this control is lived with rather than
+    // glanced at. Straight amplitude puts 10% at -20 dB, which is quietly present in a room
+    // rather than nearly gone, so the bottom of the slider did almost nothing useful: every
+    // setting anybody wanted was crowded into the first few percent.
+    //
+    // Squared, 10% is -40 dB and only just there, 20% is -28 dB which is about where 10% used
+    // to sit, and the top of the range is unchanged. Zion, after living with one on his desk:
+    // "I want 10 percent to just barely be audible."
+    const float t = (trimPct > 100 ? 100 : trimPct) / 100.0f;
+    s_trimGain = t * t;
     s_pcm = pcm; s_pcmLen = bytes;
     s_cue = ignoreMute ? 7 : 6;
     ++s_gen;
