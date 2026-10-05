@@ -18,6 +18,14 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.63
+
+- The Flight Tracker gives up on an address that has stopped answering, instead of trying it
+  for as long as the Orb stays switched on. Until now a power cycle was the only thing that
+  cleared one, which is what people kept finding
+
+---
+
 ## 2.16.62
 
 - The Flight Tracker stops losing polls to an address that was never real. A name lookup that
