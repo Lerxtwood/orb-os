@@ -18,6 +18,20 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.62
+
+- The Flight Tracker stops losing polls to an address that was never real. A name lookup that
+  failed could still report success and hand back 0.0.0.0, and that was kept and tried for the
+  rest of the session, which is a good part of why "adsb.lol is not answering" came up as often
+  as it did. Found by Techtobi83
+- The weather radar, the weather map and the cloud imagery each stop building a TLS client they
+  never use, which was taking internal memory away from the download it was meant to help.
+  Also Techtobi83
+- And a download that comes back empty now says so, with how much memory there was at the time,
+  instead of failing in silence
+
+---
+
 ## 2.16.61
 
 - An install that gets cut off no longer leaves the Orb stuck. It used to answer "install in

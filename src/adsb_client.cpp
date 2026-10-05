@@ -148,6 +148,17 @@ bool edge_usable(uint8_t i) {
 void learn_edge() {
     IPAddress ip;
     if (!WiFi.hostByName(ADSB_PRIMARY_HOST, ip)) return;
+    // A LOOKUP THAT FAILED CAN STILL SAY IT WORKED, and hand back 0.0.0.0.
+    //
+    // Nothing below ever removes an address: the pool only grows, and the cooldowns rotate
+    // between what is in it. So one of those gets kept for the life of the session, and every
+    // poll that picks it spends the whole five-second connect timeout reaching nothing before
+    // resting it for forty-five seconds. Three tries a poll, against a pool that is usually
+    // two or three deep, is how a slow spell at adsb.lol becomes a run of outright failures
+    // and "adsb.lol is not answering" on the glass.
+    //
+    // Found by Techtobi83 in their fork, observed on their own Orb 2026-10-03.
+    if (ip == IPAddress(0, 0, 0, 0)) return;
     for (uint8_t i = 0; i < s_edgeN; ++i) if (s_edge[i] == ip) return;
     if (s_edgeN < ADSB_EDGE_POOL) {
         s_edge[s_edgeN++] = ip;

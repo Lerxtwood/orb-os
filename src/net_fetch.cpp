@@ -7,6 +7,7 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <esp_heap_caps.h>
+#include <memory>
 
 bool net_fetch_psram(const char *url, const char *userAgent,
                      uint8_t **out, size_t *outLen, size_t maxLen,
@@ -24,11 +25,23 @@ bool net_fetch_psram(const char *url, const char *userAgent,
     // cloud imagery were each written off as "that service forces HTTPS" when the force
     // was here. An https:// URL still gets a secure client and will still fail, which is
     // honest, and the log below says which one it was.
+    //
+    // ...and the secure client is only BUILT when the URL asks for one, which is the half of
+    // that reasoning this originally missed. Declaring it here cost internal RAM on every
+    // call, plain downloads included, which on this board is all of them: the constructor
+    // does `new sslclient_context` and ssl_init() straight away, standing up an mbedTLS ssl
+    // context, its config and a DRBG before anybody has asked to connect. A couple of KB,
+    // taken and given back per fetch, out of the one heap the weather tiles and the cloud
+    // imagery are already competing for, and whose largest free block has been measured in
+    // single KB. Not what kills TLS, which is the 16 KB handshake buffers later, just a tax
+    // nobody was getting anything for.
+    //
+    // Found by Techtobi83, in their fork, 2026-10.
     const bool secure = !strncmp(url, "https://", 8);
     WiFiClient plain;
-    WiFiClientSecure tls;
-    if (secure) tls.setInsecure();            // hobby device (matches the other clients)
-    WiFiClient &cli = secure ? static_cast<WiFiClient &>(tls) : plain;
+    std::unique_ptr<WiFiClientSecure> tls(secure ? new WiFiClientSecure() : nullptr);
+    if (tls) tls->setInsecure();              // hobby device (matches the other clients)
+    WiFiClient &cli = tls ? static_cast<WiFiClient &>(*tls) : plain;
     HTTPClient http;
     http.setReuse(false);
     http.setConnectTimeout(connectTimeoutMs);
@@ -78,7 +91,18 @@ bool net_fetch_psram(const char *url, const char *userAgent,
         }
     }
     http.end();
-    if (got == 0) { if (buf) heap_caps_free(buf); return false; }
+    if (got == 0) {
+        // SAY SO. This failed in silence, and "the service is not answering" on the glass was
+        // then the only clue, at the times when the service had answered perfectly well and
+        // the Orb could not take the reply. A socket's buffers come out of internal heap, so
+        // print what there was of it: the difference between a server problem and a memory
+        // one is the first thing anybody diagnosing this needs and could not get.
+        Serial.printf("[net] no body (len %d): internal heap %u free, largest block %u: %s\n",
+                      len, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL), url);
+        if (buf) heap_caps_free(buf);
+        return false;
+    }
     *out = buf; *outLen = got;
     return true;
 }
