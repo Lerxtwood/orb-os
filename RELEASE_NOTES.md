@@ -18,6 +18,13 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.58
+
+- A ticking clock now waits two seconds after its face appears and then fades in, so the
+  first thing you hear is a clock already keeping steady time rather than one starting up
+
+---
+
 ## 2.16.57
 
 - The tick's level control now behaves the way hearing does. The bottom of the range used to

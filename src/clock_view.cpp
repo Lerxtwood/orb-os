@@ -2049,9 +2049,32 @@ static void retime(void) {
 // screen is silent. Driven by the second CHANGING rather than by this firing, and re-aimed at
 // the next whole second afterwards, so the interval between two clicks is the clock's own and
 // not this timer's.
+// How long the clock stays silent after it appears, and how long it then takes to come up to
+// the level somebody set.
+//
+// A clock that has just appeared is not yet keeping time smoothly: the first frames are
+// expensive, the art may still be baking, and after a theme install or a flash there is real
+// work going on behind the face. Ticking through that puts the unsteady part of the start
+// into the one thing on this device where unevenness is the whole fault. Zion: "it would be
+// better from a user standpoint to experience the clock ticking once it's going to be
+// absolutely steady."
+//
+// So it waits, then arrives rather than switching on. The ramp is on the level rather than
+// the audio, so it costs nothing and cannot distort anything.
+static const uint32_t TICK_QUIET_MS = 2000;
+static const uint32_t TICK_FADE_MS  = 3000;
+static uint32_t s_faceShownMs = 0;
+
 static void beat_cb(lv_timer_t * /*t*/) {
     if (!s_beat) return;
-    if (lv_scr_act() != s_screen || orb_screen_covered()) return;
+    // Stamped on the transition INTO view, not on every frame, so the wait starts when the
+    // face appears and runs once. Coming back from another app counts, because that redraws
+    // the whole dial and is just as unsteady as a cold start.
+    const bool showing = lv_scr_act() == s_screen && !orb_screen_covered();
+    static bool wasShowing = false;
+    if (showing && !wasShowing) s_faceShownMs = lv_tick_get();
+    wasShowing = showing;
+    if (!showing) return;
     if (theme_audio::tickCount() <= 0) return;
     // s_noTime READ, not refreshed. The drawing callback maintains it; calling time_for_face
     // again here would be a second clock read per wake for an answer that changes about never.
@@ -2061,8 +2084,17 @@ static void beat_cb(lv_timer_t * /*t*/) {
     static long lastSec = -1;
     if ((long)tv.tv_sec != lastSec) {
         lastSec = (long)tv.tv_sec;
-        size_t n = 0;
-        if (const uint8_t *pcm = theme_audio::nextTick(n)) audio_play_pcm(pcm, n, false, audio_tick_level());
+        // Silent while it settles, then up over three ticks. Below one percent is silence
+        // rather than a sound nobody can hear, which audio_play_pcm treats as nothing to do.
+        const uint32_t age = lv_tick_get() - s_faceShownMs;
+        int level = audio_tick_level();
+        if (age < TICK_QUIET_MS) level = 0;
+        else if (age < TICK_QUIET_MS + TICK_FADE_MS)
+            level = (int)((float)level * (float)(age - TICK_QUIET_MS) / (float)TICK_FADE_MS);
+        if (level > 0) {
+            size_t n = 0;
+            if (const uint8_t *pcm = theme_audio::nextTick(n)) audio_play_pcm(pcm, n, false, level);
+        }
     }
 
     // ONE wake per second, aimed AT the boundary rather than short of it.
