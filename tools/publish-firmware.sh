@@ -34,7 +34,16 @@ BUILD=".pio/build/esp32-s3-amoled-175"
 [ -d "$STUDIO" ] || { echo "no Studio firmware dir at $STUDIO" >&2; exit 1; }
 
 echo "building..."
-"$PIO" run -e esp32-s3-amoled-175 2>&1 | tail -2 | grep -q SUCCESS || { echo "build failed" >&2; exit 1; }
+# The build's own exit status, not a grep for the word SUCCESS in its last two lines. That
+# read was a race against `set -o pipefail`: grep -q stops at its match, the tail feeding it
+# takes a SIGPIPE, and the pipeline reports tail's 141 for a build that worked. It passed for
+# weeks and then refused to publish 2.16.59, from a clean tree, because the build was cached
+# and therefore fast. The log is kept so a real failure can be read rather than guessed at.
+BUILD_LOG=$(mktemp -t orb-build)
+if ! "$PIO" run -e esp32-s3-amoled-175 >"$BUILD_LOG" 2>&1; then
+  echo "build failed:" >&2; tail -25 "$BUILD_LOG" >&2; rm -f "$BUILD_LOG"; exit 1
+fi
+rm -f "$BUILD_LOG"
 
 VERSION=$(grep -oE '#define FW_VERSION "[^"]+"' src/config.h | grep -oE '"[^"]+"' | tr -d '"')
 CAPS=$(grep -oE 'constexpr int THEME_CAPS = [0-9]+' src/theme_style.h | grep -oE '[0-9]+$')
