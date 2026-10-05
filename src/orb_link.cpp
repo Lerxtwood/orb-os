@@ -525,6 +525,9 @@ void cmd_mem() {
 // and on files this size (style JSON, a few KB) throughput is irrelevant.
 File     s_putFile;
 bool     s_putOpen     = false;
+// When the open transfer last heard anything. A transfer that stops being fed is a dead one,
+// and the Orb has to decide that for itself: see the timeout in poll().
+uint32_t s_putTouchedMs = 0;
 uint32_t s_putExpected = 0;
 uint32_t s_putWritten  = 0;
 char     s_putName[48] = "";
@@ -815,9 +818,28 @@ void cmd_put_begin(char *args) {
         if (!SD.exists(path) && !SD.mkdir(path)) { path[i] = '/'; reply_error("mkdir failed"); return; }
         path[i] = '/';
     }
+    // THE FOLDER STOPS BEING A FINISHED THEME the moment anything is written into it.
+    //
+    // _installed is the sentinel that says "this folder is a whole theme", and every install
+    // path sends it last so a transfer that dies leaves a folder without one. That works for
+    // a NEW theme and not at all for a re-install: overwriting a theme the Orb already has
+    // left the previous install's sentinel sitting there the whole time, so a folder half
+    // way through being replaced still swore it was complete. Zion's Orb booted wearing one:
+    // the hands of the theme with no background behind them, because clock_style.json had
+    // arrived and the plate had not.
+    //
+    // Removing it here costs one SD call per file and makes the claim honest. put_end does
+    // not put it back, because the sentinel is itself one of the files being sent, last.
+    if (!isRoads) {
+        char marker[96];
+        snprintf(marker, sizeof(marker), "/themes/%s/_installed", slug);
+        if (strcmp(file, "_installed") != 0 && SD.exists(marker)) SD.remove(marker);
+    }
+
     s_putFile = SD.open(path, FILE_WRITE);   // truncates any existing file
     if (!s_putFile) { reply_error("open failed"); return; }
     s_putOpen     = true;
+    s_putTouchedMs = millis();
     s_putExpected = (uint32_t)strtoul(size, nullptr, 10);
     s_putWritten  = 0;
     strlcpy(s_putName, file, sizeof(s_putName));
@@ -838,6 +860,7 @@ void cmd_put_data(const char *b64) {
         put_abort(); reply_error("short write (card full or removed?)"); return;
     }
     s_putWritten += rawLen;
+    s_putTouchedMs = millis();
     // Tell the screen a chunk landed. Without this the interrupted-watchdog only ever hears
     // about COMPLETED files, so any file taking more than twelve seconds looked like a dead
     // transfer while it was still arriving.
@@ -919,7 +942,36 @@ void begin() { s_len = 0; s_overflow = false; }
 
 bool transferActive() { return s_putOpen; }
 
+// HOW LONG AN OPEN TRANSFER MAY SAY NOTHING BEFORE IT IS ABANDONED.
+//
+// A transfer that is interrupted leaves a file open here, and FOUR commands refuse to run
+// while one is open: handover, sync, wipe and delete. Only a new put-begin cleared it. So an
+// Orb whose install was cut off part way, by a reload, an unplug, a flash or an account
+// change, answered "install in progress" to everything that could have got it out of that
+// state, for as long as it stayed powered. Studio stopped at the first refusal and never
+// reached the put-begin that would have cleared it.
+//
+// Zion, 2026-10-05, switching his Orb to a test account: "it gets hung up, or it boots up
+// with the hands of a previous theme with no background. Then when I try to sync it, it is
+// not getting the files onto it."
+//
+// The screen already noticed. update_ui's watchdog calls it interrupted after twelve seconds
+// and tidies its own overlay away after twenty, which told the person standing there that
+// something had gone wrong and left the link wedged behind it. Saying so is not the same as
+// doing something about it.
+//
+// Thirty seconds, rather than the overlay's twelve, because this ends a transfer that might
+// still be alive rather than just labelling it. A host sending chunks touches this every few
+// milliseconds; half a minute of silence is not a slow sender, it is a gone one.
+static const uint32_t PUT_IDLE_MS = 30000;
+
 void poll() {
+    if (s_putOpen && (uint32_t)(millis() - s_putTouchedMs) > PUT_IDLE_MS) {
+        Serial.printf("[orb_link] transfer of %s went quiet for %lus - abandoning it, "
+                      "so sync and handover work again\n",
+                      s_putName, (unsigned long)(PUT_IDLE_MS / 1000));
+        put_abort();
+    }
     // Bounded per call. A host that floods the port cannot hold loop() hostage and stall
     // the knob; leftovers are simply read on the next pass a few milliseconds later.
     int budget = 640;   // a full put-data line per pass; still bounded, still knob-safe

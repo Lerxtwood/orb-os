@@ -1429,18 +1429,22 @@ int main(int argc, char **argv) {
                 clockview::setSweep(1);          // force it, whatever this design asked for
                 lv_timer_handler();
                 int dx = -1, dy = -1;
-                const int drift = clockview::sweepDriftsBy(&dx, &dy);
-                // Not zero, SMALL. Eighteen pixels under the hub are still a level or two
-                // out, because a full compose draws every shadow before every hand while the
-                // in-place minute move draws its own shadow after the hour hand that is
-                // already there. They sit beneath the cap, they do not move, and chasing
-                // them would mean a third cache. The fault this guards against was 9,916
-                // pixels at 51 levels, across the whole minute hand.
+                const long off = clockview::sweepDiffersBy(&dx, &dy);
+                // Not zero, SMALL. About twenty pixels under the hand cap are still a
+                // level or two out, because a full compose draws every shadow before every
+                // hand while the in-place minute move draws its own shadow after the hour
+                // hand that is already there. They sit beneath the cap and chasing them
+                // would mean a third cache.
+                //
+                // COUNTED, not peaked. The worst single pixel depends on where the hands are
+                // when the test runs, so a threshold on it passed at one minute and failed at
+                // the next. The count does not move like that, and the fault this guards
+                // against was 9,916 pixels.
                 printf("[selftest] a sweep leaves the dial as it found it: %s"
-                       " (worst %d of 31 levels%s)\n",
-                       drift >= 0 && drift <= 6 ? "PASS" : drift < 0 ? "SKIP" : "FAIL",
-                       drift < 0 ? 0 : drift,
-                       drift > 6 ? [&]{ static char b[48]; snprintf(b, sizeof(b), ", at %d,%d", dx, dy); return b; }() : "");
+                       " (%ld pixels of %d%s)\n",
+                       off >= 0 && off < 200 ? "PASS" : off < 0 ? "SKIP" : "FAIL",
+                       off < 0 ? 0 : off, SCREEN_W * SCREEN_H,
+                       off >= 200 ? [&]{ static char b[48]; snprintf(b, sizeof(b), ", at %d,%d", dx, dy); return b; }() : "");
                 clockview::setSweep(-1);
                 app_shell::setCaptured(false);
             }

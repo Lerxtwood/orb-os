@@ -54,9 +54,11 @@ namespace clockview {
     // as patches of the dial changing brightness as the hand goes by, which is what
     // Jean-Paul Stringaro filmed and reported on 2026-10-05.
     //
-    // Returns the worst single-channel difference between the same angle one revolution
-    // apart, 0 when the sweep is clean, and fills in where it was worst.
-    int       sweepDriftsBy(int *x, int *y);
+    // Returns HOW MANY pixels are wrong, not how wrong the worst one is. The peak depends
+    // on where the hands happen to be when the test runs, so a threshold on it passes at one
+    // minute and fails at the next; the count does not move. The fault this guards against
+    // was 9,916 pixels, and what is left is about twenty under the hand cap.
+    long      sweepDiffersBy(int *x, int *y);
     float     railwayStopStart();
     // Which beat of the second a given instant falls in. Exposed so the self-test can hold the
     // one piece of arithmetic that decides how often a theme ticks.

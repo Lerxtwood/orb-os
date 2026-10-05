@@ -2414,7 +2414,7 @@ static int worst_difference(const lv_color_t *a, const lv_color_t *b, long *coun
 // Sweep a whole revolution, remember the screen, sweep another, and compare. Same angle, same
 // minute, so the two have to be identical. Anything else is a layer being applied to a pixel
 // that already had it.
-static int sweep_drift_once(int *wx, int *wy) {
+static long sweep_drift_once(int *wx, int *wy) {
     struct tm ti;
     time_for_face(&ti);
     if (!rebuild_under(&ti)) return -1;
@@ -2427,9 +2427,10 @@ static int sweep_drift_once(int *wx, int *wy) {
         sweep_frame(0.0f);
         if (rev == 0) memcpy(shot, s_buf, n * sizeof(lv_color_t));
     }
-    const int worst = worst_difference(shot, s_buf, nullptr, wx, wy);
+    long count = 0;
+    worst_difference(shot, s_buf, &count, wx, wy);
     free(shot);
-    return worst;
+    return count;
 }
 
 // A SWEPT FRAME AND A FULLY COMPOSED ONE, at the same instant, have to be the same picture.
@@ -2441,7 +2442,7 @@ static int sweep_drift_once(int *wx, int *wy) {
 //
 // moveMinute also runs the cheap road the minute hand takes every few seconds, which is where
 // the fault actually was.
-static int sweep_vs_full(bool moveMinute, int *wx, int *wy) {
+static long sweep_vs_full(bool moveMinute, int *wx, int *wy) {
     struct tm ti;
     time_for_face(&ti);
     const size_t n = (size_t)SCREEN_W * SCREEN_H;
@@ -2478,10 +2479,10 @@ static int sweep_vs_full(bool moveMinute, int *wx, int *wy) {
     Serial.printf("[sweep] %s: %ld pixels differ from a full compose, worst %d levels\n",
                   moveMinute ? "after a minute move" : "a sweep frame", count, worst);
     free(full);
-    return worst;
+    return count;
 }
 
-int clockview::sweepDriftsBy(int *wx, int *wy) {
+long clockview::sweepDiffersBy(int *wx, int *wy) {
     if (wx) *wx = -1;
     if (wy) *wy = -1;
     if (!s_buf || !s_canvas) return -1;
@@ -2494,12 +2495,12 @@ int clockview::sweepDriftsBy(int *wx, int *wy) {
     // process's own copy of the style and is put back before returning.
     theme_style::Clock &style = const_cast<theme_style::Clock &>(theme_style::clock());
     const bool hadShadow = style.shadowOn;
-    int worst = 0;
+    long worst = 0;
     for (int pass = 0; pass < 2; ++pass) {
         style.shadowOn = pass == 1 ? true : hadShadow;
-        const int checks[3] = { sweep_drift_once(wx, wy),
-                                sweep_vs_full(false, wx, wy),
-                                sweep_vs_full(true,  wx, wy) };
+        const long checks[3] = { sweep_drift_once(wx, wy),
+                                 sweep_vs_full(false, wx, wy),
+                                 sweep_vs_full(true,  wx, wy) };
         for (int i = 0; i < 3; ++i) {
             if (checks[i] < 0) { style.shadowOn = hadShadow; return -1; }
             if (checks[i] > worst) worst = checks[i];

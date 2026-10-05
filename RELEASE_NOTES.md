@@ -18,6 +18,17 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.61
+
+- An install that gets cut off no longer leaves the Orb stuck. It used to answer "install in
+  progress" to sync, to handover and to deleting a theme, for as long as it stayed switched
+  on, so the next sync could never get anything onto it
+- And it will not boot wearing a theme that is only half installed, which showed as the hands
+  of a theme with nothing behind them. A theme being replaced now stops counting as installed
+  until the last file of it has arrived
+
+---
+
 ## 2.16.60
 
 - A sweeping clock no longer leaves a band of the dial at the wrong brightness. Each time
