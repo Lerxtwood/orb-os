@@ -1382,6 +1382,36 @@ int main(int argc, char **argv) {
                    (fastOk && busyNo && coldNo) ? "PASS" : "FAIL",
                    fastOk ? 1 : 0, busyNo ? 0 : 1, coldNo ? 0 : 1);
 
+            // COME BACK FROM ANOTHER APP AND THE FACE IS THERE.
+            //
+            // onExit gives the canvas back and onEnter takes a NEW one, filled black. The
+            // sweep caches survive that and are timestamped in minutes, so seconds later they
+            // still read as fresh, and a sweeping dial took the cheap road: restore the second
+            // hand's rows out of the cache, draw the hand, invalidate that box, and leave the
+            // other 190,000 pixels black. The dial then painted itself back one hand-width at
+            // a time and never reached the corners at all, which is what Zion photographed on
+            // 2026-10-04 after going into Settings to move the tick level.
+            //
+            // Measured in lit pixels, because that is the complaint: how much of the face is
+            // actually on the glass the instant it comes back.
+            {
+                app_shell::selectApp(app_shell::APP_CLOCK);
+                clockview::refresh();
+                lv_timer_handler();
+                const long before = clockview::litPixels();
+                app_shell::selectApp(app_shell::APP_SETTINGS);
+                lv_timer_handler();
+                app_shell::selectApp(app_shell::APP_CLOCK);
+                lv_timer_handler();
+                const long after = clockview::litPixels();
+                // No tick has run yet. Whatever is on the glass now is what onEnter drew.
+                const bool whole = before > 0 && after >= before - before / 10;
+                printf("[selftest] the face is whole the moment you come back to it: %s"
+                       " (%ld lit before, %ld after)\n",
+                       whole ? "PASS" : "FAIL", before, after);
+                app_shell::setCaptured(false);
+            }
+
             // The tick set plays in the order it was given and loops, which is what the
             // recordings are: six consecutive seconds off one real clock, kept in sequence.
             {

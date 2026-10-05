@@ -1449,6 +1449,19 @@ static bool s_noMinValid = false;
 // The angle the minute hand was last drawn at, so a move knows what to wipe.
 static float s_prevMinAng = -1000.0f;
 static int  s_underMin = -1, s_underHr = -1;   // what minute this cache is of
+// WHICH CANVAS these caches are a picture of.
+//
+// s_buf is taken in onEnter() and given back in onExit(), so it is a different buffer every
+// time the clock is looked at. The caches outlive it and carry no memory of that, and every
+// freshness test here asks about TIME. Seconds after a trip to Settings the cache reads as
+// perfectly fresh while describing a canvas that no longer exists, so the cheap road gets
+// taken into a canvas that was just filled black and the dial comes back in slivers.
+// Zion saw exactly that on 2026-10-04 after changing the tick level.
+//
+// Staleness is therefore two questions, not one: is this of the right MOMENT, and is it of
+// the right CANVAS. onEnter answers the second by hand as well; this is what makes a future
+// path that forgets to impossible to get wrong.
+static lv_color_t *s_underFor = nullptr;
 // Minutes-of-the-hour, fractional, that the cache was composed at. The minute hand lives
 // in the cache, so for the whole life of a cache that hand cannot move. Holding one cache
 // per whole minute is what made the Orb's minute hand jump a full division at the top of
@@ -1636,6 +1649,7 @@ static bool rebuild_under(const struct tm *ti) {
     clip_reset();
     compose_custom(ti, 2, false);
     memcpy(s_under, s_buf, (size_t)SCREEN_W * SCREEN_H * sizeof(lv_color_t));
+    s_underFor = s_buf;
     s_underHr = ti->tm_hour;
     s_underMin = ti->tm_min;
     s_underMins = (float)ti->tm_min + (float)ti->tm_sec / 60.0f;
@@ -1659,6 +1673,7 @@ static bool rebuild_under(const struct tm *ti) {
 // is the whole safety story here: no cache, no sprite, no hand, nothing stale, just slower.
 static bool refresh_minute(const struct tm *ti, float ang) {
     if (!s_buf || !s_under || !s_noMin || !s_noMinValid) return false;
+    if (s_underFor != s_buf) return false;           // a cache of some previous canvas
     if (s_noMinHr != ti->tm_hour) return false;      // the hour hand moved; that is under us
     const theme_style::Clock &cs = theme_style::clock();
     const theme_style::Hand &hd = cs.hand[1];
@@ -2196,7 +2211,7 @@ static void tick_cb(lv_timer_t * /*t*/) {
             stale = s_underMins < 0.0f || aged >= cache_minutes_allowed();
         }
         (void)aged;
-        if (!s_under || stale || ti.tm_hour != s_underHr) {
+        if (!s_under || stale || ti.tm_hour != s_underHr || s_underFor != s_buf) {
             // The cheap road first: if the only thing that moved is the minute hand, move it
             // in place instead of recomposing the dial around it. Falls through to the full
             // rebuild on any doubt, which is what makes this safe to try.
@@ -2310,6 +2325,13 @@ static void tick_cb(lv_timer_t * /*t*/) {
 bool  clockview::faceHasTime() { struct tm ti; time_for_face(&ti); return !s_noTime; }
 float clockview::handSeconds(float wallSeconds) { return railway_seconds(wallSeconds); }
 float clockview::cacheMinutesAllowed() { return cache_minutes_allowed(); }
+long  clockview::litPixels() {
+    if (!s_buf) return 0;
+    long lit = 0;
+    for (long i = 0; i < (long)SCREEN_W * SCREEN_H; ++i)
+        if (s_buf[i].full) ++lit;
+    return lit;
+}
 float clockview::minuteHandMins(bool railway, int min, int sec) { return minute_hand_mins(railway, min, sec); }
 float clockview::minuteStepEase(float wallSecs) { return minute_step_ease(wallSecs); }
 float clockview::minuteStepSecs() { return STEP_SECS; }
@@ -2383,6 +2405,28 @@ void clockview::onEnter() {
         lv_obj_center(s_canvas);
         lv_obj_move_background(s_canvas);
         lv_canvas_fill_bg(s_canvas, COL_BLACK, LV_OPA_COVER);
+
+        // This is a DIFFERENT canvas from the one the sweep caches were built against, and
+        // nothing in them says so: s_under and s_noMin survive onExit, and their timestamps
+        // still read as fresh. So the first tick back on a sweeping dial saw a cache that
+        // was only seconds old, took the cheap road, and restored the second hand's rows
+        // out of it into a canvas that had just been filled black. Every other pixel stayed
+        // black, and the dial painted itself back in one hand-width at a time as the hand
+        // swept past, never reaching the corners, which the hand cannot reach at all.
+        //
+        // Zion found it going into Settings to move the tick level and coming back out.
+        // Stepping dials hid it, because a tick recomposes the whole face anyway.
+        //
+        // The canvas and the caches have to be dropped together, so drop them here, where
+        // the new canvas is taken, and compose one full frame into it before anybody looks.
+        s_underMin = -1; s_underHr = -1; s_underMins = -1.0f;
+        s_noMinValid = false;
+        s_prevSecValid = false;
+        s_prevMinAng = -1000.0f;
+        s_fullNext = true;
+        struct tm ti;
+        time_for_face(&ti);
+        redraw(&ti);
     }
 }
 

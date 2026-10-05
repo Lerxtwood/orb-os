@@ -38,6 +38,12 @@ namespace clockview {
     // window inside the railway stop, where the second hand is parked.
     float     minuteStepEase(float wallSecs);
     float     minuteStepSecs();
+    // How much of the dial is actually drawn, in pixels that are not black. Exposed for the
+    // self-test, which has no other way to ask the question that matters: after a trip to
+    // another app and back, is the face THERE. The sweep caches outlive the canvas they were
+    // built from, and a cache taken for one canvas and restored into another paints the dial
+    // back a hand-width at a time while the rest stays black.
+    long      litPixels();
     float     railwayStopStart();
     // Which beat of the second a given instant falls in. Exposed so the self-test can hold the
     // one piece of arithmetic that decides how often a theme ticks.

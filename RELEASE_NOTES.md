@@ -18,6 +18,14 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.59
+
+- Coming back to the clock from Settings, or from any other app, now shows the whole face
+  straight away. A sweeping dial used to come back black and paint itself in behind the
+  second hand, never reaching the corners. Found by Zion while changing the tick level
+
+---
+
 ## 2.16.58
 
 - A ticking clock now waits two seconds after its face appears and then fades in, so the
