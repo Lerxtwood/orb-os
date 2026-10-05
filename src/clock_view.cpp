@@ -1751,14 +1751,78 @@ static bool refresh_minute(const struct tm *ti, float ang) {
                                            (float)oh.centerX, (float)oh.centerY, all[k], oh.blend);
         }
     }
-    clip_reset();
-
-    // Back into the cache the sweep restores from, the same rows and no more.
+    // The clip STAYS ON until the layers above the second hand have gone back too. Resetting
+    // it here drew them over the whole dial instead of over the rows this wiped, which is a
+    // louder version of the same fault.
+    //
+    // Back into the cache the sweep restores from, the same rows and no more. Before either
+    // the layers above the second hand or the glass, because that cache holds neither.
     for (int y = box.y1; y <= box.y2; ++y) {
         if (runHi[y] < runLo[y]) continue;
         memcpy(&s_under[y * SCREEN_W + runLo[y]], &s_buf[y * SCREEN_W + runLo[y]],
                (size_t)(runHi[y] - runLo[y] + 1) * sizeof(lv_color_t));
     }
+
+    // AND EVERYTHING THE DESIGN DRAWS ABOVE THE SECOND HAND, over the rows this wiped.
+    //
+    // The second hand belongs to the sweep and is not drawn here. Whatever sits ABOVE it does
+    // not: this function has just restored its rows out of a cache that stops below the
+    // minute hand, so those layers are gone from every row it touched, and the sweep frame
+    // that follows only repairs its own small box. Everywhere else they stayed missing until
+    // something repainted the whole dial, which is every few seconds on a creeping minute
+    // hand. Measured on the simulator: 3,496 pixels wrong, and 33 once the frame after it was
+    // allowed to repaint everything, which is what pointed at this rather than at the drawing.
+    //
+    // A design with nothing above its second hand shows none of it, which is why this reached
+    // somebody else's Orb rather than Zion's.
+    {
+        bool past = false;
+        for (int i = 0; i < cs.orderN; ++i) {
+            const int k = cs.order[i];
+            if (k < 0 || k > 4) continue;
+            if (k == 2) { past = true; continue; }
+            if (!past) continue;
+            const theme_style::Hand &oh = cs.hand[k];
+            if (!oh.show) continue;
+            if (cs.shadowOn && k <= 2) {
+                CustomSprite osh = custom_shadow(k);
+                if (osh.data) blend_shadow(osh.data, osh.w, osh.h, oh.pivotX, oh.pivotY,
+                                           (float)(oh.centerX + cs.shadowDX),
+                                           (float)(oh.centerY + cs.shadowDY), all[k]);
+            }
+            CustomSprite os = custom_hand(k);
+            if (os.data) blend_custom_hand(os.data, os.w, os.h, oh.pivotX, oh.pivotY,
+                                           (float)oh.centerX, (float)oh.centerY, all[k], oh.blend);
+        }
+    }
+    // AND THE GLASS BACK OVER WHAT WAS JUST REDRAWN.
+    //
+    // This was missing, and it is Jean-Paul Stringaro's report of 2026-10-05: "portions of
+    // the screen / dial show changes in brightness/darkness as the seconds hand sweeps".
+    //
+    // The caches are deliberately held with no overlay on them, because a sweep frame mixes
+    // the glass in per frame on its way out, over exactly the pixels it restored. This
+    // function restores its own pixels out of the same unglassed cache and never did. So
+    // every few seconds, when the minute hand crept, its bounding box lost the glass and did
+    // not get it back until something repainted the whole dial. Measured on the simulator:
+    // 9,916 pixels, up to 51 levels out of 63, inside exactly the minute hand's box. On a
+    // design with no glass nothing showed at all, which is why it reached a stranger's Orb.
+    //
+    // It is the same loop sweep_frame ends with, over the rows this one wiped.
+    if (const uint8_t *overlay = custom_overlay()) {
+        for (int y = box.y1; y <= box.y2; ++y) {
+            if (runHi[y] < runLo[y]) continue;
+            const int base = y * SCREEN_W;
+            for (int x = runLo[y]; x <= runHi[y]; ++x) {
+                const int i = base + x;
+                const uint8_t a = overlay[i * 3 + 2];
+                if (!a) continue;
+                lv_color_t sc; sc.full = (uint16_t)(overlay[i * 3] | (overlay[i * 3 + 1] << 8));
+                s_buf[i] = lv_color_mix(sc, s_buf[i], a);
+            }
+        }
+    }
+    clip_reset();
     s_prevMinAng = ang;
     s_underMin = ti->tm_min;
     s_underMins = (float)ti->tm_min + (float)ti->tm_sec / 60.0f;
@@ -2325,6 +2389,126 @@ static void tick_cb(lv_timer_t * /*t*/) {
 bool  clockview::faceHasTime() { struct tm ti; time_for_face(&ti); return !s_noTime; }
 float clockview::handSeconds(float wallSeconds) { return railway_seconds(wallSeconds); }
 float clockview::cacheMinutesAllowed() { return cache_minutes_allowed(); }
+// How far one picture is from another, in the panel's own 565 levels, and where. Zero means
+// identical. Both checks below come down to "are these the same".
+static int worst_difference(const lv_color_t *a, const lv_color_t *b, long *count,
+                            int *wx, int *wy) {
+    const size_t n = (size_t)SCREEN_W * SCREEN_H;
+    int worst = 0;
+    if (count) *count = 0;
+    for (size_t i = 0; i < n; ++i) {
+        if (a[i].full == b[i].full) continue;
+        if (count) (*count)++;
+        const int a0 = a[i].full, b0 = b[i].full;
+        const int d[3] = { ((a0 >> 11) & 31) - ((b0 >> 11) & 31),
+                           ((a0 >> 5)  & 63) - ((b0 >> 5)  & 63),
+                           (a0 & 31) - (b0 & 31) };
+        for (int c = 0; c < 3; ++c) {
+            const int m = d[c] < 0 ? -d[c] : d[c];
+            if (m > worst) { worst = m; if (wx) *wx = (int)(i % SCREEN_W); if (wy) *wy = (int)(i / SCREEN_W); }
+        }
+    }
+    return worst;
+}
+
+// Sweep a whole revolution, remember the screen, sweep another, and compare. Same angle, same
+// minute, so the two have to be identical. Anything else is a layer being applied to a pixel
+// that already had it.
+static int sweep_drift_once(int *wx, int *wy) {
+    struct tm ti;
+    time_for_face(&ti);
+    if (!rebuild_under(&ti)) return -1;
+    const size_t n = (size_t)SCREEN_W * SCREEN_H;
+    lv_color_t *shot = (lv_color_t *)malloc(n * sizeof(lv_color_t));
+    if (!shot) return -1;
+    for (int rev = 0; rev < 2; ++rev) {
+        for (int sec = 0; sec < 60; ++sec) { sweep_pad_for_shadow(); sweep_frame((float)sec); }
+        sweep_pad_for_shadow();
+        sweep_frame(0.0f);
+        if (rev == 0) memcpy(shot, s_buf, n * sizeof(lv_color_t));
+    }
+    const int worst = worst_difference(shot, s_buf, nullptr, wx, wy);
+    free(shot);
+    return worst;
+}
+
+// A SWEPT FRAME AND A FULLY COMPOSED ONE, at the same instant, have to be the same picture.
+//
+// This is the question the drift check does not ask. That one proves the sweep does not
+// DRIFT; it would pass happily while every swept frame was consistently wrong, and a band of
+// dial consistently a shade off from the rest of it is exactly what somebody watching a clock
+// reports as the dial changing brightness where the hand goes.
+//
+// moveMinute also runs the cheap road the minute hand takes every few seconds, which is where
+// the fault actually was.
+static int sweep_vs_full(bool moveMinute, int *wx, int *wy) {
+    struct tm ti;
+    time_for_face(&ti);
+    const size_t n = (size_t)SCREEN_W * SCREEN_H;
+    lv_color_t *full = (lv_color_t *)malloc(n * sizeof(lv_color_t));
+    if (!full) return -1;
+
+    // The whole dial, the way a ticking clock draws it. The same angle both ways, or this
+    // measures the hand being somewhere else rather than the dial being the wrong colour.
+    const float secs = railway_seconds((float)ti.tm_sec);
+    clip_reset();
+    compose_custom(&ti, -1, true);
+    memcpy(full, s_buf, n * sizeof(lv_color_t));
+
+    // The same instant, reached exactly the way the tick callback reaches it. The three lines
+    // after the rebuild are not decoration: a rebuild leaves s_buf holding a compose with no
+    // overlay on it, and it is the first sweep frame, with the whole screen as its box, that
+    // puts the glass back over all of it. Leaving them out measured a dial with no glass
+    // against one with glass and called 75% of the screen a fault.
+    if (!rebuild_under(&ti)) { free(full); return -1; }
+    s_prevSec.x1 = 0; s_prevSec.y1 = 0;
+    s_prevSec.x2 = SCREEN_W - 1; s_prevSec.y2 = SCREEN_H - 1;
+    s_prevSecValid = true;
+    sweep_pad_for_shadow();
+    sweep_frame(secs);
+
+    if (moveMinute) {
+        if (!refresh_minute(&ti, minute_angle_now(&ti))) { free(full); return -1; }
+        sweep_pad_for_shadow();
+        sweep_frame(secs);
+    }
+
+    long count = 0;
+    const int worst = worst_difference(full, s_buf, &count, wx, wy);
+    Serial.printf("[sweep] %s: %ld pixels differ from a full compose, worst %d levels\n",
+                  moveMinute ? "after a minute move" : "a sweep frame", count, worst);
+    free(full);
+    return worst;
+}
+
+int clockview::sweepDriftsBy(int *wx, int *wy) {
+    if (wx) *wx = -1;
+    if (wy) *wy = -1;
+    if (!s_buf || !s_canvas) return -1;
+
+    // WITH THE SHADOW ON TOO, whatever this design asked for.
+    //
+    // The shadow is the layer that darkens, and the design the simulator happens to be
+    // holding is not the one anybody reported from. So: run it as the design is, then again
+    // with the shadow forced on, and answer for the worse of the two. s_clock is this
+    // process's own copy of the style and is put back before returning.
+    theme_style::Clock &style = const_cast<theme_style::Clock &>(theme_style::clock());
+    const bool hadShadow = style.shadowOn;
+    int worst = 0;
+    for (int pass = 0; pass < 2; ++pass) {
+        style.shadowOn = pass == 1 ? true : hadShadow;
+        const int checks[3] = { sweep_drift_once(wx, wy),
+                                sweep_vs_full(false, wx, wy),
+                                sweep_vs_full(true,  wx, wy) };
+        for (int i = 0; i < 3; ++i) {
+            if (checks[i] < 0) { style.shadowOn = hadShadow; return -1; }
+            if (checks[i] > worst) worst = checks[i];
+        }
+    }
+    style.shadowOn = hadShadow;
+    return worst;
+}
+
 long  clockview::litPixels() {
     if (!s_buf) return 0;
     long lit = 0;

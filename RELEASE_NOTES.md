@@ -18,6 +18,15 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.60
+
+- A sweeping clock no longer leaves a band of the dial at the wrong brightness. Each time
+  the minute hand crept, its own area lost the glass over it and anything the design draws
+  above the second hand, and did not get them back until the whole dial was repainted.
+  Found by Jean-Paul Stringaro
+
+---
+
 ## 2.16.59
 
 - Coming back to the clock from Settings, or from any other app, now shows the whole face

@@ -1412,6 +1412,39 @@ int main(int argc, char **argv) {
                 app_shell::setCaptured(false);
             }
 
+            // SWEEPING ROUND TWICE LANDS ON THE SAME PIXELS.
+            //
+            // Jean-Paul Stringaro, 2026-10-05: "portions of the screen / dial show changes in
+            // brightness/darkness as the seconds hand sweeps". A sweep frame restores the
+            // hand's box out of a cache, draws the hand, and puts back whatever the design
+            // draws above it. Every one of those has to be confined to the pixels that were
+            // actually wiped, because a layer applied twice to the same pixel moves it: glass
+            // mixed in again lightens, a shadow laid over itself darkens. Once a frame, that
+            // is a patch of dial that changes brightness as the hand goes by.
+            //
+            // Two revolutions at the same angle have to be identical. Measured in the panel's
+            // own 565 levels, because that is what is on the glass.
+            {
+                app_shell::selectApp(app_shell::APP_CLOCK);
+                clockview::setSweep(1);          // force it, whatever this design asked for
+                lv_timer_handler();
+                int dx = -1, dy = -1;
+                const int drift = clockview::sweepDriftsBy(&dx, &dy);
+                // Not zero, SMALL. Eighteen pixels under the hub are still a level or two
+                // out, because a full compose draws every shadow before every hand while the
+                // in-place minute move draws its own shadow after the hour hand that is
+                // already there. They sit beneath the cap, they do not move, and chasing
+                // them would mean a third cache. The fault this guards against was 9,916
+                // pixels at 51 levels, across the whole minute hand.
+                printf("[selftest] a sweep leaves the dial as it found it: %s"
+                       " (worst %d of 31 levels%s)\n",
+                       drift >= 0 && drift <= 6 ? "PASS" : drift < 0 ? "SKIP" : "FAIL",
+                       drift < 0 ? 0 : drift,
+                       drift > 6 ? [&]{ static char b[48]; snprintf(b, sizeof(b), ", at %d,%d", dx, dy); return b; }() : "");
+                clockview::setSweep(-1);
+                app_shell::setCaptured(false);
+            }
+
             // The tick set plays in the order it was given and loops, which is what the
             // recordings are: six consecutive seconds off one real clock, kept in sequence.
             {

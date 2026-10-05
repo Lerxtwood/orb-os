@@ -44,6 +44,19 @@ namespace clockview {
     // built from, and a cache taken for one canvas and restored into another paints the dial
     // back a hand-width at a time while the rest stays black.
     long      litPixels();
+    // Does sweeping all the way round land on exactly the pixels it started from?
+    //
+    // It has to. The hand's box is restored out of a cache, the hand is drawn, and whatever
+    // the design puts above it is drawn again over just those pixels. Every one of those
+    // steps has to be confined to what was actually wiped, because anything applied twice to
+    // a pixel that already had it moves that pixel: a glass mixed in again lightens it, a
+    // shadow laid over itself darkens it. Done once a frame on a sweeping dial, that shows
+    // as patches of the dial changing brightness as the hand goes by, which is what
+    // Jean-Paul Stringaro filmed and reported on 2026-10-05.
+    //
+    // Returns the worst single-channel difference between the same angle one revolution
+    // apart, 0 when the sweep is clean, and fills in where it was worst.
+    int       sweepDriftsBy(int *x, int *y);
     float     railwayStopStart();
     // Which beat of the second a given instant falls in. Exposed so the self-test can hold the
     // one piece of arithmetic that decides how often a theme ticks.
