@@ -1700,7 +1700,9 @@ static void handleRoot() {
     html += "</dl></div>"
             "<div class=card>"
             "<a class=b href='/install'>Install a theme file</a>"
+#if ORB_OTA_ENABLED
             "<a class=b href='/update'>Update the firmware over WiFi</a>"
+#endif
             "<a class=b href='/health'>Health readout</a>"
             "</div>"
             "<small>Everything else is set on the Orb itself, with the knob, under Settings: location, "

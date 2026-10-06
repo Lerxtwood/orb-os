@@ -1412,6 +1412,28 @@ int main(int argc, char **argv) {
                 app_shell::setCaptured(false);
             }
 
+            // THE HOUR HAND CREEPS TOO.
+            //
+            // The cache below the minute hand holds the hour hand, and it was only thrown
+            // away when the hour CHANGED. So on a sweeping dial the hour hand was composed
+            // once an hour and the in-place minute move kept restoring that frozen copy: it
+            // stood still for up to an hour and then jumped a whole division. wizard.oz,
+            // 2026-10-06, who read the change that caused it and named it before I did.
+            //
+            // The check that shipped that bug holds the clock still and compares one frame,
+            // so a cache that goes stale across minutes is invisible to it. This asks the
+            // rule directly instead, in the unit the rule is actually about: pixels of hand.
+            {
+                const float mins = clockview::hourCacheMinutes();
+                const float px   = clockview::hourTipPixelsIn(mins);
+                const bool moves = px <= 1.5f;              // dropped before anybody can see it
+                const bool sane  = mins >= 0.03f;           // and not recomposing every frame
+                const bool fixed = mins < 10.0f;            // nothing like the hour it was
+                printf("[selftest] the hour hand creeps rather than standing still: %s"
+                       " (cache holds %.2f min, tip moves %.2f px in that time)\n",
+                       moves && sane && fixed ? "PASS" : "FAIL", (double)mins, (double)px);
+            }
+
             // SWEEPING ROUND TWICE LANDS ON THE SAME PIXELS.
             //
             // Jean-Paul Stringaro, 2026-10-05: "portions of the screen / dial show changes in

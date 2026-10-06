@@ -18,6 +18,17 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.64
+
+- The hour hand creeps again on a clock with a sweeping second hand. Since 2.16.56 it was
+  being redrawn once an hour, so it stood still and then jumped a whole division instead of
+  moving with the minutes. Found and diagnosed by wizard.oz
+- The release page no longer tells you to update over WiFi at an address that is not there,
+  and it now carries what actually changed in the version instead of only how to flash it.
+  Both raised by wizard.oz as well
+
+---
+
 ## 2.16.63
 
 - The Flight Tracker gives up on an address that has stopped answering, instead of trying it

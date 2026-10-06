@@ -30,6 +30,12 @@ namespace clockview {
     // under a minute or its minute hand steps instead of creeping, and a railway design
     // has to come back at exactly a minute because there the step is the design.
     float     cacheMinutesAllowed();
+    // The same question for the cache one layer DOWN, which holds the hour hand. It was only
+    // ever dropped when the hour changed, so the hour hand stood still for up to an hour and
+    // then jumped a division. Exposed with the pixels its tip covers in that time, because
+    // "a pixel" is the whole rule and a threshold in minutes alone cannot be checked.
+    float     hourCacheMinutes();
+    float     hourTipPixelsIn(float minutes);
     // Where the minute hand belongs, in minutes-of-the-hour. Exposed for the self-test:
     // a railway dial has to land on a whole minute at every second of the minute.
     float     minuteHandMins(bool railway, int min, int sec);

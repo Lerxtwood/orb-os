@@ -1446,6 +1446,9 @@ static lv_color_t *s_under = nullptr;
 static lv_color_t *s_noMin = nullptr;
 static int  s_noMinHr = -1;
 static bool s_noMinValid = false;
+// The hour hand's angle at the moment that cache was composed. The hour, on its own, is not
+// enough: it only changes once an hour and the hand moves the whole time.
+static float s_noMinHrAng = -1000.0f;
 // The angle the minute hand was last drawn at, so a move knows what to wipe.
 static float s_prevMinAng = -1000.0f;
 static int  s_underMin = -1, s_underHr = -1;   // what minute this cache is of
@@ -1605,6 +1608,44 @@ static float cache_minutes_allowed() {
 // Compose the dial without its second hand and keep it. Once a minute, not once a frame.
 // Where the minute hand points right now, by the same rule compose_custom uses. One function,
 // because a cache that disagrees with the compose about this would leave a hand drawn twice.
+// HOW LONG THE CACHE UNDER THE MINUTE HAND MAY STAND, in minutes of wall time.
+//
+// s_noMin holds everything below the minute hand, and the HOUR hand is the thing down there
+// that moves. It was only ever thrown away when tm_hour changed, so the hour hand was composed
+// once an hour and the in-place minute move kept restoring that same frozen copy over and over.
+// On a sweeping dial the hour hand therefore did not creep at all: it stood still for up to an
+// hour and then jumped a whole division. Reported by wizard.oz on 2026-10-06, who read the
+// change that caused it and named it before I did.
+//
+// The minute hand has had the right rule since 2.16.38, in cache_minutes_allowed just above:
+// hold the cache until the hand's TIP has travelled a pixel, because a hand that has not moved
+// a pixel has not moved. This is that rule for the hand one layer down. The hour hand turns at
+// half a degree a minute against the minute hand's six, and is shorter, so it buys roughly a
+// minute where the minute hand buys three seconds. A recompose a minute is nothing beside the
+// one every 3.4 seconds that 2.16.56 was written to remove.
+static float hour_cache_minutes() {
+    const theme_style::Clock &cs = theme_style::clock();
+    const theme_style::Hand &hd = cs.hand[0];
+    if (!hd.show) return 60.0f;                    // no hour hand: nothing under there to go stale
+    CustomSprite spr = custom_hand(0);
+    if (!spr.data) return 60.0f;
+    const float up = (float)hd.pivotY, down = (float)(spr.h - hd.pivotY);
+    const float reach = up > down ? up : down;
+    if (reach < 8.0f) return 60.0f;                // too short for a pixel to matter
+    // Degrees for one pixel at that reach, then at the hour hand's own half a degree a minute.
+    const float mins = (1.0f / (reach * DEG2RAD)) / 0.5f;
+    // Never more often than every two seconds, and never longer than the hour it used to be.
+    return mins < 0.034f ? 0.034f : (mins > 60.0f ? 60.0f : mins);
+}
+
+static float hour_angle_now(const struct tm *ti) {
+    const theme_style::Clock &cs = theme_style::clock();
+    const bool rw = cs.secondRailway && cs.secondSweep;
+    float mins = minute_hand_mins(rw, ti->tm_min, ti->tm_sec);
+    if (rw && s_stepEase >= 0.0f) mins = (float)ti->tm_min + s_stepEase;
+    return ((ti->tm_hour % 12) + mins / 60.0f) * 30.0f;
+}
+
 static float minute_angle_now(const struct tm *ti) {
     const theme_style::Clock &cs = theme_style::clock();
     const bool rw = cs.secondRailway && cs.secondSweep;
@@ -1644,6 +1685,7 @@ static bool rebuild_under(const struct tm *ti) {
         compose_custom(ti, 1, false);
         memcpy(s_noMin, s_buf, (size_t)SCREEN_W * SCREEN_H * sizeof(lv_color_t));
         s_noMinHr = ti->tm_hour;
+        s_noMinHrAng = hour_angle_now(ti);
         s_noMinValid = true;
     }
     clip_reset();
@@ -1675,6 +1717,16 @@ static bool refresh_minute(const struct tm *ti, float ang) {
     if (!s_buf || !s_under || !s_noMin || !s_noMinValid) return false;
     if (s_underFor != s_buf) return false;           // a cache of some previous canvas
     if (s_noMinHr != ti->tm_hour) return false;      // the hour hand moved; that is under us
+    // ...and it moves BETWEEN hours too, which this used to miss entirely. See
+    // hour_cache_minutes: hold the cache until the hour hand's tip has travelled a pixel,
+    // then rebuild rather than keep painting a hand that is no longer where it belongs.
+    {
+        float apart = hour_angle_now(ti) - s_noMinHrAng;
+        while (apart > 180.0f)  apart -= 360.0f;
+        while (apart < -180.0f) apart += 360.0f;
+        if (apart < 0.0f) apart = -apart;
+        if (apart >= hour_cache_minutes() * 0.5f) return false;
+    }
     const theme_style::Clock &cs = theme_style::clock();
     const theme_style::Hand &hd = cs.hand[1];
     if (!hd.show) return false;
@@ -2389,6 +2441,16 @@ static void tick_cb(lv_timer_t * /*t*/) {
 bool  clockview::faceHasTime() { struct tm ti; time_for_face(&ti); return !s_noTime; }
 float clockview::handSeconds(float wallSeconds) { return railway_seconds(wallSeconds); }
 float clockview::cacheMinutesAllowed() { return cache_minutes_allowed(); }
+float clockview::hourCacheMinutes() { return hour_cache_minutes(); }
+float clockview::hourTipPixelsIn(float minutes) {
+    const theme_style::Clock &cs = theme_style::clock();
+    const theme_style::Hand &hd = cs.hand[0];
+    CustomSprite spr = custom_hand(0);
+    if (!hd.show || !spr.data) return 0.0f;
+    const float up = (float)hd.pivotY, down = (float)(spr.h - hd.pivotY);
+    const float reach = up > down ? up : down;
+    return reach * (minutes * 0.5f) * DEG2RAD;      // half a degree a minute, at that reach
+}
 // How far one picture is from another, in the panel's own 565 levels, and where. Zero means
 // identical. Both checks below come down to "are these the same".
 static int worst_difference(const lv_color_t *a, const lv_color_t *b, long *count,
