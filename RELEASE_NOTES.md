@@ -18,6 +18,15 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.65
+
+- Ordinary memory traffic moves out of the small internal pool, which is the one everything
+  else fails from when it runs short. This is the change behind the theme sends that stop
+  part way, the install page that will not load, and the feeds that go quiet after a long
+  uptime. Diagnosed by Greg Takacs, measured and fixed first by Techtobi83
+
+---
+
 ## 2.16.64
 
 - The hour hand creeps again on a clock with a sweeping second hand. Since 2.16.56 it was

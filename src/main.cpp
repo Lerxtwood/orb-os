@@ -2559,7 +2559,28 @@ void setup() {
     // tripping the "feed stuck 180s -> reboot" recovery every few minutes. Internal
     // memory allocations don't get restructured at all; they're just redirected to the
     // ~8MB PSRAM pool, which has vastly more room to absorb the same churn.
-    heap_caps_malloc_extmem_enable(4096);
+    //
+    // 512, NOT 4096, SINCE 2.16.65. Everything under 4 KB still landed on the internal heap:
+    // HTTP and socket buffers, JSON documents, Strings, the aircraft vector. None of them are
+    // large, all of them are allocated and freed constantly, and over a long uptime that churn
+    // cuts the internal heap into pieces even while plenty of it is free. That is the state
+    // everything else fails from. Greg Takacs named it in #fix-requests on 2026-10-06, "a
+    // memory starvation problem across the board", and Techtobi83 had already measured it in
+    // their fork: a soak test ended in a task-watchdog reset with the WiFi driver unable to
+    // get a transmit buffer, largest internal block around 5 KB. At 512 they measured the
+    // largest block back at 18.4 KB.
+    //
+    // Nothing that must be internal is affected, because nothing that must be internal relies
+    // on this. Checked rather than assumed: the LVGL draw buffer asks for
+    // MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA, the audio scratch and the rotation and frame
+    // buffers ask for MALLOC_CAP_SPIRAM, task stacks and the WiFi driver's own allocations ask
+    // by capability, and LVGL routes its heap through orb_lv_malloc with its own threshold.
+    // This moves the ordinary malloc/new/String traffic and nothing else.
+    //
+    // What it trades is speed for room: that traffic now sits behind the slower external bus.
+    // None of it is in the render loop. If the Orb feels slower rather than steadier, this is
+    // the line to put back.
+    heap_caps_malloc_extmem_enable(512);
 
     psram_mark("boot start");
     sdcard::begin();
