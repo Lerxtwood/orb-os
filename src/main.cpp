@@ -3311,18 +3311,23 @@ void setup() {
     // free: an allocation can fail with plenty of total free PSRAM if churn has
     // fragmented it below the requested size.
     g_web.on("/health", []{
-        // 1024, not 640. Measured rather than estimated: a real reading off Zion's Orb on
-        // 2026-10-07 was 587 bytes, so 640 had 53 to spare, and the five compose fields
-        // below are 70. It would have truncated on the first device that reported them.
+        // 1024, not 640, and the return value is CHECKED rather than trusted.
         //
-        // This is a bigger number, not a fix. Greg's open PR #5 replaces the fixed buffer,
-        // because the fault is that snprintf returns what it WOULD have written and nobody
-        // checks, so the next field to be added breaks every reader silently. Take that one;
-        // do not treat this line as having dealt with it.
+        // A bigger buffer was never the fix. The note that raised this to 640 said exactly
+        // what happens when the field list outgrows it -- "snprintf would have silently
+        // truncated the JSON into something no client could parse" -- and on 2026-10-06 it
+        // did, at 639 bytes, the moment a handful of display fields were added. A reading off
+        // Zion's Orb on 2026-10-07 was 587 bytes, so 640 had 53 to spare against five compose
+        // fields that are 70: it would have truncated on the first device to report them.
+        //
+        // Raising the number only moves the cliff. snprintf returns what it WOULD have
+        // written and nothing looked, so the next field added breaks every reader in silence
+        // -- including the readers diagnosing something else entirely, which is what makes a
+        // truncated /health so expensive. So the length is tested below.
         char b[1024];
         float cFace = 0, cPlate = 0, cText = 0, cHands = 0;
         clockview::composeCost(cFace, cPlate, cText, cHands);
-        snprintf(b, sizeof(b),
+        const int n = snprintf(b, sizeof(b),
                  // slug is the permanent folder id, theme is the display name. Reporting
                  // only the slug is what made "Modern" and "the-office" look unrelated.
                  // `assets` is the fingerprint of the theme data this device is actually
@@ -3398,6 +3403,10 @@ void setup() {
                  // and a panic as the same word. diag_log.cpp owns the full mapping; use
                  // it rather than keeping a second, shorter copy here that can disagree.
                  diag::resetReasonText());
+        // snprintf reports what it WOULD have written, so this is the only way to notice.
+        if (n < 0 || (size_t)n >= sizeof(b))
+            Serial.printf("[health] JSON truncated: needed %d bytes, buffer is %u\n",
+                          n, (unsigned)sizeof(b));
         g_web.send(200, "application/json", b);
     });
     g_web.on("/sdput", HTTP_POST, handleSdPutDone, handleSdPutUpload);   // Launch Kit pushes theme files here
