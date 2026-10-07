@@ -46,6 +46,9 @@ namespace clockview {
     // And the same question for a TICKING dial, where a frame has to land on the second so
     // the hand moves with its own click rather than after it.
     uint32_t  aimPeriod(uint32_t aim, uint32_t need);
+    // How long until the next second. Exposed because getting it a fraction short put the
+    // hand a whole second behind its own click, and nothing on the glass says which.
+    uint32_t  aimToSecond(uint32_t usec);
     // What one full face last cost, split by phase, in milliseconds. Reported on /health so
     // a slow dial can be diagnosed from a browser instead of from a serial cable.
     void      composeCost(float &face, float &plate, float &text, float &hands);

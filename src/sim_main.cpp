@@ -1443,6 +1443,24 @@ int main(int argc, char **argv) {
                        even && quick && close ? "PASS" : "FAIL", worstErr * 100, worstFps);
             }
 
+            // THE WAIT FOR THE NEXT SECOND NEVER FALLS SHORT.
+            //
+            // Integer division truncated it, so the wake landed just before the boundary and
+            // redraw() drew the second that had not rolled yet. Then the "too close to chase"
+            // guard added a whole second to the retry and the hand sat out the one it had
+            // just missed, while the click, which re-aims on a wake that draws nothing,
+            // landed on time. Measured across a whole second: 98% of wakes were short.
+            {
+                int early = 0, far = 0;
+                for (uint32_t us = 0; us < 1000000; us += 37) {
+                    const uint32_t ms = clockview::aimToSecond(us);
+                    if (us + ms * 1000 < 1000000) early++;       // lands before the second
+                    if (ms > 1005) far++;                        // or skips one entirely
+                }
+                printf("[selftest] the wait for the next second never falls short: %s"
+                       " (%d early, %d overshooting)\n", !early && !far ? "PASS" : "FAIL", early, far);
+            }
+
             // A TICKING HAND LANDS WITH ITS OWN CLICK, even while a background plays.
             //
             // The click is scheduled against the real second. The hand moves when the drawing

@@ -18,6 +18,15 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.70
+
+- A ticking second hand moves with its own click instead of a second behind it. The wait for
+  the next second was rounded down, so the hand woke a fraction early, drew the second that
+  had not arrived yet, and then sat out the one it missed. Found by Zion, who kept saying the
+  sound and the hand did not match while I kept looking somewhere else
+
+---
+
 ## 2.16.69
 
 - The health page now says what a dial costs to draw, split into the background picture, the

@@ -1374,6 +1374,16 @@ static uint32_t s_bgEvery     = 1;     // ticks per background frame, set in tic
 // than with the second hand, which may otherwise be a whole second apart.
 static bool bg_anim_playing() { return s_bgPlayStart != 0; }
 
+// HOW LONG UNTIL THE NEXT SECOND, as a wait the timer can be given.
+//
+// Rounded UP. Integer division truncates, so this used to come back a fraction short and the
+// wake landed just before the boundary: measured across a whole second, 98% of them did.
+// redraw() then read a clock that had not rolled and drew the old second.
+static uint32_t aim_to_second(uint32_t usec) {
+    uint32_t ms = (1000000u - (usec > 999999u ? 999999u : usec) + 999u) / 1000u;
+    return ms < 5u ? 5u : ms;
+}
+
 // HOW LONG TO WAIT when the second matters and a background also wants frames.
 //
 // `aim` is the time until the real second, which is where a ticking hand steps and where its
@@ -3013,8 +3023,24 @@ static void tick_cb(lv_timer_t * /*t*/) {
     // are not the same clock and will drift apart over hours.
     if (s_tick && !sweep_possible()) {
         struct timeval tv; gettimeofday(&tv, nullptr);
-        uint32_t ms = (uint32_t)((1000000 - tv.tv_usec) / 1000);
-        if (ms < 20) ms += 1000;        // too close to chase; take the one after
+        // ROUNDED UP, AND NEVER SKIPPED. Both halves of this were wrong and both put the
+        // hand behind its own click.
+        //
+        // Integer division truncates, so the wait was always a fraction of a millisecond
+        // SHORT and the timer fired just before the second rather than on it. redraw() then
+        // read a clock that had not rolled yet and drew the old second. Harmless on its own,
+        // except for what happened next: the re-aim found about a millisecond left, the
+        // "too close to chase" guard added a whole second to it, and the hand sat still until
+        // the second after the one it had just missed. The click, which re-aims on a cheap
+        // wake that draws nothing, landed on time and the hand did not.
+        //
+        // Rounding up lands at or just after the boundary, which is where redraw() sees the
+        // new second. And being close is no longer a reason to skip one: a short wait that
+        // catches this second beats a long one that gives up on it. Five milliseconds is the
+        // floor, which is the same floor the audio beat uses.
+        //
+        // Zion, after three wrong diagnoses from me: "the audio and hands don't line up".
+        uint32_t ms = aim_to_second((uint32_t)tv.tv_usec);
         // ...but never out-wait a background that is mid-play.
         //
         // This used to set the period unconditionally, and the bgAnim block at the top of
@@ -3051,6 +3077,7 @@ float clockview::cacheMinutesAllowed() { return cache_minutes_allowed(); }
 int   clockview::sweepBeat() { return sweep_beat(); }
 float clockview::hourCacheMinutes() { return hour_cache_minutes(); }
 uint32_t clockview::aimPeriod(uint32_t aim, uint32_t need) { return aim_period(aim, need); }
+uint32_t clockview::aimToSecond(uint32_t usec) { return aim_to_second(usec); }
 void clockview::composeCost(float &face, float &plate, float &text, float &hands) {
     face = s_costFace; plate = s_costPlate; text = s_costText; hands = s_costHands;
 }
