@@ -2586,6 +2586,30 @@ static unsigned host_internal_free_blocks() {
     heap_caps_get_info(&hi, MALLOC_CAP_INTERNAL);
     return (unsigned)hi.free_blocks;
 }
+// Time per second parked in the panel's vertical blanking. Real latency, so it belongs in the
+// same ledger as render and transfer cost: "tearing is gone but it cost N ms" has to be
+// answerable rather than guessed.
+static unsigned host_te_load() {
+    static uint32_t last = 0, lastMs = 0;
+    const uint32_t us = display_te_wait_us(), now = millis();
+    unsigned v = 0;
+    if (lastMs && now > lastMs) v = (unsigned)(((us - last) / 1000UL) * 1000UL / (now - lastMs));
+    last = us; lastMs = now;
+    return v;
+}
+// Hundredths of a screen per second ACTUALLY sent to the panel, which since the flush became
+// one transaction per frame is no longer the same number as screens_per_s (what LVGL rendered).
+// Keeping both is what makes "is the box bigger than the area that changed" answerable -- the
+// question a full-width band got wrong before the box was tightened.
+static unsigned host_pushed_load() {
+    static uint32_t last = 0, lastMs = 0;
+    const uint32_t px = display_pushed_px(), now = millis();
+    unsigned v = 0;
+    const uint32_t perScreen = (uint32_t)SCREEN_W * SCREEN_H;
+    if (lastMs && now > lastMs) v = (unsigned)(((px - last) * 100UL / perScreen) * 1000UL / (now - lastMs));
+    last = px; lastMs = now;
+    return v;
+}
 static unsigned host_flush_load() {
     static uint32_t last = 0, lastMs = 0;
     const uint32_t us = display_flush_us(), now = millis();
@@ -3301,6 +3325,17 @@ void setup() {
             g_web.send(200, "text/plain", "poll set");
             return;
         }
+        // The two that address what can actually be SEEN. Everything else here prices a layer.
+        if (g_web.hasArg("te")) {
+            display_set_te(g_web.arg("te") != "0");
+            g_web.send(200, "text/plain", display_te() ? "te on" : "te off");
+            return;
+        }
+        if (g_web.hasArg("stage")) {
+            display_set_stage(g_web.arg("stage") != "0");
+            g_web.send(200, "text/plain", display_stage() ? "staged" : "per-strip");
+            return;
+        }
         const int  kind = g_web.arg("layer").toInt();
         const bool hide = (g_web.arg("hide") != "0");
         radar::debugHideLayer(kind, hide);
@@ -3333,6 +3368,7 @@ void setup() {
                  "\"psram_free_kb\":%u,\"psram_largest_kb\":%u,"
                  "\"heap_free_kb\":%u,\"heap_largest_kb\":%u,"
                  "\"fps\":%u,\"lvgl_ms_per_s\":%u,\"flush_ms_per_s\":%u,"
+                 "\"te\":%d,\"stage\":%d,\"te_ms_per_s\":%u,\"pushed_per_s\":%u,"
                  "\"screens_per_s\":%u,"
                  // The allocation CENSUS, not just the free total. Added 2026-10-06 after
                  // /health showed internal free falling 59 KB -> 11 KB over a 30-minute
@@ -3377,7 +3413,9 @@ void setup() {
                  (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) / 1024),
                  (unsigned)(ESP.getFreeHeap() / 1024),
                  (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024),
-                 host_fps(), host_lvgl_load(), host_flush_load(), host_screens_per_s(),
+                 host_fps(), host_lvgl_load(), host_flush_load(),
+                 display_te() ? 1 : 0, display_stage() ? 1 : 0, host_te_load(), host_pushed_load(),
+                 host_screens_per_s(),
                  theme_style::clock().secondSweep   ? "true" : "false",
                  theme_style::clock().secondRailway ? "true" : "false",
                  clockview::sweepBeat(), clockview::sweepBeat() * 3600,
