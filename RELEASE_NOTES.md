@@ -18,6 +18,15 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.67
+
+- A looping background holds every frame for the same length of time. The picture's rate and
+  the dial's drawing rate were unrelated numbers, so one frame stayed up for half as long as
+  the next, for ever, however even the animation itself was. Found by Zion on a gear whose own
+  frames are identical to a tenth of a percent
+
+---
+
 ## 2.16.66
 
 - Animated backgrounds keep animating. Theme art was not being released as it was loaded,

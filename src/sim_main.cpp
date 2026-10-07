@@ -1412,6 +1412,37 @@ int main(int argc, char **argv) {
                 app_shell::setCaptured(false);
             }
 
+            // EVERY FRAME OF A LOOPING BACKGROUND IS HELD FOR THE SAME LENGTH OF TIME.
+            //
+            // The picture's rate and the drawing tick's rate are chosen for different reasons
+            // and used to be unrelated numbers. At eight a second the background wants 125 ms
+            // and the tick lands near 77, so sampling one with the other held a frame for 77 ms
+            // and the next for 154: a two to one swing, for ever, on a loop whose own geometry
+            // is uniform to a tenth of a percent. Zion saw it as a stutter and it survived the
+            // GIF, the encoder and the plate all being ruled out by measurement.
+            //
+            // Nothing about this is visible in a still frame, which is why it needs a test
+            // rather than a look.
+            {
+                bool even = true, quick = true, close = true;
+                int worstFps = 0; double worstErr = 0;
+                for (int fps = 1; fps <= 8; ++fps) {
+                    for (uint32_t base = 33; base <= 150; base += 1) {
+                        uint32_t every = 0;
+                        const uint32_t per = clockview::bgTickPeriod(fps, base, every);
+                        if (every < 1) even = false;              // a frame must last whole ticks
+                        if (per > base || per < 1) quick = false; // never slower than the hand asked
+                        const double got = 1000.0 / (double)(per * every);
+                        const double err = (got - fps) / fps;
+                        if (err > worstErr) { worstErr = err; worstFps = fps; }
+                        if (err > 0.12) close = false;            // and still roughly the rate asked for
+                    }
+                }
+                printf("[selftest] a looping background holds every frame the same length: %s"
+                       " (worst rate error %.0f%% at %d a second)\n",
+                       even && quick && close ? "PASS" : "FAIL", worstErr * 100, worstFps);
+            }
+
             // THE HOUR HAND CREEPS TOO.
             //
             // The cache below the minute hand holds the hour hand, and it was only thrown
@@ -1449,7 +1480,16 @@ int main(int argc, char **argv) {
             {
                 app_shell::selectApp(app_shell::APP_CLOCK);
                 clockview::setSweep(1);          // force it, whatever this design asked for
-                lv_timer_handler();
+                // OUT OF ACTION SINCE THE 2.16.66 MERGE, and saying so loudly.
+                //
+                // The shell learned to build a screen when it is first opened and give it
+                // back again, and this harness no longer ends up with a clock canvas to
+                // measure: onEnter returns early because the screen is not there, so all
+                // three checks under it answer "cannot run". It reported SKIP, which is the
+                // worst way for a test to fail, because a check that quietly stops running
+                // looks exactly like a check that passes. It now fails, which is honest, and
+                // it is the next thing to repair rather than something to silence.
+                for (int p = 0; p < 10; ++p) lv_timer_handler();
                 int dx = -1, dy = -1;
                 const long off = clockview::sweepDiffersBy(&dx, &dy);
                 // Not zero, SMALL. About twenty pixels under the hand cap are still a
@@ -1464,7 +1504,7 @@ int main(int argc, char **argv) {
                 // against was 9,916 pixels.
                 printf("[selftest] a sweep leaves the dial as it found it: %s"
                        " (%ld pixels of %d%s)\n",
-                       off >= 0 && off < 200 ? "PASS" : off < 0 ? "SKIP" : "FAIL",
+                       off >= 0 && off < 200 ? "PASS" : off < 0 ? "FAIL (no canvas to draw on)" : "FAIL",
                        off < 0 ? 0 : off, SCREEN_W * SCREEN_H,
                        off >= 200 ? [&]{ static char b[48]; snprintf(b, sizeof(b), ", at %d,%d", dx, dy); return b; }() : "");
                 clockview::setSweep(-1);

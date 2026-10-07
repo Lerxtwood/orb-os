@@ -39,6 +39,10 @@ namespace clockview {
     // then jumped a division. Exposed with the pixels its tip covers in that time, because
     // "a pixel" is the whole rule and a threshold in minutes alone cannot be checked.
     float     hourCacheMinutes();
+    // How a looping background and the drawing tick agree on a rate. Exposed because the
+    // fault it fixes is invisible in a still: every frame has to be held for the same number
+    // of ticks, or the picture judders however even its own geometry is.
+    uint32_t  bgTickPeriod(int fps, uint32_t base, uint32_t &every);
     float     hourTipPixelsIn(float minutes);
     // Where the minute hand belongs, in minutes-of-the-hour. Exposed for the self-test:
     // a railway dial has to land on a whole minute at every second of the minute.

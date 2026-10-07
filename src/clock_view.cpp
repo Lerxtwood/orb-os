@@ -1354,10 +1354,46 @@ static void blit_plate_rot_slow(const uint16_t *src, float angleDeg) {
 static uint32_t s_bgPlayStart = 0;     // ms, when the current play began; 0 when holding
 static uint32_t s_bgLastPlay  = 0;     // ms, when the last play ended
 static int      s_bgFrame     = 0;     // the frame now on screen, so a change can be noticed
+// HOW A LOOPING BACKGROUND KEEPS TIME, and why it is counted rather than clocked.
+//
+// It used to read the wall clock: frame = (now / step) % cycle, with step = 1000/fps. The
+// drawing tick runs at its own period, chosen for the second hand, and the two are unrelated
+// numbers. At eight frames a second the background wants 125 ms and the tick lands near 77,
+// so sampling a 125 ms staircase every 77 ms holds one frame for 77 ms and the next for 154.
+// A two to one swing in how long each frame stays up, for ever, on a loop whose geometry is
+// uniform to a tenth of a percent. That is the stutter Zion kept seeing after the GIF, the
+// encoder and the plate had each been ruled out by measurement.
+//
+// So the tick now picks a period that divides the background's, and the background advances
+// on a count of ticks. Every frame is then up for exactly the same time by construction,
+// whatever either rate happens to be.
+static uint32_t s_bgTick      = 0;     // ticks since the theme began, for the loop
+static uint32_t s_bgEvery     = 1;     // ticks per background frame, set in tick_cb
 
 // Is a play running right now? The tick uses this to keep time with the animation rather
 // than with the second hand, which may otherwise be a whole second apart.
 static bool bg_anim_playing() { return s_bgPlayStart != 0; }
+
+// A WHOLE NUMBER OF TICKS PER BACKGROUND FRAME, never a fraction.
+//
+// Taking the smaller of the two rates was right about the hand and wrong about the picture:
+// at eight a second the background wants 125 ms and the drawing tick lands near 77, and 125
+// and 77 have no common beat, so a frame came up for one tick or for two depending on where
+// the two clocks happened to be. Dividing the background's period instead keeps the tick at
+// least as fast as the hand wanted, which is what the old min() was protecting, and makes
+// every frame last the same number of ticks, which is what it was not.
+//
+// Returns the tick period and sets `every` to the ticks each frame is held for.
+static uint32_t bg_rate(uint32_t need, uint32_t base, uint32_t &every) {
+    if (base < 1) base = 1;
+    uint32_t k = (need + base - 1) / base;              // ceil(need / base)
+    if (k < 1) k = 1;
+    uint32_t per = need / k;
+    if (per < 33) { per = 33; k = (need + per - 1) / per; }
+    if (per > base) per = base;                          // never slower than the hand asked for
+    every = k < 1 ? 1 : k;
+    return per < 1 ? 1 : per;
+}
 
 // Which frame belongs on the dial at this moment.
 static int bg_anim_frame() {
@@ -1369,8 +1405,9 @@ static int bg_anim_frame() {
 
     if (a.loop) {
         s_bgPlayStart = 0;                     // a loop is never "a play"; it just runs
-        return (int)((now / (step ? step : 1)) % (uint32_t)(last + 1));
+        return (int)((s_bgTick / (s_bgEvery ? s_bgEvery : 1)) % (uint32_t)(last + 1));
     }
+    (void)step;
 
     if (!bg_anim_playing()) {
         // Hold on frame nought until it is time. s_bgLastPlay starts at 0, which would fire
@@ -2747,9 +2784,11 @@ static void tick_cb(lv_timer_t * /*t*/) {
             const bool running = a2.frames > 0 && (a2.loop || bg_anim_playing());
             const uint32_t base = sweep_possible() ? sweep_period() : 1000;
             const uint32_t need = (uint32_t)(1000 / (a2.fps < 1 ? 1 : a2.fps));
-            const uint32_t want2 = running ? (need < base ? need : base) : base;
+            uint32_t want2 = base;
+            if (running) { want2 = bg_rate(need, base, s_bgEvery); } else { s_bgEvery = 1; }
             if (want2 != s_tickPeriod) { s_tickPeriod = want2; lv_timer_set_period(s_tick, want2); }
         }
+        ++s_bgTick;
     }
 
     if (sweep_possible()) {
@@ -2963,6 +3002,9 @@ float clockview::cacheMinutesAllowed() { return cache_minutes_allowed(); }
 // watchmaker would quote: 8 is 28,800, 4 is 14,400.
 int   clockview::sweepBeat() { return sweep_beat(); }
 float clockview::hourCacheMinutes() { return hour_cache_minutes(); }
+uint32_t clockview::bgTickPeriod(int fps, uint32_t base, uint32_t &every) {
+    return bg_rate((uint32_t)(1000 / (fps < 1 ? 1 : fps)), base, every);
+}
 float clockview::hourTipPixelsIn(float minutes) {
     const theme_style::Clock &cs = theme_style::clock();
     const theme_style::Hand &hd = cs.hand[0];
