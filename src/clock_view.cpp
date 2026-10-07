@@ -1694,6 +1694,14 @@ static void compose_custom(const struct tm *ti, int stopKind, bool withOverlay) 
 static float minute_angle_now(const struct tm *ti);
 static float hour_angle_now(const struct tm *ti);
 
+// WHAT A FULL FACE COST, kept so somebody can read it without a cable.
+//
+// Greg's [compose] line is the only thing that says where this screen's time goes, and it
+// goes to the serial port, which means disconnecting Studio and attaching a terminal. Every
+// person who has reported a slow dial has been asked to describe it in words instead. These
+// hold the last reported averages so /health can carry them, and a report becomes a URL.
+static float s_costFace = 0, s_costPlate = 0, s_costText = 0, s_costHands = 0;
+
 static void draw_custom(const struct tm *ti) {
     // THE FAST PATH FOR AN ANIMATED BACKGROUND.
     //
@@ -1717,9 +1725,13 @@ static void draw_custom(const struct tm *ti) {
         // `rest` is whatever is not plate, text or hands, and on this screen it is almost
         // entirely the overlay: a full-screen alpha mix over 217,156 pixels.
         const float avg = sum / runs;
+        s_costFace  = avg;
+        s_costPlate = s_phPlate / runs;
+        s_costText  = s_phText / runs;
+        s_costHands = s_phHands / runs;
         Serial.printf("[compose] full face %.0f ms  -> plate %.0f  text %.0f  hands %.0f  rest %.0f\n",
-                      avg, s_phPlate / runs, s_phText / runs, s_phHands / runs,
-                      avg - (s_phPlate + s_phText + s_phHands) / runs);
+                      avg, s_costPlate, s_costText, s_costHands,
+                      avg - (s_costPlate + s_costText + s_costHands));
         runs = 0; sum = 0.0f;
         s_phPlate = 0; s_phText = 0; s_phHands = 0; s_phRest = 0;
     }
@@ -3039,6 +3051,9 @@ float clockview::cacheMinutesAllowed() { return cache_minutes_allowed(); }
 int   clockview::sweepBeat() { return sweep_beat(); }
 float clockview::hourCacheMinutes() { return hour_cache_minutes(); }
 uint32_t clockview::aimPeriod(uint32_t aim, uint32_t need) { return aim_period(aim, need); }
+void clockview::composeCost(float &face, float &plate, float &text, float &hands) {
+    face = s_costFace; plate = s_costPlate; text = s_costText; hands = s_costHands;
+}
 uint32_t clockview::bgTickPeriod(int fps, uint32_t base, uint32_t &every) {
     return bg_rate((uint32_t)(1000 / (fps < 1 ? 1 : fps)), base, every);
 }

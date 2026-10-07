@@ -18,6 +18,14 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.69
+
+- The health page now says what a dial costs to draw, split into the background picture, the
+  text, the hands and the glass. A slow clock could only be diagnosed over a serial cable
+  before this, so everybody who reported one was asked to describe it in words instead
+
+---
+
 ## 2.16.68
 
 - A ticking second hand moves at the same instant as its own click, on a clock that also has

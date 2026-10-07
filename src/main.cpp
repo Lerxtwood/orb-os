@@ -3311,10 +3311,17 @@ void setup() {
     // free: an allocation can fail with plenty of total free PSRAM if churn has
     // fragmented it below the requested size.
     g_web.on("/health", []{
-        // 640, not 420: the allocation-census fields below pushed it past the old size,
-        // and snprintf would have silently truncated the JSON into something no client
-        // could parse.
-        char b[640];
+        // 1024, not 640. Measured rather than estimated: a real reading off Zion's Orb on
+        // 2026-10-07 was 587 bytes, so 640 had 53 to spare, and the five compose fields
+        // below are 70. It would have truncated on the first device that reported them.
+        //
+        // This is a bigger number, not a fix. Greg's open PR #5 replaces the fixed buffer,
+        // because the fault is that snprintf returns what it WOULD have written and nobody
+        // checks, so the next field to be added breaks every reader silently. Take that one;
+        // do not treat this line as having dealt with it.
+        char b[1024];
+        float cFace = 0, cPlate = 0, cText = 0, cHands = 0;
+        clockview::composeCost(cFace, cPlate, cText, cHands);
         snprintf(b, sizeof(b),
                  // slug is the permanent folder id, theme is the display name. Reporting
                  // only the slug is what made "Modern" and "the-office" look unrelated.
@@ -3360,6 +3367,7 @@ void setup() {
                  "\"bg_fps\":%d,\"bg_loop\":%s,\"bg_every_s\":%d,"
                  "\"alloc_blocks\":%u,\"free_blocks\":%u,"
                  "\"lv_int\":%u,\"lv_allocs\":%u,\"lv_peak_int\":%u,"
+                 "\"compose_ms\":%d,\"plate_ms\":%d,\"text_ms\":%d,\"hands_ms\":%d,\"rest_ms\":%d,"
                  "\"wifi_rssi\":%d,\"boot_reason\":\"%s\"}",
                  FW_VERSION, theme_select::activeSlug(), theme_style::themeLabel(),
                  (unsigned long)CUSTOM_WELD_HASH,
@@ -3383,6 +3391,8 @@ void setup() {
                  host_internal_alloc_blocks(), host_internal_free_blocks(),
                  (unsigned)orb_lv_live_int_bytes, (unsigned)orb_lv_live_int_count,
                  (unsigned)orb_lv_peak_int_bytes,
+                 (int)(cFace + 0.5f), (int)(cPlate + 0.5f), (int)(cText + 0.5f),
+                 (int)(cHands + 0.5f), (int)(cFace - cPlate - cText - cHands + 0.5f),
                  (int)WiFi.RSSI(),
                  // Was three cases and "other", which reported a USB-triggered reset
                  // and a panic as the same word. diag_log.cpp owns the full mapping; use
