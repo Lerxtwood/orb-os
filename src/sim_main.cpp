@@ -1443,6 +1443,38 @@ int main(int argc, char **argv) {
                        even && quick && close ? "PASS" : "FAIL", worstErr * 100, worstFps);
             }
 
+            // A TICKING HAND LANDS WITH ITS OWN CLICK, even while a background plays.
+            //
+            // The click is scheduled against the real second. The hand moves when the drawing
+            // tick next runs. Those were reconciled by taking the smaller of "time until the
+            // second" and "the background's frame period", which throws the aim away: at two
+            // frames a second the hand landed up to half a second after its own sound. Zion
+            // heard it the moment he turned the sweep off, because a sweeping dial ticks every
+            // 77 ms and lands near enough either way.
+            {
+                bool lands = true, fast = true;
+                uint32_t worst = 0;
+                for (int fps = 1; fps <= 8; ++fps) {
+                    const uint32_t need = 1000u / (uint32_t)fps;
+                    for (uint32_t aim = 40; aim <= 1000; aim += 10) {
+                        const uint32_t p = clockview::aimPeriod(aim, need);
+                        if (p > need && p != aim) fast = false;   // the background still gets its rate
+                        const uint32_t k = p ? (aim + p / 2) / p : 1;
+                        const uint32_t miss = k * p > aim ? k * p - aim : aim - k * p;
+                        if (miss > worst) worst = miss;
+                        // Eight, not zero. Integer division leaves up to six: 990 ms split
+                        // eight ways is 123 a piece and lands two short. It does not
+                        // accumulate, because the wait is recomputed from the real clock on
+                        // every tick, so the last one before the second is measured against
+                        // the truth rather than against the plan. What this is holding is
+                        // that the arithmetic is sane, not that it is exact.
+                        if (miss > 8) lands = false;
+                    }
+                }
+                printf("[selftest] a ticking hand lands on the second with its click: %s"
+                       " (worst miss %u ms)\n", lands && fast ? "PASS" : "FAIL", worst);
+            }
+
             // THE HOUR HAND CREEPS TOO.
             //
             // The cache below the minute hand holds the hour hand, and it was only thrown

@@ -1374,6 +1374,21 @@ static uint32_t s_bgEvery     = 1;     // ticks per background frame, set in tic
 // than with the second hand, which may otherwise be a whole second apart.
 static bool bg_anim_playing() { return s_bgPlayStart != 0; }
 
+// HOW LONG TO WAIT when the second matters and a background also wants frames.
+//
+// `aim` is the time until the real second, which is where a ticking hand steps and where its
+// click fires. `need` is the background's frame period. Taking the smaller of the two throws
+// the aim away and leaves the hand landing up to a whole background period after its own
+// sound. Dividing the wait instead gives the background at least its rate and still puts one
+// of those frames on the second.
+static uint32_t aim_period(uint32_t aim, uint32_t need) {
+    if (need < 1 || need >= aim) return aim;
+    const uint32_t k = (aim + need - 1) / need;        // ceil(aim / need)
+    uint32_t p = k ? aim / k : aim;
+    if (p < 20) p = 20;
+    return p;
+}
+
 // A WHOLE NUMBER OF TICKS PER BACKGROUND FRAME, never a fraction.
 //
 // Taking the smaller of the two rates was right about the hand and wrong about the picture:
@@ -2937,7 +2952,28 @@ static void tick_cb(lv_timer_t * /*t*/) {
             const theme_style::Clock::BgAnim &ba = theme_style::clock().bgAnim;
             if (ba.frames > 0 && (ba.loop || bg_anim_playing())) {
                 const uint32_t need = 1000u / (uint32_t)(ba.fps < 1 ? 1 : ba.fps);
-                if (need < aim) aim = need;
+                if (need < aim) {
+                    // DIVIDE THE WAIT, do not truncate it.
+                    //
+                    // Taking the smaller of the two threw the aim away. The line above had
+                    // just worked out how long until the real second, which is where the hand
+                    // steps and where the click fires; replacing it with the background's
+                    // period put the frames on a cadence with no relation to the second at
+                    // all. On a ticking dial the hand then moved on whichever of those frames
+                    // happened to cross the boundary first, so it landed up to a whole
+                    // background period after its own sound. At two frames a second that is
+                    // half a second of daylight between the hand and the click.
+                    //
+                    // Zion, 2026-10-07, having turned the sweep off to save frame rate: "the
+                    // hand and audio don't match in their timing". Turning the sweep OFF is
+                    // what exposed it, because a sweeping dial ticks every 77 ms and lands
+                    // near enough the second either way.
+                    //
+                    // Dividing gives the background at least the rate it asked for AND puts
+                    // one of those frames exactly on the second. Same fix as the looping
+                    // background's own stutter, in the branch that was missed.
+                    aim = aim_period(aim, need);
+                }
             }
             if (aim != s_tickPeriod) { s_tickPeriod = aim; lv_timer_set_period(s_tick, aim); }
         }
@@ -3002,6 +3038,7 @@ float clockview::cacheMinutesAllowed() { return cache_minutes_allowed(); }
 // watchmaker would quote: 8 is 28,800, 4 is 14,400.
 int   clockview::sweepBeat() { return sweep_beat(); }
 float clockview::hourCacheMinutes() { return hour_cache_minutes(); }
+uint32_t clockview::aimPeriod(uint32_t aim, uint32_t need) { return aim_period(aim, need); }
 uint32_t clockview::bgTickPeriod(int fps, uint32_t base, uint32_t &every) {
     return bg_rate((uint32_t)(1000 / (fps < 1 ? 1 : fps)), base, every);
 }

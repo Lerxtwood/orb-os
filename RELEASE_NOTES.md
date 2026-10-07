@@ -18,6 +18,14 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.68
+
+- A ticking second hand moves at the same instant as its own click, on a clock that also has
+  a moving background. The hand could land up to half a second after the sound it was
+  supposed to arrive with. Found by Zion, who heard it the moment he turned the sweep off
+
+---
+
 ## 2.16.67
 
 - A looping background holds every frame for the same length of time. The picture's rate and

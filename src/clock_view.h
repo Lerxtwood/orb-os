@@ -43,6 +43,9 @@ namespace clockview {
     // fault it fixes is invisible in a still: every frame has to be held for the same number
     // of ticks, or the picture judders however even its own geometry is.
     uint32_t  bgTickPeriod(int fps, uint32_t base, uint32_t &every);
+    // And the same question for a TICKING dial, where a frame has to land on the second so
+    // the hand moves with its own click rather than after it.
+    uint32_t  aimPeriod(uint32_t aim, uint32_t need);
     float     hourTipPixelsIn(float minutes);
     // Where the minute hand belongs, in minutes-of-the-hour. Exposed for the self-test:
     // a railway dial has to land on a whole minute at every second of the minute.
