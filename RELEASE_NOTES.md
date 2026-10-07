@@ -18,6 +18,21 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.66
+
+- Animated backgrounds keep animating. Theme art was not being released as it was loaded,
+  so after a while there was no room left and the animation quietly stopped
+- A theme install that finishes now says it finished, instead of reporting itself interrupted
+- An animated background and moving hands can now run at the same time, because the hands are
+  held rather than redrawn from scratch every frame
+- Three faults in the clock's drawing caches that only showed on unusual designs
+- The health page reports where memory has actually gone, which is what made all of the above
+  findable
+
+Almost all of this is the work of Greg Takacs, reviewed and merged by CanadianAvenger.
+
+---
+
 ## 2.16.65
 
 - Ordinary memory traffic moves out of the small internal pool, which is the one everything
