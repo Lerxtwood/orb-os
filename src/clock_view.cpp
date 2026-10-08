@@ -1075,6 +1075,21 @@ static bool layers_usable(float minAng, float hrAng) {
     return dm < 0.35f && dh < 0.35f;
 }
 
+// The pair may replace the sweep's upper layers only when BOTH hands are above
+// seconds and adjacent in the draw order. Otherwise one is already in s_under,
+// or combining them would move a layer across something meant to separate them.
+static bool sweep_layers_usable(const theme_style::Clock &cs) {
+    int hour = -1, minute = -1, second = -1;
+    for (int i = 0; i < cs.orderN; ++i) {
+        if (cs.order[i] == 0) hour = i;
+        if (cs.order[i] == 1) minute = i;
+        if (cs.order[i] == 2) second = i;
+    }
+    return second >= 0 && hour > second && minute > second &&
+           (hour == minute + 1 || minute == hour + 1) &&
+           cs.hand[0].blend == 0 && cs.hand[1].blend == 0;
+}
+
 // The run of dx, within one row, whose source coordinates land inside the sprite.
 //
 // Both rotating blits need this and only one of them had it. blend_custom_hand got the
@@ -2494,18 +2509,22 @@ static void sweep_frame(float secs) {
             // Order is unchanged from what this loop already did. It draws shadow-then-hand
             // per hand, so the second hand is already underneath the minute and hour shadows
             // here; laying the shadow layer and then the hand layer keeps that.
-            const bool layered = layers_tick(above[1], above[0]);
-            if (layered) {
-                if (cs.shadowOn) lay_blit(s_layShadow);
-                lay_blit(s_layHand);
-            }
+            const bool layered = sweep_layers_usable(cs) && layers_tick(above[1], above[0]);
+            bool laidPair = false;
             bool past = false;
             for (int i = 0; i < cs.orderN; ++i) {
                 const int k = cs.order[i];
                 if (k < 0 || k > 4) continue;
                 if (k == 2) { past = true; continue; }
                 if (!past) continue;
-                if (layered && (k == 0 || k == 1)) continue;   // in the layers already
+                if (layered && (k == 0 || k == 1)) {
+                    if (!laidPair) {
+                        if (cs.shadowOn) lay_blit(s_layShadow);
+                        lay_blit(s_layHand);
+                        laidPair = true;
+                    }
+                    continue;
+                }
                 const theme_style::Hand &oh = cs.hand[k];
                 if (!oh.show) continue;
                 if (cs.shadowOn && k <= 2) {
