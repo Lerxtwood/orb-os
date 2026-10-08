@@ -113,18 +113,22 @@ namespace clockview {
     // the minute hand's step, rather than clicking it over in one move.
     bool      stepAffordable(float composeMs);
     // The hand-layer cache's rebuild cadence, for the self-test. A dial that draws one
-    // frame a second must finish a stale layer's rebuild INSIDE that frame: its slices
-    // would land a whole second apart, and the minute hand would sit on the glass in two
-    // visible phases for eight seconds, restarting every ~3.5 s as the layers go stale
-    // again — which is what the Aviator dial at 1 bps showed on 2026-10-08. A dial whose
-    // frames come fast must keep spreading it, because there the stop the slicing removes
-    // is the visible fault it was invented for.
+    // frame a second must spend NOTHING on a stale layer's rebuild in the frame that
+    // notices: the ~470 ms of band work belongs in the dead centre of the second, chewed
+    // through by a helper timer between ticks, while the previous in-tolerance picture
+    // keeps the glass filled. Slicing it across eight of those once-a-second frames put
+    // the minute hand on the glass in two visible phases forever (Aviator at 1 bps,
+    // 2026-10-08); running it whole inside the boundary frame hiccupped the second hand
+    // half a second behind its own click five minutes later. A fast caller — the sweep,
+    // an animated background — still drives its rebuild's bands inline, one per frame.
     //
     // layersTick takes one frame of the upkeep with the spread decided FOR the caller (the
     // real callers ask layers_spreadable()); layersRebuilding says whether a sliced rebuild
-    // is in flight, i.e. whether the hand is currently split across the band boundary;
-    // layersForceStale ages the cache the way the creeping minute hand would.
+    // is in flight; layersForceStale ages the cache the way the creeping minute hand
+    // would; layersPump advances an in-flight rebuild by the band the helper timer would
+    // take, without the test waiting on a timer.
     bool      layersTick(float minAng, float hrAng, bool spread);
     bool      layersRebuilding();
     void      layersForceStale();
+    void      layersPump();
 }

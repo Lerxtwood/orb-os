@@ -901,6 +901,10 @@ static bool  s_layValid  = false;
 static int   s_layBuildY   = -1;      // next row to redo; <0 = not rebuilding
 static float s_layWantMin  = 0.0f;    // angles the in-progress rebuild is for
 static float s_layWantHr   = 0.0f;
+// Who is pushing an in-flight rebuild's bands forward: true = its own frames, inline
+// (the sweep, an animated background — how the slicing was hardware-verified); false =
+// the helper timer below, in the dead centre of the second, off the tick's path.
+static bool  s_laySpread   = false;
 static const int LAY_BAND  = SCREEN_H / 8;   // ~58 rows, so ~60 ms a frame instead of 470
 // A rebuild may only be SLICED while frames actually come fast enough to hide the seam —
 // see layers_spreadable. At or under this per-frame period the bands are tens of
@@ -975,6 +979,7 @@ static void layers_free() {
     if (s_layShadow) { heap_caps_free(s_layShadow); s_layShadow = nullptr; }
     if (s_layHand)   { heap_caps_free(s_layHand);   s_layHand   = nullptr; }
     s_layValid = false;
+    s_layBuildY = -1;   // a half-built layer must not survive its memory
 }
 
 // Both layers, for the minute and hour hands only, in the theme's own draw order.
@@ -1056,57 +1061,87 @@ static bool layers_build_rows(float minAng, float hrAng, int y0, int y1) {
     return true;
 }
 
+// Advance an in-flight rebuild by one band of rows. The unit of work both drivers share.
+static void lay_advance() {
+    if (s_layBuildY < 0) return;
+    if (!s_layShadow || !s_layHand) { s_layBuildY = -1; return; }   // freed mid-rebuild
+    const int upto = s_layBuildY + LAY_BAND - 1;
+    layers_build_rows(s_layWantMin, s_layWantHr, s_layBuildY, upto);
+    s_layBuildY = (upto >= SCREEN_H - 1) ? -1 : s_layBuildY + LAY_BAND;
+    if (s_layBuildY < 0) {                             // done: it is now a picture of those
+        s_layMinAng = s_layWantMin; s_layHrAng = s_layWantHr;
+        s_layValid = true;
+    }
+}
+
+// THE HELPER THAT RENEWS A TICKING DIAL'S HANDS BETWEEN TICKS, NOT DURING ONE.
+//
+// Lives for the life of the process, idle unless a slow caller's rebuild is in flight —
+// then it chews the eight bands on the loop task's idle time, ~60 ms a band at a ~10 ms
+// period, which the second's ~600 ms of dead centre comfortably swallows between two
+// boundary frames. Runs in the same task as the tick itself (both are LVGL timers), so
+// no lock exists between a compose reading the layer and this writing it: one finishes
+// strictly before the other starts.
+static lv_timer_t *s_layHelp = nullptr;
+static void lay_help_cb(lv_timer_t *t) {
+    (void)t;
+    if (s_layBuildY >= 0 && !s_laySpread) lay_advance();
+}
+
 // Keep a rebuild moving, or start one. Call once a frame.
 //
 // Returns whether there is anything worth blitting: after the first build there always is,
-// even mid-rebuild, which is the whole point of slicing it — where slices are affordable.
+// even mid-rebuild — the rows not yet redone still hold the PREVIOUS picture, which the
+// tolerance already deems invisible, and the seam between it and the rows redone at the
+// new angle is the fraction of a pixel the hands travelled while the rebuild ran. That
+// sub-pixel seam is what the sweep has always shown mid-rebuild; it is not the fault.
 //
-// The spread is the caller's to refuse, and the face's own painter does exactly that
-// whenever the dial it is drawing does not sweep: the slices were invented to keep a
-// HALF-SECOND of layer work off a beat that only has a tenth of a second to spare, and on
-// a dial that draws once a second there is no beat to protect. The cost of not refusing
-// was not a slow frame, it was a MINUTE HAND IN TWO PHASES: staleness arrives every ~3.5 s
-// (the minute hand's tip travelling one pixel), a spread rebuild takes eight frames — eight
-// SECONDS at one frame a second — and every frame in between shows the hand's rows above
-// the band line freshly drawn at the new angle and its rows below it still standing at the
-// old one. The rebuild spent its whole life chasing its own staleness and never once caught
-// it. Greg, 2026-10-08, on the Aviator dial at 1 bps. On that cadence the whole layer goes
-// in the frame that noticed, the same way the FIRST build always did; a full compose
-// already spends a third of its second there, and nothing reaches the panel until it is
-// whole, so the half-drawn hand is never on the glass at all.
+// The spread is the caller's to decide, and it decides WHO PUSHES THE BANDS. A caller
+// whose frames come every few tens of milliseconds (the sweep, an animated background)
+// drives its rebuild inline, one band per frame — that is the arrangement the 2.16.71
+// hardware run verified, and it stays byte-identical. A caller drawing once a second
+// hands the bands to the helper above and pays NOTHING in the frame that noticed.
+//
+// What this replaces, in order, both Greg's reports of the same Aviator dial at 1 bps:
+//
+// The layers used to slice every rebuild unconditionally. On a dial that draws once a
+// second the eight bands took eight seconds, staleness arrived again at 3.5, and the
+// minute hand sat on the glass in two visible phases perpetually chasing its own
+// staleness — "the minute hand redraws in two phases every few seconds".
+//
+// The answer in 0d6c7a2 was to do the whole 470 ms renewal inside the frame that
+// noticed. The two phases went away; the second hand's step went with them — that
+// boundary frame came back half a second late, its move appearing while the click had
+// already sounded, then catching up. "The second hand hiccups and does not move and has
+// to catch up." The renewal was never too big for the second; it was too big for the
+// FRAME, and the frame is where the second hand lives.
 static bool layers_tick(float minAng, float hrAng, bool spread) {
     if (!s_layShadow || !s_layHand) {
         if (!layers_build(minAng, hrAng)) return false;   // allocates, or gives up for good
         s_layMinAng = minAng; s_layHrAng = hrAng; s_layValid = true; s_layBuildY = -1;
         return true;
     }
-    if (s_layBuildY >= 0) {                                // a rebuild in flight: one slice...
-        const int upto = spread ? s_layBuildY + LAY_BAND - 1 : SCREEN_H - 1;   // ...or all of it
-        layers_build_rows(s_layWantMin, s_layWantHr, s_layBuildY, upto);
-        s_layBuildY = (upto >= SCREEN_H - 1) ? -1 : s_layBuildY + LAY_BAND;
-        if (s_layBuildY < 0) {                             // done: it is now a picture of those
-            s_layMinAng = s_layWantMin; s_layHrAng = s_layWantHr;
-            s_layValid = true;
-        }
-        return s_layValid;
+    if (s_layBuildY >= 0) {                        // a rebuild in flight...
+        if (spread && s_laySpread) lay_advance();  // ...a fast caller drives its own bands;
+        else if (!spread) s_laySpread = false;     // a cadence that turned slow mid-rebuild
+                                                   // hands the rest to the helper rather
+                                                   // than stall its next boundary frame
+        return s_layValid;                         // the previous picture is blitable
     }
-    if (!layers_usable(minAng, hrAng)) {                   // gone stale: start...
-        if (spread) {                                      // ...slicing, where the frames hide
-            s_layWantMin = minAng; s_layWantHr = hrAng;    // the seam, or finishing it HERE,
-            s_layBuildY = 0;                               // where nobody can see it forming.
-        } else {
-            if (!layers_build(minAng, hrAng)) return false;
-            s_layMinAng = minAng; s_layHrAng = hrAng; s_layValid = true; s_layBuildY = -1;
-        }
+    if (!layers_usable(minAng, hrAng)) {           // gone stale: slice it...
+        s_layWantMin = minAng; s_layWantHr = hrAng;
+        s_layBuildY = 0;
+        s_laySpread = spread;                      // ...and record who is driving
     }
     return s_layValid;
 }
 
-// May a rebuild be spread over frames at all right now? True only where the frames come
+// May a rebuild be driven by the caller's own frames? True only where those frames come
 // fast enough that the seam between done rows and not-yet rows lasts milliseconds: the
 // sweep, which is what slicing was built for, and a ticking dial whose animated background
-// is driving the tick well under a second. A tick aiming at the plain second is the one
-// cadence on which a slice is not a saving but the artefact — see layers_tick.
+// is driving the tick well under a second. Below that, the caller still gets a sliced
+// rebuild — driven by the helper between ticks instead — because a tick callback is the
+// one place on the device that has nothing to spare: see layers_tick.
 static bool layers_spreadable() {
     if (sweep_possible()) return true;
     return s_tickPeriod > 0 && s_tickPeriod < LAY_SPREAD_MAX_MS;
@@ -2707,10 +2742,10 @@ static void sweep_frame(float secs) {
             // here; laying the shadow layer and then the hand layer keeps that.
             // A sweep frame is by definition a fast frame — the beat it is stepping at is
             // at least a beat a second, and the aim will not schedule one any slower than
-            // that — so the slicing this asks for is always the slicing it was designed
-            // for. The one-minute move that lands here instead of the in-place refresh
-            // gets the whole rebuild in one go all the same, because a sweep frame costs
-            // tens of milliseconds and eight bands of them is still under a second.
+            // that — so the rebuild this starts is driven INLINE, a band per sweep frame:
+            // eight bands across eight tens-of-milliseconds frames, the seam between them
+            // the sub-pixel fraction of a degree the tolerance already covers. This is
+            // the arrangement the 2.16.71 hardware run verified, unchanged.
             const bool layered = layers_tick(above[1], above[0], true);
             if (layered) {
                 if (cs.shadowOn) lay_blit(s_layShadow);
@@ -3556,10 +3591,16 @@ bool  clockview::stepAffordable(float composeMs) { return step_affordable(compos
 // rows above the band boundary moved and rows below it have not — and layersForceStale
 // ages the cache the way a creeping minute hand does, one pixel at the tip, without the
 // test having to stand there for three and a half seconds waiting for the angle to drift
-// past the tolerance on its own.
+// past the tolerance on its own. (A 30-degree nudge, not a sentinel: an absurd angle would
+// be folded back inside the tolerance by the same 360-degree wrap that keeps 359.9 and 0.1
+// friends.) layersPump advances an in-flight rebuild by the band the helper timer would
+// take, without the test waiting on a timer that fires on the LVGL tick; it exists for the
+// same reason the helper does — the boundary frame that notices a stale layer must spend
+// nothing on it beyond setting the rebuild up.
 bool  clockview::layersTick(float minAng, float hrAng, bool spread) { return layers_tick(minAng, hrAng, spread); }
 bool  clockview::layersRebuilding() { return s_layBuildY >= 0; }
-void  clockview::layersForceStale() { s_layValid = false; }
+void  clockview::layersForceStale() { s_layMinAng += 30.0f; s_layHrAng += 30.0f; }
+void  clockview::layersPump() { lay_advance(); }
 
 // The sweep's beat arithmetic for the self-test — PURE, and the whole point is that it
 // can be: the wait given a fire phase against the grid, the milliseconds the wake has
@@ -3755,6 +3796,11 @@ void clockview::init() {
     // would play the set twice a second, half a beat apart, which would sound exactly like
     // the stutter it is here to remove.
     if (!s_beat) s_beat = lv_timer_create(beat_cb, 20, nullptr);
+    // Same guard, same reason, for the layer-renewal helper: it exists so a dial that
+    // draws once a second can renew its cached hands in the dead centre of the second
+    // instead of inside the boundary frame that has to move the second hand. Idle
+    // (returning at once) unless a slow caller's rebuild is in flight.
+    if (!s_layHelp) s_layHelp = lv_timer_create(lay_help_cb, 10, nullptr);
     retime();
 }
 

@@ -1461,33 +1461,54 @@ int main(int argc, char **argv) {
                        " (%d early, %d overshooting)\n", !early && !far ? "PASS" : "FAIL", early, far);
             }
 
-            // A MINUTE HAND ONLY REDRAWN ONCE A SECOND IS NEVER SEEN HALF-REDRAWN.
+            // THE SECOND HAND NEVER WAITS FOR A RENEWING HAND LAYER.
             //
-            // The hand layers slice a rebuild across frames to keep a half-second of layer
-            // work off the sweep's beat. On a non-sweeping dial at one beat a second — the
-            // Aviator theme — the frames come once a second, the eight slices therefore
-            // took eight of them, and the layers went stale again every 3.5 s: the dial sat
-            // showing the minute hand with its upper rows at the new angle and its lower
-            // rows at the old one, the split walking down the screen a band a second, for
-            // ever. Greg, 2026-10-08: "the minute hand redraws in two phases every few
-            // seconds". On a cadence that slow the rebuild has to land whole in the frame
-            // that noticed it; on a fast one it must keep being sliced, because there the
-            // half-second stop is the fault slicing exists to prevent.
+            // The hand layers cache the minute and hour hands, and the renewal costs
+            // ~470 ms of blending. WHERE that lands is the entire design question, and
+            // two wrong answers came from the same dial: sliced unconditionally, the
+            // eight bands of a once-a-second Aviator took eight seconds, staleness
+            // arrived again at 3.5, and the minute hand sat on the glass in two visible
+            // phases chasing its own tail — "the minute hand redraws in two phases every
+            // few seconds" (Greg, 2026-10-08). Run whole inside the frame that noticed —
+            // the 0d6c7a2 answer — and that boundary frame came back half a second late:
+            // "the second hand hiccups and does not move and has to catch up". The
+            // renewal belongs NEITHER in the boundary frame NOR across eight of them:
+            // a slow dial starts the slice and a helper chews it on the loop task's idle
+            // time, the previous in-tolerance picture keeping the glass filled meanwhile.
             {
-                bool whole = true, sliced = true, rescued = true;
-                clockview::layersTick(40.0f, 220.0f, false);        // build outright to start
-                if (clockview::layersRebuilding()) whole = false;   // a first build is never spread
+                bool old_shown = true, started = true, helper_done = true;
+                bool inline_fast = true, turned_slow = true;
+                clockview::layersTick(40.0f, 220.0f, false);        // get the layers built
+                for (int i = 0; i < 32 && clockview::layersRebuilding(); ++i)
+                    clockview::layersPump();
                 clockview::layersForceStale();
-                clockview::layersTick(40.4f, 220.0f, false);        // stale, once-a-second dial
-                if (clockview::layersRebuilding()) whole = false;   // must ALREADY be finished
-                clockview::layersForceStale();
-                clockview::layersTick(40.8f, 220.1f, true);         // stale, frames coming fast
-                if (!clockview::layersRebuilding()) sliced = false; // must be in flight, not a stop
-                clockview::layersTick(40.8f, 220.1f, false);        // and the cadence turns slow
-                if (clockview::layersRebuilding()) rescued = false; // the rest must land THIS frame
-                printf("[selftest] a once-a-second dial finishes its hand layers in one frame: %s"
-                       " (fast dials still slice: %s, a slow cadence mid-rebuild still lands: %s)\n",
-                       whole && rescued ? "PASS" : "FAIL", sliced ? "yes" : "NO", rescued ? "yes" : "NO");
+                // The frame that notices pays for setting the rebuild up and nothing
+                // else: it still gets a whole layer to blit — the previous one.
+                if (!clockview::layersTick(40.4f, 220.0f, false)) old_shown = false;
+                if (!clockview::layersRebuilding()) started = false;   // started, NOT stalled
+                for (int i = 0; i < 32 && clockview::layersRebuilding(); ++i)
+                    clockview::layersPump();                     // the helper chews it
+                if (clockview::layersRebuilding()) helper_done = false;   // in a few bands
+                clockview::layersForceStale();                   // the sweep still drives
+                clockview::layersTick(41.0f, 220.2f, true);                // its OWN bands,
+                for (int i = 0; i < 32 && clockview::layersRebuilding(); ++i)
+                    clockview::layersTick(41.0f, 220.2f, true);            // one a frame
+                if (clockview::layersRebuilding()) inline_fast = false;
+                clockview::layersForceStale();                   // and a cadence that
+                clockview::layersTick(41.4f, 220.3f, true);                // turns slow
+                clockview::layersTick(41.4f, 220.3f, false);               // mid-rebuild
+                for (int i = 0; i < 32 && clockview::layersRebuilding(); ++i)
+                    clockview::layersPump();                               // hands off
+                if (clockview::layersRebuilding()) turned_slow = false;    // without a stall
+                printf("[selftest] a once-a-second dial renews its hand layers off the "
+                       "tick's path: %s (previous picture stays on the glass: %s, started "
+                       "not stalled: %s, the helper finishes it: %s, the sweep still drives "
+                       "its own: %s, a cadence turning slow mid-rebuild lands off-path: %s)\n",
+                       old_shown && started && helper_done && inline_fast && turned_slow
+                           ? "PASS" : "FAIL",
+                       old_shown ? "yes" : "NO", started ? "yes" : "NO",
+                       helper_done ? "yes" : "NO", inline_fast ? "yes" : "NO",
+                       turned_slow ? "yes" : "NO");
             }
 
             // A TICKING HAND LANDS WITH ITS OWN CLICK, even while a background plays.

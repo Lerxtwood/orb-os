@@ -30,10 +30,13 @@ Rules for a section, all of them learned from what reads badly on that card:
   keeps it like every other frame. /health gained sweep_jitter_ms and a freeze count,
   so the next argument about this is settled with measurements
 - The minute hand on a ticking (non-sweeping) clock no longer appears in two pieces every
-  few seconds. Its cached picture renewed itself in eight slices spread over eight frames
-  — a sweep's answer, wrong for a dial that draws once a second, where the half-renewed
-  hand sat on the glass and the renewal never finished before it went stale again. The
-  whole renewal now lands in one go between ticks; sweeping and animated dials are unchanged
+  few seconds, and no longer hiccups the second hand when it moves. Its cached picture
+  renewed itself in eight slices spread over eight frames — a sweep's answer, wrong for a
+  dial that draws once a second, where the half-renewed hand sat on the glass and the
+  renewal never finished before it went stale again; doing it all in the frame that
+  noticed instead held the second hand's step half a second behind its own click. The
+  renewal now happens whole between ticks, on the loop's idle time, while the previous
+  picture keeps the glass filled; sweeping and animated dials are unchanged
 - Found in Greg's 2026-10-07 report of the sweeping second hand and his 2026-10-08 report
   of the Aviator dial's two-phase minute hand, and the fix that four earlier diagnoses
   could not reach
