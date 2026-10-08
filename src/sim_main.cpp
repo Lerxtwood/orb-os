@@ -1461,6 +1461,35 @@ int main(int argc, char **argv) {
                        " (%d early, %d overshooting)\n", !early && !far ? "PASS" : "FAIL", early, far);
             }
 
+            // A MINUTE HAND ONLY REDRAWN ONCE A SECOND IS NEVER SEEN HALF-REDRAWN.
+            //
+            // The hand layers slice a rebuild across frames to keep a half-second of layer
+            // work off the sweep's beat. On a non-sweeping dial at one beat a second — the
+            // Aviator theme — the frames come once a second, the eight slices therefore
+            // took eight of them, and the layers went stale again every 3.5 s: the dial sat
+            // showing the minute hand with its upper rows at the new angle and its lower
+            // rows at the old one, the split walking down the screen a band a second, for
+            // ever. Greg, 2026-10-08: "the minute hand redraws in two phases every few
+            // seconds". On a cadence that slow the rebuild has to land whole in the frame
+            // that noticed it; on a fast one it must keep being sliced, because there the
+            // half-second stop is the fault slicing exists to prevent.
+            {
+                bool whole = true, sliced = true, rescued = true;
+                clockview::layersTick(40.0f, 220.0f, false);        // build outright to start
+                if (clockview::layersRebuilding()) whole = false;   // a first build is never spread
+                clockview::layersForceStale();
+                clockview::layersTick(40.4f, 220.0f, false);        // stale, once-a-second dial
+                if (clockview::layersRebuilding()) whole = false;   // must ALREADY be finished
+                clockview::layersForceStale();
+                clockview::layersTick(40.8f, 220.1f, true);         // stale, frames coming fast
+                if (!clockview::layersRebuilding()) sliced = false; // must be in flight, not a stop
+                clockview::layersTick(40.8f, 220.1f, false);        // and the cadence turns slow
+                if (clockview::layersRebuilding()) rescued = false; // the rest must land THIS frame
+                printf("[selftest] a once-a-second dial finishes its hand layers in one frame: %s"
+                       " (fast dials still slice: %s, a slow cadence mid-rebuild still lands: %s)\n",
+                       whole && rescued ? "PASS" : "FAIL", sliced ? "yes" : "NO", rescued ? "yes" : "NO");
+            }
+
             // A TICKING HAND LANDS WITH ITS OWN CLICK, even while a background plays.
             //
             // The click is scheduled against the real second. The hand moves when the drawing

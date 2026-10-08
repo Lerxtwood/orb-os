@@ -902,6 +902,18 @@ static int   s_layBuildY   = -1;      // next row to redo; <0 = not rebuilding
 static float s_layWantMin  = 0.0f;    // angles the in-progress rebuild is for
 static float s_layWantHr   = 0.0f;
 static const int LAY_BAND  = SCREEN_H / 8;   // ~58 rows, so ~60 ms a frame instead of 470
+// A rebuild may only be SLICED while frames actually come fast enough to hide the seam —
+// see layers_spreadable. At or under this per-frame period the bands are tens of
+// milliseconds apart and the seam is the tolerance the layers already allow; above it, a
+// band lands once a SECOND, and eight of them put the minute hand on the glass in two
+// visible phases for eight seconds, resetting every ~3.5 s as the layers go stale again.
+// Greg, 2026-10-08, Aviator theme at 1 bps: the slicing built for the sweep, running on a
+// dial that has no sweep to protect.
+static const uint32_t LAY_SPREAD_MAX_MS = 400;
+// Where the tick is currently aimed. Defined up here because the layer cache's rebuild
+// cadence reads it; the sweep's own use of it is below, next to the beat accounting.
+static uint32_t s_tickPeriod = 0;
+static bool sweep_possible();                 // defined with the sweep's rules, far below
 // Set for one compose by the caller that knows the hands have not moved. compose_custom
 // then blits each layer at the exact point in the sequence its contents belong, instead of
 // running the four bilinear sprite passes. Anything else about the frame is unchanged.
@@ -1047,28 +1059,59 @@ static bool layers_build_rows(float minAng, float hrAng, int y0, int y1) {
 // Keep a rebuild moving, or start one. Call once a frame.
 //
 // Returns whether there is anything worth blitting: after the first build there always is,
-// even mid-rebuild, which is the whole point of slicing it.
-static bool layers_tick(float minAng, float hrAng) {
+// even mid-rebuild, which is the whole point of slicing it — where slices are affordable.
+//
+// The spread is the caller's to refuse, and the face's own painter does exactly that
+// whenever the dial it is drawing does not sweep: the slices were invented to keep a
+// HALF-SECOND of layer work off a beat that only has a tenth of a second to spare, and on
+// a dial that draws once a second there is no beat to protect. The cost of not refusing
+// was not a slow frame, it was a MINUTE HAND IN TWO PHASES: staleness arrives every ~3.5 s
+// (the minute hand's tip travelling one pixel), a spread rebuild takes eight frames — eight
+// SECONDS at one frame a second — and every frame in between shows the hand's rows above
+// the band line freshly drawn at the new angle and its rows below it still standing at the
+// old one. The rebuild spent its whole life chasing its own staleness and never once caught
+// it. Greg, 2026-10-08, on the Aviator dial at 1 bps. On that cadence the whole layer goes
+// in the frame that noticed, the same way the FIRST build always did; a full compose
+// already spends a third of its second there, and nothing reaches the panel until it is
+// whole, so the half-drawn hand is never on the glass at all.
+static bool layers_tick(float minAng, float hrAng, bool spread) {
     if (!s_layShadow || !s_layHand) {
         if (!layers_build(minAng, hrAng)) return false;   // allocates, or gives up for good
         s_layMinAng = minAng; s_layHrAng = hrAng; s_layValid = true; s_layBuildY = -1;
         return true;
     }
-    if (s_layBuildY >= 0) {                                // a slice of the rebuild in flight
-        layers_build_rows(s_layWantMin, s_layWantHr, s_layBuildY, s_layBuildY + LAY_BAND - 1);
-        s_layBuildY += LAY_BAND;
-        if (s_layBuildY >= SCREEN_H) {                     // done: it is now a picture of those
+    if (s_layBuildY >= 0) {                                // a rebuild in flight: one slice...
+        const int upto = spread ? s_layBuildY + LAY_BAND - 1 : SCREEN_H - 1;   // ...or all of it
+        layers_build_rows(s_layWantMin, s_layWantHr, s_layBuildY, upto);
+        s_layBuildY = (upto >= SCREEN_H - 1) ? -1 : s_layBuildY + LAY_BAND;
+        if (s_layBuildY < 0) {                             // done: it is now a picture of those
             s_layMinAng = s_layWantMin; s_layHrAng = s_layWantHr;
-            s_layValid = true; s_layBuildY = -1;
+            s_layValid = true;
         }
         return s_layValid;
     }
-    if (!layers_usable(minAng, hrAng)) {                   // gone stale: start slicing
-        s_layWantMin = minAng; s_layWantHr = hrAng;
-        s_layBuildY = 0;
+    if (!layers_usable(minAng, hrAng)) {                   // gone stale: start...
+        if (spread) {                                      // ...slicing, where the frames hide
+            s_layWantMin = minAng; s_layWantHr = hrAng;    // the seam, or finishing it HERE,
+            s_layBuildY = 0;                               // where nobody can see it forming.
+        } else {
+            if (!layers_build(minAng, hrAng)) return false;
+            s_layMinAng = minAng; s_layHrAng = hrAng; s_layValid = true; s_layBuildY = -1;
+        }
     }
     return s_layValid;
 }
+
+// May a rebuild be spread over frames at all right now? True only where the frames come
+// fast enough that the seam between done rows and not-yet rows lasts milliseconds: the
+// sweep, which is what slicing was built for, and a ticking dial whose animated background
+// is driving the tick well under a second. A tick aiming at the plain second is the one
+// cadence on which a slice is not a saving but the artefact — see layers_tick.
+static bool layers_spreadable() {
+    if (sweep_possible()) return true;
+    return s_tickPeriod > 0 && s_tickPeriod < LAY_SPREAD_MAX_MS;
+}
+
 
 // Are the layers still a picture of where the hands are now?
 //
@@ -1731,7 +1774,7 @@ static void draw_custom(const struct tm *ti) {
     // turned far enough to matter, this falls through to exactly the compose it always did.
     const float minAng = minute_angle_now(ti);
     const float hrAng  = hour_angle_now(ti);
-    s_layUse = layers_tick(minAng, hrAng);
+    s_layUse = layers_tick(minAng, hrAng, layers_spreadable());
 #if defined(ESP_PLATFORM)
     const uint32_t t0 = micros();
     compose_custom(ti, -1, true);
@@ -1787,7 +1830,7 @@ static lv_timer_t *s_beat = nullptr;
 // A rolling average of what one sweep frame costs, in milliseconds, measured end to end
 // including everything LVGL then does with it.
 static float s_sweepMs = 45.0f;
-static uint32_t s_tickPeriod = 0;
+// s_tickPeriod moved up with the layer cache's rebuild cadence, which reads it.
 
 // CADENCE ACCOUNTING, added 2.16.72 because the four diagnoses before this one were
 // argued and this one is measured. Between the two wake-ups that draw the hand we record
@@ -2662,7 +2705,13 @@ static void sweep_frame(float secs) {
             // Order is unchanged from what this loop already did. It draws shadow-then-hand
             // per hand, so the second hand is already underneath the minute and hour shadows
             // here; laying the shadow layer and then the hand layer keeps that.
-            const bool layered = layers_tick(above[1], above[0]);
+            // A sweep frame is by definition a fast frame — the beat it is stepping at is
+            // at least a beat a second, and the aim will not schedule one any slower than
+            // that — so the slicing this asks for is always the slicing it was designed
+            // for. The one-minute move that lands here instead of the in-place refresh
+            // gets the whole rebuild in one go all the same, because a sweep frame costs
+            // tens of milliseconds and eight bands of them is still under a second.
+            const bool layered = layers_tick(above[1], above[0], true);
             if (layered) {
                 if (cs.shadowOn) lay_blit(s_layShadow);
                 lay_blit(s_layHand);
@@ -3500,6 +3549,17 @@ long  clockview::beatSlot(long sec, long usec, int beat) {
     return sec * b + (usec * b) / 1000000L;
 }
 bool  clockview::stepAffordable(float composeMs) { return step_affordable(composeMs); }
+
+// The hand-layer cache's rebuild cadence, for the self-test. layersTick takes one frame
+// of the upkeep the real callers take; layersRebuilding answers the question the bug
+// report asks — is the minute hand right now a picture of two different angles at once,
+// rows above the band boundary moved and rows below it have not — and layersForceStale
+// ages the cache the way a creeping minute hand does, one pixel at the tip, without the
+// test having to stand there for three and a half seconds waiting for the angle to drift
+// past the tolerance on its own.
+bool  clockview::layersTick(float minAng, float hrAng, bool spread) { return layers_tick(minAng, hrAng, spread); }
+bool  clockview::layersRebuilding() { return s_layBuildY >= 0; }
+void  clockview::layersForceStale() { s_layValid = false; }
 
 // The sweep's beat arithmetic for the self-test — PURE, and the whole point is that it
 // can be: the wait given a fire phase against the grid, the milliseconds the wake has

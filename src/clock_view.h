@@ -112,4 +112,19 @@ namespace clockview {
     // Whether a design whose full compose costs this many milliseconds can afford to animate
     // the minute hand's step, rather than clicking it over in one move.
     bool      stepAffordable(float composeMs);
+    // The hand-layer cache's rebuild cadence, for the self-test. A dial that draws one
+    // frame a second must finish a stale layer's rebuild INSIDE that frame: its slices
+    // would land a whole second apart, and the minute hand would sit on the glass in two
+    // visible phases for eight seconds, restarting every ~3.5 s as the layers go stale
+    // again — which is what the Aviator dial at 1 bps showed on 2026-10-08. A dial whose
+    // frames come fast must keep spreading it, because there the stop the slicing removes
+    // is the visible fault it was invented for.
+    //
+    // layersTick takes one frame of the upkeep with the spread decided FOR the caller (the
+    // real callers ask layers_spreadable()); layersRebuilding says whether a sliced rebuild
+    // is in flight, i.e. whether the hand is currently split across the band boundary;
+    // layersForceStale ages the cache the way the creeping minute hand would.
+    bool      layersTick(float minAng, float hrAng, bool spread);
+    bool      layersRebuilding();
+    void      layersForceStale();
 }
