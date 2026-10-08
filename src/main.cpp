@@ -3423,6 +3423,13 @@ void setup() {
         char b[1024];
         float cFace = 0, cPlate = 0, cText = 0, cHands = 0;
         clockview::composeCost(cFace, cPlate, cText, cHands);
+        // The CADENCE of the sweeping hand, as measured between wakes rather than as the
+        // timer intended them. Added with 2.16.72's fix because the four diagnoses that
+        // preceded it were all argued from what the code said rather than from what the
+        // hand did, and this is what tells them apart next time: sweep_early must be 0
+        // (a wake before its boundary — the freeze-and-snap signature), and the jitter
+        // pair separates an even slow beat from an uneven fast one, which fps cannot.
+        clockview::Cadence cad; clockview::cadence(cad);
         const int n = snprintf(b, sizeof(b),
                  // slug is the permanent folder id, theme is the display name. Reporting
                  // only the slug is what made "Modern" and "the-office" look unrelated.
@@ -3470,7 +3477,10 @@ void setup() {
                  "\"bg_fps\":%d,\"bg_loop\":%s,\"bg_every_s\":%d,"
                  "\"alloc_blocks\":%u,\"free_blocks\":%u,"
                  "\"lv_int\":%u,\"lv_allocs\":%u,\"lv_peak_int\":%u,"
-                 "\"compose_ms\":%d,\"plate_ms\":%d,\"text_ms\":%d,\"hands_ms\":%d,\"rest_ms\":%d,"
+                 "\"compose_ms\":%d,\"plate_ms\":%d,\"text_ms\":%d,\"hands_ms\":%d,\"rest_ms\":%d,\""
+                 "sweep_wakes\":%u,\"sweep_jitter_ms\":%u,\"sweep_jitter_max_ms\":%u,"
+                 "\"sweep_early\":%u,\"sweep_late\":%u,\"sweep_dup\":%u,\"sweep_skip\":%u,"
+                 "\"sweep_beat\":%d,\"sweep_frame_ms\":%d,"
                  "\"wifi_rssi\":%d,\"boot_reason\":\"%s\"}",
                  FW_VERSION, theme_select::activeSlug(), theme_style::themeLabel(),
                  (unsigned long)CUSTOM_WELD_HASH,
@@ -3499,6 +3509,9 @@ void setup() {
                  (unsigned)orb_lv_peak_int_bytes,
                  (int)(cFace + 0.5f), (int)(cPlate + 0.5f), (int)(cText + 0.5f),
                  (int)(cHands + 0.5f), (int)(cFace - cPlate - cText - cHands + 0.5f),
+                 cad.wakes, cad.jitAvgMs, cad.jitMaxMs,
+                 cad.early, cad.late, cad.dup, cad.skip,
+                 cad.beat, (int)(cad.frameMs + 0.5f),
                  (int)WiFi.RSSI(),
                  // Was three cases and "other", which reported a USB-triggered reset
                  // and a panic as the same word. diag_log.cpp owns the full mapping; use

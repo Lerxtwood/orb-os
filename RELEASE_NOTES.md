@@ -18,6 +18,22 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.72
+
+- The second hand on a sweeping clock no longer jerks its way around the dial. Its
+  wake-up was timed from when the previous frame FINISHED rather than when it began, so
+  every frame arrived early by the cost of drawing it, and every expensive frame — a
+  background slice, the minute hand's creep — pushed the next few beats out of step.
+  The wait is now measured from the wake itself and rounded up, a beat is only ever
+  given up whole, the hand's own rate stops flapping between 28,800 and 14,400 bph
+  mid-sweep, and the minute-hand refresh that had been stepping off the beat grid now
+  keeps it like every other frame. /health gained sweep_jitter_ms and a freeze count,
+  so the next argument about this is settled with measurements
+- Found in Greg's 2026-10-07 report of the sweeping second hand, and the fix that four
+  earlier diagnoses could not reach
+
+---
+
 ## 2.16.70
 
 - A ticking second hand moves with its own click instead of a second behind it. The wait for

@@ -92,6 +92,23 @@ namespace clockview {
     // How long the tick's own timer waits, from a given point in the second. Exposed because
     // the whole value of that timer is that it lands on the second and nothing else.
     uint32_t  beatAim(long usec);
+    // The SWEEP's beat arithmetic, for the self-test. Milliseconds from a wake's fire
+    // instant until the next one, given how far past a beat boundary the wake fired
+    // (intoUs), what it has spent so far (workedMs), and the beat it is stepping at.
+    // Three rules the 2.16.71 version broke, all checkable without a clock: the wake
+    // never lands before its work finished, never before a beat boundary, and never a
+    // whole beat later than the first boundary its work clears.
+    uint32_t  beatWait(long intoUs, long workedMs, int beat);
+    // Cadence accounting since boot, for /health: what the interval between drawn
+    // frames actually did, not what the timer intended. frameMs is the rolling cost
+    // of one, beat the latched rate it is stepping at.
+    struct Cadence {
+        uint32_t wakes, early, late, dup, skip;
+        uint32_t jitAvgMs, jitMaxMs;
+        int      beat;
+        float    frameMs;
+    };
+    void      cadence(Cadence &out);
     // Whether a design whose full compose costs this many milliseconds can afford to animate
     // the minute hand's step, rather than clicking it over in one move.
     bool      stepAffordable(float composeMs);
