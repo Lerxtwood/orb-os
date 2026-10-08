@@ -29,6 +29,34 @@ namespace theme_audio {
 // becomes active, on the same path that applies the rest of its settings.
 void load();
 
+// The clock's own tick, as a set of recordings played IN ORDER.
+//
+// A theme ships several takes of one real click and the Orb plays them in the order they were
+// given, looping. Six takes is a six second loop.
+//
+// This was a shuffle bag first, on the argument that any fixed cycle is a loop and the ear
+// finds a six second one. Zion recorded six consecutive seconds off a real clock, listened to
+// them, and chose to keep that exact sequence: the takes are not interchangeable samples, they
+// are one continuous passage of a real mechanism, and shuffling them threw away the ordering
+// the mechanism itself produced. His call, and the recordings are the argument for it.
+//
+// Same format as every other sound here: raw PCM, 16 kHz, 16-bit signed, stereo interleaved.
+// At 64,000 bytes a second a 300 ms click is 19.2 KB, so a set of six costs about 115 KB and
+// is held in memory like the winding tick rather than streamed like a chime.
+constexpr int TICK_SLOTS_MAX = 8;
+
+// How many takes the worn theme actually shipped. Zero means it does not tick, which is every
+// theme written before this one.
+int tickCount();
+
+// The next click to play, taking them in order and looping. Null when the theme ships none.
+// Advances the cursor, so call it once per tick and not for a preview.
+const uint8_t *nextTick(size_t &bytes);
+
+// Simulator only: the sequence that WOULD be played for n clips, without needing any audio
+// loaded. Checked rather than asserted in a comment.
+void testBag(int n, uint8_t *out, int draws);
+
 // Null when this theme ships no winding sound, which is the normal case.
 //
 // The chime is deliberately NOT here. It belongs to the device rather than to the worn theme

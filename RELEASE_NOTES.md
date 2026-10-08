@@ -18,6 +18,291 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.16.70
+
+- A ticking second hand moves with its own click instead of a second behind it. The wait for
+  the next second was rounded down, so the hand woke a fraction early, drew the second that
+  had not arrived yet, and then sat out the one it missed. Found by Zion, who kept saying the
+  sound and the hand did not match while I kept looking somewhere else
+
+---
+
+## 2.16.69
+
+- The health page now says what a dial costs to draw, split into the background picture, the
+  text, the hands and the glass. A slow clock could only be diagnosed over a serial cable
+  before this, so everybody who reported one was asked to describe it in words instead
+
+---
+
+## 2.16.68
+
+- A ticking second hand moves at the same instant as its own click, on a clock that also has
+  a moving background. The hand could land up to half a second after the sound it was
+  supposed to arrive with. Found by Zion, who heard it the moment he turned the sweep off
+
+---
+
+## 2.16.67
+
+- A looping background holds every frame for the same length of time. The picture's rate and
+  the dial's drawing rate were unrelated numbers, so one frame stayed up for half as long as
+  the next, for ever, however even the animation itself was. Found by Zion on a gear whose own
+  frames are identical to a tenth of a percent
+
+---
+
+## 2.16.66
+
+- Animated backgrounds keep animating. Theme art was not being released as it was loaded,
+  so after a while there was no room left and the animation quietly stopped
+- A theme install that finishes now says it finished, instead of reporting itself interrupted
+- An animated background and moving hands can now run at the same time, because the hands are
+  held rather than redrawn from scratch every frame
+- Three faults in the clock's drawing caches that only showed on unusual designs
+- The health page reports where memory has actually gone, which is what made all of the above
+  findable
+
+Almost all of this is the work of Greg Takacs, reviewed and merged by CanadianAvenger.
+
+---
+
+## 2.16.65
+
+- Ordinary memory traffic moves out of the small internal pool, which is the one everything
+  else fails from when it runs short. This is the change behind the theme sends that stop
+  part way, the install page that will not load, and the feeds that go quiet after a long
+  uptime. Diagnosed by Greg Takacs, measured and fixed first by Techtobi83
+
+---
+
+## 2.16.64
+
+- The hour hand creeps again on a clock with a sweeping second hand. Since 2.16.56 it was
+  being redrawn once an hour, so it stood still and then jumped a whole division instead of
+  moving with the minutes. Found and diagnosed by wizard.oz
+- The release page no longer tells you to update over WiFi at an address that is not there,
+  and it now carries what actually changed in the version instead of only how to flash it.
+  Both raised by wizard.oz as well
+
+---
+
+## 2.16.63
+
+- The Flight Tracker gives up on an address that has stopped answering, instead of trying it
+  for as long as the Orb stays switched on. Until now a power cycle was the only thing that
+  cleared one, which is what people kept finding
+
+---
+
+## 2.16.62
+
+- The Flight Tracker stops losing polls to an address that was never real. A name lookup that
+  failed could still report success and hand back 0.0.0.0, and that was kept and tried for the
+  rest of the session, which is a good part of why "adsb.lol is not answering" came up as often
+  as it did. Found by Techtobi83
+- The weather radar, the weather map and the cloud imagery each stop building a TLS client they
+  never use, which was taking internal memory away from the download it was meant to help.
+  Also Techtobi83
+- And a download that comes back empty now says so, with how much memory there was at the time,
+  instead of failing in silence
+
+---
+
+## 2.16.61
+
+- An install that gets cut off no longer leaves the Orb stuck. It used to answer "install in
+  progress" to sync, to handover and to deleting a theme, for as long as it stayed switched
+  on, so the next sync could never get anything onto it
+- And it will not boot wearing a theme that is only half installed, which showed as the hands
+  of a theme with nothing behind them. A theme being replaced now stops counting as installed
+  until the last file of it has arrived
+
+---
+
+## 2.16.60
+
+- A sweeping clock no longer leaves a band of the dial at the wrong brightness. Each time
+  the minute hand crept, its own area lost the glass over it and anything the design draws
+  above the second hand, and did not get them back until the whole dial was repainted.
+  Found by Jean-Paul Stringaro
+
+---
+
+## 2.16.59
+
+- Coming back to the clock from Settings, or from any other app, now shows the whole face
+  straight away. A sweeping dial used to come back black and paint itself in behind the
+  second hand, never reaching the corners. Found by Zion while changing the tick level
+
+---
+
+## 2.16.58
+
+- A ticking clock now waits two seconds after its face appears and then fades in, so the
+  first thing you hear is a clock already keeping steady time rather than one starting up
+
+---
+
+## 2.16.57
+
+- The tick's level control now behaves the way hearing does. The bottom of the range used to
+  do almost nothing; 10% is now only just audible, which is what it should always have meant
+
+---
+
+## 2.16.56
+
+- A sweeping second hand no longer hesitates every few seconds. The dial used to be redrawn
+  in full just to creep the minute hand; now that hand moves in place and the rest is left alone
+
+---
+
+## 2.16.55
+
+- The Orb now says which part of redrawing its dial is slow, not just that it is
+
+---
+
+## 2.16.54
+
+- The Orb now reports how often it has to redraw its whole dial, and how long that takes, so
+  a sweep that hesitates can be measured instead of guessed at
+
+---
+
+## 2.16.53
+
+- A theme's tick now starts at 20% rather than 30%, so a clock that arrives ticking is quiet
+  enough to live with before you have touched anything
+
+---
+
+## 2.16.52
+
+- A ticking clock no longer disturbs a sweeping second hand. Its tick was waking thirteen
+  times a second to keep its timing; one is enough and the hand gets the rest
+
+---
+
+## 2.16.51
+
+- The clock's tick keeps its own time now, instead of riding the drawing. It used to land up
+  to a sixth of a second from where it belonged, which was heard as clicks dropping
+- Found by Zion
+
+---
+
+## 2.16.50
+
+- A theme's tick is now carried as whole seconds rather than single clicks, so a fast
+  mechanism keeps the natural ring of each click instead of having it cut short
+
+---
+
+## 2.16.49
+
+- A tick can now beat at the rates real movements actually run at: five a second for an
+  18,000 beat watch, six for 21,600, eight for 28,800, as well as one, two and four
+- Found by Zion, whose vintage pocket watch beats five times a second and had nowhere to land
+
+---
+
+## 2.16.48
+
+- A theme's tick can now beat two or four times a second as well as once, so a recording made
+  from a mechanical watch runs at the speed its movement actually ran at
+- The face still moves once a second, because a watch beating four times does not move its
+  hand four times
+
+---
+
+## 2.16.47
+
+- The clock's tick now sounds at the same instant the second hand moves, instead of just
+  after it
+- Found by Zion
+
+---
+
+## 2.16.46
+
+- Settings, Sound now has its own level for the clock's tick and for the hourly chime, each
+  with an OFF position, so a theme that ticks can be made quiet or silent without muting the Orb
+- Both start at 30%, low enough that a theme arriving with a tick is one you turn up rather
+  than one you switch off
+
+---
+
+## 2.16.45
+
+- A clock that does not sweep now moves its second hand exactly on the second. It used to
+  step at whatever moment its timer happened to fall on, up to a second away
+- Its tick now sounds just after the hand moves rather than just before, the way a real one does
+- Found by Zion
+
+---
+
+## 2.16.44
+
+- A theme's tick recordings now play in the order they were given, looping, rather than being
+  shuffled. Six takes recorded off one clock are a passage, not a bag of samples
+
+---
+
+## 2.16.43
+
+- A theme can now carry the sound of its own clock ticking. It holds several recordings of
+  one real click and plays a different one each second, so it never settles into a loop
+- Themes without them are silent, exactly as before
+
+---
+
+## 2.16.42
+
+- The railway minute hand no longer stutters. Designs light enough to draw it move it
+  smoothly; heavier ones click it over in one clean move instead of jerking twice
+- Fixed a design whose minute hand sits above its second hand drawing that hand a fraction
+  off its mark on every frame
+- Found by Zion
+
+---
+
+## 2.16.41
+
+- The railway minute hand's step is one smooth movement again. In the last update it moved
+  most of the way in a single frame and then corrected itself, which looked like two jerks
+- Found by Zion
+
+---
+
+## 2.16.40
+
+- On a Swiss railway clock the minute hand now travels across to the next mark instead of
+  appearing on it: a quick snap with a slight settle, the way a station clock does
+- It moves while the second hand is already waiting at the top, so the sweep is untouched
+
+---
+
+## 2.16.39
+
+- On a Swiss railway clock the minute hand now sits exactly on a minute mark and moves at the
+  top of the minute, wherever the Orb was in the minute when you switched it on. Since the
+  last update it could come to rest partway between two marks and step at the wrong moment
+- Found by Jean-Paul Stringaro
+
+---
+
+## 2.16.38
+
+- On a sweeping clock the minute hand now creeps the whole time, the way a mechanical watch
+  does. It used to hold still and jump a whole division at the top of the minute, which is
+  correct for a railway dial and wrong for every other design. Railway dials still step,
+  because there the step is the point. Found by Jean-Paul Stringaro, who noticed the Orb and
+  Orb Studio disagreeing
+
+---
+
 ## 2.16.37
 
 - Older and smaller SD cards work again. The Orb runs the card fast, and a card that could

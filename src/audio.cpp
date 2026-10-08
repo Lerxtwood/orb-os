@@ -35,6 +35,13 @@ static const size_t S_BUF_LEN = SR / 2 * 2;   // up to 500 ms, stereo interleave
 // enough answer to feel immediate and still far longer than the DMA needs to stay fed.
 static const size_t WRITE_CHUNK = SR / 32 * 2;
 static volatile int  s_vol = 60;     // 0..100
+// Per-sound trims, against s_vol. The tick starts at 20 and the chime at 30; the reasoning
+// is in audio.h.
+static volatile int  s_tickPct  = 20;
+static volatile int  s_chimePct = 30;
+// The trim for the sound currently being handed to the task, as a GAIN rather than a percent.
+// Set beside s_pcm and read by the playback, exactly as s_pcm and s_cue already are.
+static volatile float s_trimGain = 1.0f;
 static volatile bool s_muted = false;
 static volatile int  s_cue = -1;
 static SemaphoreHandle_t s_sem = nullptr;
@@ -202,7 +209,7 @@ static size_t gen_beep(int16_t *buf, size_t cap, float freq, int ms, float amp) 
 static void play_pcm(const uint8_t *data, size_t bytes) {
     if (!s_buf || !data || bytes < 2) return;
     const uint32_t myGen = s_gen;
-    const float g = s_vol / 100.0f;
+    const float g = (s_vol / 100.0f) * s_trimGain;
     const int16_t *src = (const int16_t *)data;
     const size_t totalSamples = bytes / 2;
     size_t i = 0;
@@ -238,7 +245,11 @@ static void play_file(const char *path, bool sustained) {
     File f = SD.open(path, FILE_READ);
     if (!f) { theme_sd::unlock(); Serial.printf("[audio] cannot open %s\n", path); return; }
     const uint32_t myGen = s_gen;
-    const float g = s_vol / 100.0f;
+    // The chime carries its own level, for the same reason the tick does: it is a sound
+    // somebody lives with. `sustained` is the real thing ringing; the other caller is the
+    // picker, which is exempt, because being asked to listen to something and then not
+    // hearing it is the one outcome a picker cannot afford.
+    const float g = (s_vol / 100.0f) * (sustained ? s_chimePct / 100.0f : 1.0f);
     s_sustained = sustained;
     for (;;) {
         if (s_gen != myGen) { i2s_zero_dma_buffer(I2S_PORT); break; }
@@ -369,6 +380,12 @@ bool audio_present() { return s_ok; }
 // investigation started 2026-08-22 (a fixed number reported per task, cheaper than
 // exposing a raw TaskHandle_t across the header and letting every caller learn FreeRTOS).
 uint32_t audio_stack_free_bytes() { return s_taskHandle ? uxTaskGetStackHighWaterMark(s_taskHandle) : 0; }
+static int clamp_pct(int p) { return p < 0 ? 0 : (p > 100 ? 100 : p); }
+void audio_set_tick_level(int pct)  { s_tickPct  = clamp_pct(pct); }
+int  audio_tick_level()             { return s_tickPct; }
+void audio_set_chime_level(int pct) { s_chimePct = clamp_pct(pct); }
+int  audio_chime_level()            { return s_chimePct; }
+
 void audio_set_volume(int pct) { s_vol = constrain(pct, 0, 100); }
 void audio_set_muted(bool m) { s_muted = m; }
 
@@ -386,9 +403,22 @@ void audio_play(AudioCue cue) {
 // Cue 5 is "play whatever is in s_pcm". The pointer is set before the semaphore is given, and
 // the buffer belongs to the caller for the life of the theme, so there is nothing to copy and
 // nothing to free here.
-void audio_play_pcm(const uint8_t *pcm, size_t bytes, bool ignoreMute) {
+void audio_play_pcm(const uint8_t *pcm, size_t bytes, bool ignoreMute, int trimPct) {
     if (!s_ok || (s_muted && !ignoreMute) || !pcm || bytes < 2) return;
     if (s_sustained && !ignoreMute) return;   // see audio_play()
+    // Nothing at all at zero, rather than a buffer of silence pushed through the amplifier
+    // once a second for as long as the Orb is switched on.
+    if (trimPct <= 0) return;
+    // SQUARED, because hearing is not linear and this control is lived with rather than
+    // glanced at. Straight amplitude puts 10% at -20 dB, which is quietly present in a room
+    // rather than nearly gone, so the bottom of the slider did almost nothing useful: every
+    // setting anybody wanted was crowded into the first few percent.
+    //
+    // Squared, 10% is -40 dB and only just there, 20% is -28 dB which is about where 10% used
+    // to sit, and the top of the range is unchanged. Zion, after living with one on his desk:
+    // "I want 10 percent to just barely be audible."
+    const float t = (trimPct > 100 ? 100 : trimPct) / 100.0f;
+    s_trimGain = t * t;
     s_pcm = pcm; s_pcmLen = bytes;
     s_cue = ignoreMute ? 7 : 6;
     ++s_gen;

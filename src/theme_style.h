@@ -406,6 +406,14 @@ namespace theme_style {
 //      It is an ordinary TextSlot, so it has every control the other lines have, including
 //      the pill, the arc and ALL CAPS. An Orb below this level ignores it entirely.
 //
+//  57  how fast the tick beats: 1, 2, 4, 5, 6 or 8 times a second (18,000 beats an hour
+//      is five a second, 21,600 is six, 28,800 is eight). A mechanical watch runs at 2 or 4
+//      and that beat is what its sweeping second hand is made of; played back at 1 it is the
+//      same movement at a quarter speed. Measured from the recording's own gaps by Studio.
+//  56  the clock's own tick, as a bank of recordings. A theme may ship tick1.pcm through
+//      tick8.pcm, several takes of one real click, and the Orb plays a different one each
+//      second from a shuffle bag so there is no loop for the ear to find. Optional: a theme
+//      that ships none is silent, which is every theme before this one.
 //  55  a moving background. The clock plate can carry extra frames, clock_plate_01.png
 //      upwards, and the theme says how they play. Frame nought is the ordinary plate, so a
 //      theme built this way still looks right on an Orb that has never heard of this: it
@@ -416,7 +424,7 @@ namespace theme_style {
 //      third of the hand's smoothness for as long as it runs. Holding on frame nought and
 //      playing now and then costs exactly nothing in between, because a still background is
 //      the case the cache was built for. Zion's design, 2026-09-28.
-constexpr int THEME_CAPS = 55;
+constexpr int THEME_CAPS = 57;
 
 // The most extra background frames a theme may name. Not a storage limit, which Studio
 // enforces in bytes because only Studio knows the resolution: this is the ceiling on how
@@ -476,6 +484,13 @@ struct Clock {
     // top. Without this the border sat at one fixed angle while the hand moved, lining up
     // once an hour by coincidence.
     int       plateFollow = 0;
+    // THEME_CAPS 57. How many times a second the clock's tick set is played: 1, 2, 4, 5, 6 or 8.
+    //
+    // One is a clock. A mechanical watch beats at 2 or 4, and that faster beat IS the sweep
+    // of its second hand, so a set of takes recorded off a watch and played back once a
+    // second is the same movement at a quarter speed: a different object. The rate belongs to
+    // the recording, which is why it travels with the theme rather than sitting in Settings.
+    int       tickRate = 1;
     // THEME_CAPS 55. A moving background: how many extra frames the theme ships, how fast
     // they run, and how often they are allowed to. Frames is 0 for a still plate, which is
     // every theme that existed before this.

@@ -7,6 +7,15 @@
 // applied at boot, so localtime_r() returns local time.
 #include "clock_view.h"
 #include "display.h"      // orb_screen_covered(): do not redraw under a cover
+#include "theme_audio.h"  // the theme's tick bank
+#ifdef ARDUINO
+#include "audio.h"
+#else
+// The simulator builds no audio module. Compiled out rather than faked, the same way
+// theme_audio and wind_notice do it.
+#define audio_play_pcm(p, n, m, t) ((void)0)
+#define audio_tick_level() 100
+#endif
 #ifdef ARDUINO
 #include <Arduino.h>
 #include <esp_heap_caps.h>
@@ -836,6 +845,236 @@ static inline void clip_row(int dy, int &lo, int &hi) {
     }
 }
 
+// ---- the hands layer cache --------------------------------------------------
+//
+// WHY. Measured on Steam Punk with [compose]: a full face is 527 ms, of which the HANDS are
+// 472 — 90% of it. The plate is 29 ms and the glass 27. An animated background has to do one
+// full face per frame, because the background is the bottom layer and everything above was
+// composited onto it, so at 8 fps the theme was asking for 4.2 seconds of work per second
+// and getting about one frame.
+//
+// The hands do not move during a burst. Six frames at 8 fps is 750 ms, in which the minute
+// hand turns 0.075 degrees and the hour hand 0.006. So their contribution is computed once
+// and kept: two RGB565+alpha layers, blitted in place of four bilinear sprite passes.
+//
+// TWO layers, not one, and this is the whole reason the order works out. The pipeline lays
+// every shadow down before any hand, deliberately — "interleaving them would let the minute
+// hand's shadow fall across the hour hand drawn below it" — and this theme's draw order puts
+// the second hand UNDER the minute and hour. So the true sequence is
+//
+//     plate -> text -> S2 -> S1 -> S0 -> H2 -> H1 -> H0 -> glass
+//
+// with S=shadow, H=hand, 2=second, 1=minute, 0=hour. The second hand's two pieces come
+// first in each group and must stay live, because it is the one thing that does move. One
+// combined layer would have to be drawn either side of them and would reorder something.
+// Splitting at exactly those two points reproduces the sequence with nothing moved:
+//
+//     plate -> text -> S2 -> [shadow layer] -> H2 -> [hand layer] -> glass
+//
+// 3 bytes a pixel, 651 KB each, PSRAM, taken on first use and given back in onExit() like
+// every other screen's art.
+static uint8_t *s_layShadow = nullptr;   // minute + hour shadows, composited
+static uint8_t *s_layHand   = nullptr;   // minute + hour hands, composited
+// When set, the two sprite blits accumulate into this instead of painting the canvas.
+static uint8_t *s_layTarget = nullptr;
+// What the layers are a picture of. A rebuild is needed when either hand has turned enough
+// to matter; the thresholds are the ones the caches above already use.
+static float s_layMinAng = 1e9f, s_layHrAng = 1e9f;
+static bool  s_layValid  = false;
+// A REBUILD SPREAD OVER FRAMES, because doing it in one go is a visible stop.
+//
+// A rebuild is ~470 ms and the minute hand goes stale every ~3.5 s, so the first version
+// stalled the sweep for half a second every three and a half: "every ~3.5 seconds it stops
+// then resumes". The threshold cannot simply be raised — it is bounded by the minute hand
+// visibly lagging, about a pixel at the tip — so the work is sliced instead. A band of rows
+// per frame, with the previous contents still standing in the rows not yet redone, so the
+// seam between them is the 0.35 degrees the tolerance already allows and it closes within a
+// second. The FIRST build is done whole, because there is nothing behind it to show.
+static int   s_layBuildY   = -1;      // next row to redo; <0 = not rebuilding
+static float s_layWantMin  = 0.0f;    // angles the in-progress rebuild is for
+static float s_layWantHr   = 0.0f;
+static const int LAY_BAND  = SCREEN_H / 8;   // ~58 rows, so ~60 ms a frame instead of 470
+// Set for one compose by the caller that knows the hands have not moved. compose_custom
+// then blits each layer at the exact point in the sequence its contents belong, instead of
+// running the four bilinear sprite passes. Anything else about the frame is unchanged.
+static bool  s_layUse    = false;
+
+// One source pixel into a layer, source-over, non-premultiplied.
+//
+// The canvas path can mix straight onto an opaque destination because there is always
+// something underneath. A layer starts empty, so alpha has to accumulate as well as colour:
+// two hands overlap near the hub and the second one must not erase the first's coverage.
+static inline void lay_put(uint8_t *lay, int dx, int dy, lv_color_t sc, uint8_t a) {
+    uint8_t *L = lay + ((size_t)dy * SCREEN_W + dx) * 3;
+    const uint8_t da = L[2];
+    if (!da) {                      // empty: the source is the answer
+        L[0] = (uint8_t)(sc.full & 0xFF);
+        L[1] = (uint8_t)(sc.full >> 8);
+        L[2] = a;
+        return;
+    }
+    const uint16_t outA = (uint16_t)(a + (uint16_t)da * (255 - a) / 255);
+    if (!outA) return;
+    lv_color_t dc; dc.full = (uint16_t)(L[0] | (L[1] << 8));
+    // The source's share of the result. lv_color_mix(c1, c2, w) is c1*w + c2*(255-w).
+    const uint8_t w = (uint8_t)((uint32_t)a * 255u / outA);
+    const lv_color_t mixed = lv_color_mix(sc, dc, w);
+    L[0] = (uint8_t)(mixed.full & 0xFF);
+    L[1] = (uint8_t)(mixed.full >> 8);
+    L[2] = (uint8_t)(outA > 255 ? 255 : outA);
+}
+
+// A finished layer onto the canvas: the same operation the glass pass does, over the same
+// clip, so a sweep frame pays only for its own rows.
+static void lay_blit(const uint8_t *lay) {
+    if (!lay || !s_buf) return;
+    for (int dy = s_clipY0; dy <= s_clipY1; ++dy) {
+        int lo = s_clipX0, hi = s_clipX1;
+        clip_row(dy, lo, hi);
+        if (hi < lo) continue;
+        const int base = dy * SCREEN_W;
+        for (int dx = lo; dx <= hi; ++dx) {
+            const uint8_t *L = lay + ((size_t)base + dx) * 3;
+            const uint8_t a = L[2];
+            if (!a) continue;
+            lv_color_t sc; sc.full = (uint16_t)(L[0] | (L[1] << 8));
+            s_buf[base + dx] = lv_color_mix(sc, s_buf[base + dx], a);
+        }
+    }
+}
+
+// Build both layers for the hand angles given. Forward-declared blits, called below.
+static void blend_shadow(const uint8_t *src, int sw, int sh, int pivotX, int pivotY,
+                         float cx, float cy, float angleDeg);
+static void blend_custom_hand(const uint8_t *src, int sw, int sh, int pivotX, int pivotY,
+                              float cx, float cy, float angleDeg, int blend);
+CustomSprite custom_hand(int kind);     // not static: defined elsewhere in the tree
+CustomSprite custom_shadow(int kind);
+
+static void layers_free() {
+    if (s_layShadow) { heap_caps_free(s_layShadow); s_layShadow = nullptr; }
+    if (s_layHand)   { heap_caps_free(s_layHand);   s_layHand   = nullptr; }
+    s_layValid = false;
+}
+
+// Both layers, for the minute and hour hands only, in the theme's own draw order.
+//
+// Deliberately NOT the second hand: it is the one piece that moves between frames of a
+// background burst, and it is cheap (a 32x107 shadow and a small hand) so it stays live.
+// Returns false and leaves s_layValid clear if the memory is not there, and every caller
+// then takes the ordinary path — slow, correct, and exactly what it did before.
+static bool layers_build_rows(float minAng, float hrAng, int y0, int y1);
+static bool layers_usable(float minAng, float hrAng);
+static bool layers_build(float minAng, float hrAng) {
+    if (!s_layShadow) s_layShadow = (uint8_t *)heap_caps_malloc((size_t)SCREEN_W * SCREEN_H * 3,
+                                                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_layHand)   s_layHand   = (uint8_t *)heap_caps_malloc((size_t)SCREEN_W * SCREEN_H * 3,
+                                                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_layShadow || !s_layHand) {
+#if defined(ESP_PLATFORM)
+        static bool told = false;
+        if (!told) {
+            told = true;
+            Serial.printf("[layers] no PSRAM for the hand layers (need 2 x %u KB, %u KB free) "
+                          "- animated backgrounds stay on the slow path\n",
+                          (unsigned)((size_t)SCREEN_W * SCREEN_H * 3 / 1024),
+                          (unsigned)(ESP.getFreePsram() / 1024));
+        }
+#endif
+        layers_free();
+        return false;
+    }
+    return layers_build_rows(minAng, hrAng, 0, SCREEN_H - 1);
+}
+
+// The rows [y0..y1] of both layers, for the given angles.
+static bool layers_build_rows(float minAng, float hrAng, int y0, int y1) {
+    if (!s_layShadow || !s_layHand) return false;
+    const theme_style::Clock &cs = theme_style::clock();
+    const float ang[5] = { hrAng, minAng, 0.0f, 0.0f, 0.0f };
+    if (y0 < 0) y0 = 0;
+    if (y1 > SCREEN_H - 1) y1 = SCREEN_H - 1;
+    if (y1 < y0) return false;
+    const size_t rowBytes = (size_t)SCREEN_W * 3;
+    const size_t off = (size_t)y0 * rowBytes, len = (size_t)(y1 - y0 + 1) * rowBytes;
+    memset(s_layShadow + off, 0, len);
+    memset(s_layHand   + off, 0, len);
+    // The clip is the band, and the full width of it: the layer is reused by frames whose
+    // clip is narrower, and anything left unpainted now would be a hole then.
+    const int cx0 = s_clipX0, cy0 = s_clipY0, cx1 = s_clipX1, cy1 = s_clipY1;
+    const int *rl = s_runLo, *rh = s_runHi;
+    clip_reset();
+    s_clipY0 = y0; s_clipY1 = y1;
+
+    if (cs.shadowOn) {
+        s_layTarget = s_layShadow;
+        for (int i = 0; i < cs.orderN; ++i) {
+            const int k = cs.order[i];
+            if (k != 0 && k != 1) continue;            // minute and hour only
+            if (!cs.hand[k].show) continue;
+            const theme_style::Hand &hd = cs.hand[k];
+            CustomSprite sh = custom_shadow(k);
+            if (sh.data) blend_shadow(sh.data, sh.w, sh.h, hd.pivotX, hd.pivotY,
+                                      (float)(hd.centerX + cs.shadowDX),
+                                      (float)(hd.centerY + cs.shadowDY), ang[k]);
+        }
+    }
+    s_layTarget = s_layHand;
+    for (int i = 0; i < cs.orderN; ++i) {
+        const int k = cs.order[i];
+        if (k != 0 && k != 1) continue;
+        if (!cs.hand[k].show) continue;
+        const theme_style::Hand &hd = cs.hand[k];
+        CustomSprite spr = custom_hand(k);
+        if (spr.data) blend_custom_hand(spr.data, spr.w, spr.h, hd.pivotX, hd.pivotY,
+                                        (float)hd.centerX, (float)hd.centerY, ang[k], hd.blend);
+    }
+    s_layTarget = nullptr;
+
+    s_clipX0 = cx0; s_clipY0 = cy0; s_clipX1 = cx1; s_clipY1 = cy1;
+    s_runLo = rl; s_runHi = rh;
+    return true;
+}
+
+// Keep a rebuild moving, or start one. Call once a frame.
+//
+// Returns whether there is anything worth blitting: after the first build there always is,
+// even mid-rebuild, which is the whole point of slicing it.
+static bool layers_tick(float minAng, float hrAng) {
+    if (!s_layShadow || !s_layHand) {
+        if (!layers_build(minAng, hrAng)) return false;   // allocates, or gives up for good
+        s_layMinAng = minAng; s_layHrAng = hrAng; s_layValid = true; s_layBuildY = -1;
+        return true;
+    }
+    if (s_layBuildY >= 0) {                                // a slice of the rebuild in flight
+        layers_build_rows(s_layWantMin, s_layWantHr, s_layBuildY, s_layBuildY + LAY_BAND - 1);
+        s_layBuildY += LAY_BAND;
+        if (s_layBuildY >= SCREEN_H) {                     // done: it is now a picture of those
+            s_layMinAng = s_layWantMin; s_layHrAng = s_layWantHr;
+            s_layValid = true; s_layBuildY = -1;
+        }
+        return s_layValid;
+    }
+    if (!layers_usable(minAng, hrAng)) {                   // gone stale: start slicing
+        s_layWantMin = minAng; s_layWantHr = hrAng;
+        s_layBuildY = 0;
+    }
+    return s_layValid;
+}
+
+// Are the layers still a picture of where the hands are now?
+//
+// Same question the dial caches already ask, and the same answer: hold until the hand's TIP
+// has travelled about a pixel. The minute hand buys roughly three seconds at this reach and
+// the hour hand forty, which is far longer than any background burst, so a burst rebuilds
+// them at most once.
+static bool layers_usable(float minAng, float hrAng) {
+    if (!s_layValid || !s_layShadow || !s_layHand) return false;
+    float dm = minAng - s_layMinAng; if (dm < 0) dm = -dm; if (dm > 180.0f) dm = 360.0f - dm;
+    float dh = hrAng  - s_layHrAng;  if (dh < 0) dh = -dh; if (dh > 180.0f) dh = 360.0f - dh;
+    return dm < 0.35f && dh < 0.35f;
+}
+
 // The run of dx, within one row, whose source coordinates land inside the sprite.
 //
 // Both rotating blits need this and only one of them had it. blend_custom_hand got the
@@ -888,6 +1127,7 @@ static void blend_shadow(const uint8_t *src, int sw, int sh, int pivotX, int piv
             const uint8_t a = p[2];
             if (a < 8) continue;                       // same floor the hand blit uses
             lv_color_t sc; sc.full = (uint16_t)(p[0] | (p[1] << 8));
+            if (s_layTarget) { lay_put(s_layTarget, dx, dy, sc, a); continue; }
             lv_color_t *dst = &s_buf[dy * SCREEN_W + dx];
             *dst = lv_color_mix(sc, *dst, a);
         }
@@ -1020,10 +1260,12 @@ static void blend_custom_hand(const uint8_t *src, int sw, int sh, int pivotX, in
             if (blend == 1) { rF = rF * dr / 255.0f; gF = gF * dg / 255.0f; bF = bF * db / 255.0f; }        // multiply
             else if (blend == 2) { rF = 255 - (255 - rF) * (255 - dr) / 255.0f; gF = 255 - (255 - gF) * (255 - dg) / 255.0f; bF = 255 - (255 - bF) * (255 - db) / 255.0f; } // screen
             lv_color_t sc = LV_COLOR_MAKE((uint8_t)rF, (uint8_t)gF, (uint8_t)bF);
-            *dst = lv_color_mix(sc, *dst, (lv_opa_t)lroundf(aF));
+            if (s_layTarget) lay_put(s_layTarget, dx, dy, sc, (uint8_t)lroundf(aF));
+            else             *dst = lv_color_mix(sc, *dst, (lv_opa_t)lroundf(aF));
         }
     }
 }
+
 
 // Composite the editor's exact pixels: plate (background) -> live text -> hand
 // sprites (rotated, in the editor's draw order/blend) -> overlay (hub, rim, glass).
@@ -1112,10 +1354,71 @@ static void blit_plate_rot_slow(const uint16_t *src, float angleDeg) {
 static uint32_t s_bgPlayStart = 0;     // ms, when the current play began; 0 when holding
 static uint32_t s_bgLastPlay  = 0;     // ms, when the last play ended
 static int      s_bgFrame     = 0;     // the frame now on screen, so a change can be noticed
+// HOW A LOOPING BACKGROUND KEEPS TIME, and why it is counted rather than clocked.
+//
+// It used to read the wall clock: frame = (now / step) % cycle, with step = 1000/fps. The
+// drawing tick runs at its own period, chosen for the second hand, and the two are unrelated
+// numbers. At eight frames a second the background wants 125 ms and the tick lands near 77,
+// so sampling a 125 ms staircase every 77 ms holds one frame for 77 ms and the next for 154.
+// A two to one swing in how long each frame stays up, for ever, on a loop whose geometry is
+// uniform to a tenth of a percent. That is the stutter Zion kept seeing after the GIF, the
+// encoder and the plate had each been ruled out by measurement.
+//
+// So the tick now picks a period that divides the background's, and the background advances
+// on a count of ticks. Every frame is then up for exactly the same time by construction,
+// whatever either rate happens to be.
+static uint32_t s_bgTick      = 0;     // ticks since the theme began, for the loop
+static uint32_t s_bgEvery     = 1;     // ticks per background frame, set in tick_cb
 
 // Is a play running right now? The tick uses this to keep time with the animation rather
 // than with the second hand, which may otherwise be a whole second apart.
 static bool bg_anim_playing() { return s_bgPlayStart != 0; }
+
+// HOW LONG UNTIL THE NEXT SECOND, as a wait the timer can be given.
+//
+// Rounded UP. Integer division truncates, so this used to come back a fraction short and the
+// wake landed just before the boundary: measured across a whole second, 98% of them did.
+// redraw() then read a clock that had not rolled and drew the old second.
+static uint32_t aim_to_second(uint32_t usec) {
+    uint32_t ms = (1000000u - (usec > 999999u ? 999999u : usec) + 999u) / 1000u;
+    return ms < 5u ? 5u : ms;
+}
+
+// HOW LONG TO WAIT when the second matters and a background also wants frames.
+//
+// `aim` is the time until the real second, which is where a ticking hand steps and where its
+// click fires. `need` is the background's frame period. Taking the smaller of the two throws
+// the aim away and leaves the hand landing up to a whole background period after its own
+// sound. Dividing the wait instead gives the background at least its rate and still puts one
+// of those frames on the second.
+static uint32_t aim_period(uint32_t aim, uint32_t need) {
+    if (need < 1 || need >= aim) return aim;
+    const uint32_t k = (aim + need - 1) / need;        // ceil(aim / need)
+    uint32_t p = k ? aim / k : aim;
+    if (p < 20) p = 20;
+    return p;
+}
+
+// A WHOLE NUMBER OF TICKS PER BACKGROUND FRAME, never a fraction.
+//
+// Taking the smaller of the two rates was right about the hand and wrong about the picture:
+// at eight a second the background wants 125 ms and the drawing tick lands near 77, and 125
+// and 77 have no common beat, so a frame came up for one tick or for two depending on where
+// the two clocks happened to be. Dividing the background's period instead keeps the tick at
+// least as fast as the hand wanted, which is what the old min() was protecting, and makes
+// every frame last the same number of ticks, which is what it was not.
+//
+// Returns the tick period and sets `every` to the ticks each frame is held for.
+static uint32_t bg_rate(uint32_t need, uint32_t base, uint32_t &every) {
+    if (base < 1) base = 1;
+    uint32_t k = (need + base - 1) / base;              // ceil(need / base)
+    if (k < 1) k = 1;
+    uint32_t per = need / k;
+    if (per < 33) { per = 33; k = (need + per - 1) / per; }
+    if (per > base) per = base;                          // never slower than the hand asked for
+    every = k < 1 ? 1 : k;
+    return per < 1 ? 1 : per;
+}
 
 // Which frame belongs on the dial at this moment.
 static int bg_anim_frame() {
@@ -1127,8 +1430,9 @@ static int bg_anim_frame() {
 
     if (a.loop) {
         s_bgPlayStart = 0;                     // a loop is never "a play"; it just runs
-        return (int)((now / (step ? step : 1)) % (uint32_t)(last + 1));
+        return (int)((s_bgTick / (s_bgEvery ? s_bgEvery : 1)) % (uint32_t)(last + 1));
     }
+    (void)step;
 
     if (!bg_anim_playing()) {
         // Hold on frame nought until it is time. s_bgLastPlay starts at 0, which would fire
@@ -1156,13 +1460,45 @@ static int bg_anim_frame() {
 // Start this theme's clock over. Called when a theme is applied, so the first play is one
 // full interval after the theme arrives rather than at some moment inherited from the last.
 void clock_view_reset_bg_anim() {
+    // A theme change replaces the hand art and its geometry, so whatever the layers hold is
+    // a picture of the previous design. This is the one hook every theme application runs
+    // through, which is why the reset lives here rather than beside the art loader.
+    layers_free();
     s_bgPlayStart = 0;
     s_bgLastPlay  = lv_tick_get();
     s_bgFrame     = 0;
 }
 
+// How far through the minute hand's step we are, 0 to about 1.1, or -1 when it is not
+// stepping. Only a railway dial ever sets it. See minute_step_ease().
+static float s_stepEase = -1.0f;
+
+// What a full compose spends its time on, summed since the last report. See the stopwatches
+// in compose_custom.
+static float s_phPlate = 0.0f, s_phText = 0.0f, s_phHands = 0.0f, s_phRest = 0.0f;
+
+// Where the minute hand belongs, in minutes-of-the-hour, for a given wall clock reading.
+//
+// Two rules, and the gap between them is the whole of what Jean-Paul Stringaro reported.
+// A railway dial's minute hand sits ON a mark, so it takes whole minutes and no seconds
+// fraction: it cannot come to rest partway between two marks just because that is where
+// the Orb happened to be switched on. Every other sweeping dial creeps, so it takes the
+// fraction. Shared with the simulator self-test so the rule is checked, not just written.
+static float minute_hand_mins(bool railway, int min, int sec) {
+    return railway ? (float)min : (float)min + (float)sec / 60.0f;
+}
+
 // overlay has to go back on TOP of the second hand and so cannot be baked into that cache.
-static void compose_custom(const struct tm *ti, bool skipSecond, bool withOverlay) {
+// `stopKind` is the hand this compose stops BELOW: that hand, and everything above it in the
+// draw order, is left out and redrawn later by whoever owns the cache being built.
+//
+//   -1  draw the whole face (the plain redraw path)
+//    2  stop below the second hand  -> s_under, which a sweep frame restores from
+//    1  stop below the minute hand  -> s_noMin, which a minute move restores from
+//
+// It was a bool called skipSecond. Two caches need two stop points, and the second one is what
+// stops the whole dial being recomposed every few seconds just to creep one hand.
+static void compose_custom(const struct tm *ti, int stopKind, bool withOverlay) {
     // Decode the plate first: it's the whole visible dial and the largest buffer,
     // so it gets first claim on PSRAM. (Text is now a baked font, not a giant
     // atlas, so the old "overlay first" ordering is no longer needed.) The overlay
@@ -1177,6 +1513,13 @@ static void compose_custom(const struct tm *ti, bool skipSecond, bool withOverla
     const float p_sec = ti->tm_sec, p_min = ti->tm_min + p_sec / 60.0f;
     const float p_hr = (ti->tm_hour % 12) + p_min / 60.0f;
     const float followAng[4] = { 0.0f, p_hr * 30.0f, p_min * 6.0f, p_sec * 6.0f };
+#if defined(ESP_PLATFORM)
+    // WHERE the 85 ms goes. A recompose stops a sweeping hand dead, so the only question
+    // worth asking about it is which part is expensive, and that cannot be guessed: the plate
+    // is a memcpy, the banners are text, the hands are rotations and the glass is a blend over
+    // every pixel on the screen. Measured per phase, reported with the interval in tick_cb.
+    const uint32_t ph0 = micros();
+#endif
     const int pf = theme_style::clock().plateFollow;
     if (plate) {
         if (pf > 0 && pf < 4) blit_plate_rot(plate, followAng[pf]);
@@ -1211,11 +1554,33 @@ static void compose_custom(const struct tm *ti, bool skipSecond, bool withOverla
             }
         }
     };
+#if defined(ESP_PLATFORM)
+    s_phPlate += (float)(micros() - ph0) / 1000.0f;
+    const uint32_t ph1 = micros();
+#endif
     if (!theme_style::clock().textOverHands) draw_banners();
+#if defined(ESP_PLATFORM)
+    s_phText += (float)(micros() - ph1) / 1000.0f;
+#endif
 
     // kind 3/4 = the two static image layers — same pivot/center/blend metadata as
     // a hand, just always angle 0 (they never rotate, see custom_sprite.cpp).
-    const float sec = ti->tm_sec, mins = ti->tm_min + sec / 60.0f, hrs = (ti->tm_hour % 12) + mins / 60.0f;
+    // A railway dial's minute hand sits ON a minute mark and never between two. Giving it
+    // the seconds fraction put it wherever the clock happened to be when the Orb booted:
+    // start at 12:02:15 and the hand drew a quarter of the way to the 3, and stayed there.
+    // Whole minutes for railway, fractional for everything else, where the creep is the
+    // point. The hour hand follows from mins, so on a railway dial it steps with it.
+#if defined(ESP_PLATFORM)
+    const uint32_t ph2 = micros();
+#endif
+    const theme_style::Clock &csA = theme_style::clock();
+    const bool railwayNow = csA.secondRailway && csA.secondSweep;
+    const float sec = ti->tm_sec;
+    float mins = minute_hand_mins(railwayNow, ti->tm_min, ti->tm_sec);
+    // Mid-step, the hand is between this minute and the next. Whole minutes resume the
+    // instant the step ends, so it always comes to rest on a mark.
+    if (railwayNow && s_stepEase >= 0.0f) mins = (float)ti->tm_min + s_stepEase;
+    const float hrs = (ti->tm_hour % 12) + mins / 60.0f;
     const float ang[5] = { hrs * 30.0f, mins * 6.0f, sec * 6.0f, 0.0f, 0.0f };
     // Geometry, draw order, and the per-hand show gate come from the active theme at
     // runtime (theme_style, fed by /themes/<slug>/clock_style.json) rather than from the
@@ -1229,12 +1594,22 @@ static void compose_custom(const struct tm *ti, bool skipSecond, bool withOverla
     // all the shadows on the face and then standing the hands on top is the same choice a
     // watch photographer makes with a diffuser, and it costs a second short loop.
     if (cs.shadowOn) {
-        bool sawSecondSh = false;
+        bool pastStopSh = false;
+        bool laidShadow = false;   // the cached pair goes down once, at the first of the two
         for (int i = 0; i < cs.orderN; ++i) {
             const int k = cs.order[i];
-            if (skipSecond && k == 2) { sawSecondSh = true; continue; }
-            if (skipSecond && sawSecondSh) continue;   // above the sweeping hand: drawn per frame
+            // Shadows are ALL laid down before any hand, so the shadow of a hand this compose
+            // stops below has to be left out with it, or restoring that hand later would leave
+            // its old shadow printed underneath.
+            if (stopKind >= 0 && k == stopKind) { pastStopSh = true; continue; }
+            if (stopKind >= 0 && pastStopSh) continue;   // above the stop: drawn later
             if (k < 0 || k > 2) continue;              // statics do not cast; they are the face
+            // The cached pair, blitted where the first of them would have been drawn, so the
+            // sequence is byte-for-byte the one the slow path produces.
+            if (s_layUse && (k == 0 || k == 1)) {
+                if (!laidShadow) { laidShadow = true; lay_blit(s_layShadow); }
+                continue;
+            }
             const theme_style::Hand &hd = cs.hand[k];
             if (!hd.show) continue;
             CustomSprite sh = custom_shadow(k);
@@ -1273,22 +1648,32 @@ static void compose_custom(const struct tm *ti, bool skipSecond, bool withOverla
                                       (float)(hd.centerY + cs.shadowDY), ang[k]);
         }
     }
-    bool sawSecond = false;
+    bool pastStop = false;
+    bool laidHand = false;   // likewise, once, at the first of minute/hour
     for (int i = 0; i < cs.orderN; ++i) {
         const int k = cs.order[i];
         if (k < 0 || k > 4) continue;
-        // Stop at the second hand. Everything from there up is redrawn on every sweep frame,
-        // clipped to the hand's own box, which is what lets a design order a hand ABOVE its
-        // second hand and still sweep. Zion: "there's never a reason to not have a feature
-        // we get working not work for all the themes."
-        if (skipSecond && sawSecond) continue;
-        if (skipSecond && k == 2) { sawSecond = true; continue; }
+        // Stop below the hand this cache is for. Everything from there up is redrawn by
+        // whoever owns the cache, clipped to the rows that hand actually covers, which is what
+        // lets a design order a hand ABOVE another and still have both move cheaply. Zion:
+        // "there's never a reason to not have a feature we get working not work for all the
+        // themes."
+        if (stopKind >= 0 && pastStop) continue;
+        if (stopKind >= 0 && k == stopKind) { pastStop = true; continue; }
+        if (s_layUse && (k == 0 || k == 1)) {
+            if (!laidHand) { laidHand = true; lay_blit(s_layHand); }
+            continue;
+        }
         const theme_style::Hand &hd = cs.hand[k];
         if (!hd.show) continue;
         CustomSprite spr = custom_hand(k);
         if (spr.data) blend_custom_hand(spr.data, spr.w, spr.h, hd.pivotX, hd.pivotY,
                                         (float)hd.centerX, (float)hd.centerY, ang[k], hd.blend);
     }
+#if defined(ESP_PLATFORM)
+    s_phHands += (float)(micros() - ph2) / 1000.0f;
+    const uint32_t ph3 = micros();
+#endif
     if (cs.textOverHands) draw_banners();
 
     // Row by row and inside the clip, so a sweeping hand pays for its own box rather than
@@ -1307,7 +1692,64 @@ static void compose_custom(const struct tm *ti, bool skipSecond, bool withOverla
     }
 }
 
-static void draw_custom(const struct tm *ti) { compose_custom(ti, false, true); }
+// A full compose, with its phase breakdown, on whatever path asked for it.
+//
+// The breakdown already existed and was only reported from the sweep path's rebuild branch,
+// so a design with secondSweep off — which is every dial that does not ask to sweep — could
+// not be measured at all. That is the case an animated background is most expensive in,
+// because every frame of the animation is one of these, so it is the one that most needed a
+// number. Reported every eighth compose rather than every one: the line itself costs serial
+// time, and eight of these is several seconds of wall clock.
+// Both defined below, with the caches whose staleness rules they feed.
+static float minute_angle_now(const struct tm *ti);
+static float hour_angle_now(const struct tm *ti);
+
+// WHAT A FULL FACE COST, kept so somebody can read it without a cable.
+//
+// Greg's [compose] line is the only thing that says where this screen's time goes, and it
+// goes to the serial port, which means disconnecting Studio and attaching a terminal. Every
+// person who has reported a slow dial has been asked to describe it in words instead. These
+// hold the last reported averages so /health can carry them, and a report becomes a URL.
+static float s_costFace = 0, s_costPlate = 0, s_costText = 0, s_costHands = 0;
+
+static void draw_custom(const struct tm *ti) {
+    // THE FAST PATH FOR AN ANIMATED BACKGROUND.
+    //
+    // A full face costs 527 ms on this design and 472 of it is the hands, so a background
+    // that wants eight frames a second is asking for four seconds of work per second. The
+    // hands are not what changed: build them once and blit them.
+    //
+    // Only ever an optimisation. If the layers cannot be allocated, or either hand has
+    // turned far enough to matter, this falls through to exactly the compose it always did.
+    const float minAng = minute_angle_now(ti);
+    const float hrAng  = hour_angle_now(ti);
+    s_layUse = layers_tick(minAng, hrAng);
+#if defined(ESP_PLATFORM)
+    const uint32_t t0 = micros();
+    compose_custom(ti, -1, true);
+    const float took = (float)(micros() - t0) / 1000.0f;
+    static int   runs = 0;
+    static float sum  = 0.0f;
+    sum += took;
+    if (++runs >= 8) {
+        // `rest` is whatever is not plate, text or hands, and on this screen it is almost
+        // entirely the overlay: a full-screen alpha mix over 217,156 pixels.
+        const float avg = sum / runs;
+        s_costFace  = avg;
+        s_costPlate = s_phPlate / runs;
+        s_costText  = s_phText / runs;
+        s_costHands = s_phHands / runs;
+        Serial.printf("[compose] full face %.0f ms  -> plate %.0f  text %.0f  hands %.0f  rest %.0f\n",
+                      avg, s_costPlate, s_costText, s_costHands,
+                      avg - (s_costPlate + s_costText + s_costHands));
+        runs = 0; sum = 0.0f;
+        s_phPlate = 0; s_phText = 0; s_phHands = 0; s_phRest = 0;
+    }
+#else
+    compose_custom(ti, -1, true);
+#endif
+    s_layUse = false;   // never leaks into the sweep's own partial composes
+}
 
 // ---- the smooth second hand -------------------------------------------------
 //
@@ -1322,6 +1764,18 @@ static void draw_custom(const struct tm *ti) { compose_custom(ti, false, true); 
 // a quarter of each, and a sweep becomes affordable rather than impossible.
 
 static lv_timer_t *s_tick = nullptr;
+// The tick has its own timer, and that is the point of it.
+//
+// It used to fire from the drawing callback, which ties the sound to whatever the dial costs
+// to compose. On a design that sweeps, that callback runs on the sweep's own period, which is
+// anything from 33 to 150 ms and adapts, so the tick landed up to a sixth of a second from
+// where it belonged and the amount varied second to second. On one that does not sweep, the
+// callback also redraws the whole face, between 70 and 250 ms of work, in the same task.
+//
+// A clock's tick is the one sound on this device where timing IS the content. So it is its
+// own timer, it draws nothing, and it re-aims itself at the next whole second every time it
+// fires. Zion: "i'm still hearing clicks drop."
+static lv_timer_t *s_beat = nullptr;
 // A rolling average of what one sweep frame costs, in milliseconds, measured end to end
 // including everything LVGL then does with it.
 static float s_sweepMs = 45.0f;
@@ -1331,6 +1785,96 @@ static uint32_t s_tickPeriod = 0;
 // degree, well under a pixel at the tip, and asking for more would spend the whole device on
 // motion nobody can see. 200 ms is the floor, for a design heavy enough that anything faster
 // would be a promise the renderer cannot keep.
+// THE HAND BEATS. It does not glide.
+//
+// Greg's observation, 2026-10-06: "28,800 beats per hour ... that is what most clocks run at
+// so a natural beat at that rate is probably what we should optimize for, or half of it."
+// beats-per-hour counts half-oscillations, so 28,800 is EIGHT a second, and the common rates
+// are 18,000 (five), 21,600 (six), 28,800 (eight) and 36,000 (ten).
+//
+// This screen was already half-committed to the idea. THEME_CAPS 57 is tickRate, and its own
+// note says "a mechanical watch beats at 2 or 4, and that faster beat IS the sweep of its
+// second hand" — but only the AUDIO ever used it. The hand itself chased a continuous
+// position at whatever rate the device could deliver, so every step was a slightly different
+// size and a slightly different length of time apart. That is what reads as jerky: not the
+// size of the steps, which at a 271 px reach are under two pixels, but their unevenness. A
+// real escapement is relentlessly regular, and regular is what the eye reads as smooth.
+//
+// So the hand is quantised to a beat and the frame is aimed at the beat boundary. Eight by
+// default, because that is the most common high-beat movement and the richest-looking; the
+// theme's own tickRate wins when it declares one, since a theme that ships recordings off a
+// 21,600 watch should move like one. And when the design is too expensive to hold eight, it
+// drops to four rather than slipping: 14,400 is also a real movement, so the degraded case
+// still looks like a watch instead of looking like a struggling one.
+static int sweep_beat() {
+    const theme_style::Clock &cs = theme_style::clock();
+    if (cs.tickRate >= 2) return cs.tickRate;       // the theme owns its own movement
+
+    // WHILE THE BACKGROUND IS MOVING, THE HAND KEEPS ITS TIME.
+    //
+    // Not a compromise — the measurement says the alternative does not work. A hand frame
+    // repaints the second hand's own box and costs about 13 ms. A background frame repaints
+    // all 217,156 pixels and costs about 200. A beat slot at eight a second is 125 ms. So
+    // every background frame overruns its slot and swallows the beat behind it: asking for
+    // eight against a 2 fps background measured SIX delivered, with 41% of the CPU still
+    // idle. Not a budget problem — one of the two things sharing this thread takes longer
+    // than the other's entire slot.
+    //
+    // Two beats in every eight arriving 75 ms late is worse than eight evenly spaced ones,
+    // because irregularity is what the eye catches and not rate. Greg, on seeing both:
+    // 4 fps background with a 4 beat hand was "a better experience" than 2 fps with a
+    // nominal 8, and he was right for a reason I had argued past — at equal rates the two
+    // coincide, every frame advances the background AND the hand, and nothing interrupts
+    // anything. At different rates they beat against each other.
+    //
+    // So while frames are running the hand takes the background's rate as its own. When the
+    // background is still there is nothing to collide with and it goes back to eight.
+    // IN PHASE WITH IT, not equal to it. A MULTIPLE of the background's rate.
+    //
+    // Taking the background's rate outright is wrong at the slow end: a 2 fps background
+    // would give a hand that moves twice a second, which is worse than anything this screen
+    // has done yet. What matters is that the two COINCIDE, and a multiple coincides just as
+    // well as equality does — at 2 fps background and 4 beats, every background change lands
+    // on a beat and the beats between it are free.
+    //
+    // Floor of four, because that is the slowest step this dial has been judged acceptable
+    // at, and four also keeps the slot at 250 ms, which is comfortably longer than the ~200
+    // ms a full-screen background frame costs. Eight would put the slot at 125 ms and the
+    // background frame would overrun it — measured, and the reason this function exists.
+    const theme_style::Clock::BgAnim &ba = cs.bgAnim;
+    if (ba.frames > 0 && (ba.loop || bg_anim_playing())) {
+        int f = ba.fps < 1 ? 1 : ba.fps;
+        if (f >= 4) return f;              // already fast enough; stay exactly on it
+        int beat = f;
+        while (beat < 4) beat += f;        // smallest multiple of f that reaches four
+        return beat;
+    }
+    // Two full frames of headroom, the same rule sweep_period() uses below.
+    if (s_sweepMs > 0.0f && s_sweepMs * 2.0f > 110.0f) return 4;   // 14,400 bph
+    return 8;                                                       // 28,800 bph
+}
+
+// The hand's position, snapped back to the beat it is in.
+static float beat_quantize(float secs) {
+    const int b = sweep_beat();
+    if (b <= 1) return secs;
+    const float q = floorf(secs * (float)b) / (float)b;
+    return q;
+}
+
+// Milliseconds until the next beat, so a step lands ON it rather than near it.
+static uint32_t beat_aim() {
+    const int b = sweep_beat();
+    if (b <= 1) return 1000;
+    struct timeval tv;
+    gettimeofday(&tv, nullptr);
+    const long  slotUs = 1000000L / b;
+    const long  intoUs = (long)tv.tv_usec % slotUs;
+    uint32_t ms = (uint32_t)((slotUs - intoUs) / 1000);
+    if (ms < 5) ms += (uint32_t)(slotUs / 1000);   // too close to chase; take the next one
+    return ms;
+}
+
 static uint32_t sweep_period() {
     // Twice the compositing, because LVGL then renders the invalidated box and pushes it over
     // QSPI, roughly as much again. Measured: 26 ms of work held 13 frames a second at a 70 ms
@@ -1341,8 +1885,65 @@ static uint32_t sweep_period() {
     return (uint32_t)ms;
 }
 
+// Defined below, beside the minute-move path it guards; declared here because the cache
+// BUILD (further up) is its first caller.
+static bool nomin_cache_usable();
+
 static lv_color_t *s_under = nullptr;
+// The dial with NO minute hand on it, and nothing above the minute hand either.
+//
+// s_under is rebuilt whenever the minute hand has to creep a pixel, which on a long hand is
+// every three seconds, and a rebuild is a whole dial: 28 ms reading the plate out of flash,
+// 44 ms turning the hands, 19 ms copying the result. 92 ms measured on Zion's Orb, during
+// which a sweeping second hand cannot move at all, which is seen as a stutter every few
+// seconds.
+//
+// Almost none of that work is needed. The plate has not changed and the hour hand has barely
+// moved. So this holds everything below the minute hand, and moving the minute means
+// restoring only the rows it covers out of here and drawing it again. 30,000 pixels instead
+// of 217,000, and no flash read.
+//
+// Rebuilt only when something under the minute hand actually changes: the hour, the
+// background frame, or the theme.
+static lv_color_t *s_noMin = nullptr;
+static int  s_noMinHr = -1;
+static bool s_noMinValid = false;
+// The hour hand's angle at the moment that cache was composed. The hour, on its own, is not
+// enough: it only changes once an hour and the hand moves the whole time.
+static float s_noMinHrAng = -1000.0f;
+// The angle the minute hand was last drawn at, so a move knows what to wipe.
+static float s_prevMinAng = -1000.0f;
 static int  s_underMin = -1, s_underHr = -1;   // what minute this cache is of
+// WHICH CANVAS these caches are a picture of.
+//
+// s_buf is taken in onEnter() and given back in onExit(), so it is a different buffer every
+// time the clock is looked at. The caches outlive it and carry no memory of that, and every
+// freshness test here asks about TIME. Seconds after a trip to Settings the cache reads as
+// perfectly fresh while describing a canvas that no longer exists, so the cheap road gets
+// taken into a canvas that was just filled black and the dial comes back in slivers.
+// Zion saw exactly that on 2026-10-04 after changing the tick level.
+//
+// Staleness is therefore two questions, not one: is this of the right MOMENT, and is it of
+// the right CANVAS. onEnter answers the second by hand as well; this is what makes a future
+// path that forgets to impossible to get wrong.
+static lv_color_t *s_underFor = nullptr;
+// Minutes-of-the-hour, fractional, that the cache was composed at. The minute hand lives
+// in the cache, so for the whole life of a cache that hand cannot move. Holding one cache
+// per whole minute is what made the Orb's minute hand jump a full division at the top of
+// the minute instead of creeping, which is right for a railway dial and wrong for every
+// other sweeping one. Jean-Paul Stringaro spotted it against Studio, 2026-09-29.
+static float s_underMins = -1.0f;
+// What a full compose actually costs on this design, rolling average, milliseconds. The
+// sweep has measured itself for a long time; the compose never did, and a figure noted for
+// a plain dial (72 ms) got quoted at a busy one that takes three or four times that. The
+// minute hand's step is paid for in whole composes, so this is the number that decides
+// whether the step can be animated at all.
+#if defined(ESP_PLATFORM)
+static float s_composeMs = 0.0f;     // measured on the device, nothing assumed
+#else
+static float s_composeMs = 20.0f;    // the simulator composes in software, and fast
+#endif
+static bool s_stepTold = false;
 static bool s_prevSecValid = false;
 static lv_area_t s_prevSec = { 0, 0, 0, 0 };
 static float s_prevAng = 0.0f;
@@ -1381,9 +1982,9 @@ static bool sweep_possible() {
 }
 
 // The box the second hand can reach at this angle, padded by a pixel for the bilinear tap.
-static lv_area_t second_box(float angDeg) {
-    const theme_style::Hand &hd = theme_style::clock().hand[2];
-    CustomSprite spr = custom_hand(2);
+static lv_area_t hand_box(int kind, float angDeg) {
+    const theme_style::Hand &hd = theme_style::clock().hand[kind];
+    CustomSprite spr = custom_hand(kind);
     const int sw = spr.data ? spr.w : 0, sh = spr.data ? spr.h : 0;
     const float px = (float)hd.pivotX, py = (float)hd.pivotY;
     const float th = angDeg * DEG2RAD, ct = cosf(th), st = sinf(th);
@@ -1436,7 +2037,85 @@ static bool sprite_span(int dy, float ang, float cx, float cy, int pivotX, int p
     return true;
 }
 
+// How stale the cached minute hand is allowed to get, in fractional minutes.
+//
+// The minute hand is in the cache, so it only moves when the cache is rebuilt. Rebuilding
+// once a whole minute makes it jump a division; rebuilding every frame would cost a full
+// compose thirty times a second and there would be no sweep left. The honest limit is the
+// screen: rebuild once the tip has travelled about a pixel, and the hand reads as creeping
+// because nothing finer than a pixel can be shown anyway.
+//
+// reach is the hand's own length past the pivot, in pixels, so a short hand on a sub-dial
+// rebuilds less often than a long one that spans the glass. 6 degrees a minute is the
+// minute hand's rate, so a pixel at radius r takes (1 / (r * 6 * DEG2RAD)) minutes.
+//
+// A railway design is exempt and keeps the whole-minute cache: there the jump is the point.
+static float cache_minutes_allowed() {
+    const theme_style::Clock &cs = theme_style::clock();
+    if (cs.secondRailway && cs.secondSweep) return 1.0f;   // the step IS the design
+    const theme_style::Hand &hd = cs.hand[1];
+    if (!hd.show) return 1.0f;                             // no minute hand, nothing to creep
+    CustomSprite spr = custom_hand(1);
+    if (!spr.data) return 1.0f;
+    // The longer side of the sprite away from its pivot: that is what sweeps the biggest arc.
+    const float up = (float)hd.pivotY, down = (float)(spr.h - hd.pivotY);
+    const float reach = up > down ? up : down;
+    if (reach < 8.0f) return 1.0f;                         // too short for a pixel to matter
+    const float mins = 1.0f / (reach * 6.0f * DEG2RAD);
+    // Never more often than a tenth of a second's worth of work, never less often than once
+    // a minute. The floor is what protects the sweep on a very long hand.
+    return mins < 0.05f ? 0.05f : (mins > 1.0f ? 1.0f : mins);
+}
+
 // Compose the dial without its second hand and keep it. Once a minute, not once a frame.
+// Where the minute hand points right now, by the same rule compose_custom uses. One function,
+// because a cache that disagrees with the compose about this would leave a hand drawn twice.
+// HOW LONG THE CACHE UNDER THE MINUTE HAND MAY STAND, in minutes of wall time.
+//
+// s_noMin holds everything below the minute hand, and the HOUR hand is the thing down there
+// that moves. It was only ever thrown away when tm_hour changed, so the hour hand was composed
+// once an hour and the in-place minute move kept restoring that same frozen copy over and over.
+// On a sweeping dial the hour hand therefore did not creep at all: it stood still for up to an
+// hour and then jumped a whole division. Reported by wizard.oz on 2026-10-06, who read the
+// change that caused it and named it before I did.
+//
+// The minute hand has had the right rule since 2.16.38, in cache_minutes_allowed just above:
+// hold the cache until the hand's TIP has travelled a pixel, because a hand that has not moved
+// a pixel has not moved. This is that rule for the hand one layer down. The hour hand turns at
+// half a degree a minute against the minute hand's six, and is shorter, so it buys roughly a
+// minute where the minute hand buys three seconds. A recompose a minute is nothing beside the
+// one every 3.4 seconds that 2.16.56 was written to remove.
+static float hour_cache_minutes() {
+    const theme_style::Clock &cs = theme_style::clock();
+    const theme_style::Hand &hd = cs.hand[0];
+    if (!hd.show) return 60.0f;                    // no hour hand: nothing under there to go stale
+    CustomSprite spr = custom_hand(0);
+    if (!spr.data) return 60.0f;
+    const float up = (float)hd.pivotY, down = (float)(spr.h - hd.pivotY);
+    const float reach = up > down ? up : down;
+    if (reach < 8.0f) return 60.0f;                // too short for a pixel to matter
+    // Degrees for one pixel at that reach, then at the hour hand's own half a degree a minute.
+    const float mins = (1.0f / (reach * DEG2RAD)) / 0.5f;
+    // Never more often than every two seconds, and never longer than the hour it used to be.
+    return mins < 0.034f ? 0.034f : (mins > 60.0f ? 60.0f : mins);
+}
+
+static float hour_angle_now(const struct tm *ti) {
+    const theme_style::Clock &cs = theme_style::clock();
+    const bool rw = cs.secondRailway && cs.secondSweep;
+    float mins = minute_hand_mins(rw, ti->tm_min, ti->tm_sec);
+    if (rw && s_stepEase >= 0.0f) mins = (float)ti->tm_min + s_stepEase;
+    return ((ti->tm_hour % 12) + mins / 60.0f) * 30.0f;
+}
+
+static float minute_angle_now(const struct tm *ti) {
+    const theme_style::Clock &cs = theme_style::clock();
+    const bool rw = cs.secondRailway && cs.secondSweep;
+    float mins = minute_hand_mins(rw, ti->tm_min, ti->tm_sec);
+    if (rw && s_stepEase >= 0.0f) mins = (float)ti->tm_min + s_stepEase;
+    return mins * 6.0f;
+}
+
 static bool rebuild_under(const struct tm *ti) {
     if (!s_buf) return false;
     if (!s_under) {
@@ -1450,13 +2129,261 @@ static bool rebuild_under(const struct tm *ti) {
         // cache would be a wrong one.
         if (!s_under) return false;
     }
+    if (!s_noMin) {
+        const size_t bytes = (size_t)SCREEN_W * SCREEN_H * sizeof(lv_color_t);
+#if defined(ESP_PLATFORM)
+        s_noMin = (lv_color_t *)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+        s_noMin = (lv_color_t *)malloc(bytes);
+#endif
+        // Not fatal. Without it every minute move costs a full rebuild, which is exactly what
+        // happened before this existed, so the clock is slower and not wrong.
+    }
     clip_reset();
-    compose_custom(ti, true, false);
+    // The lower cache first, from the same compose: stop below the minute hand, keep that,
+    // then carry on up to the second hand for s_under. Two memcpys and one compose rather
+    // than two composes.
+    if (s_noMin && nomin_cache_usable()) {
+        compose_custom(ti, 1, false);
+        memcpy(s_noMin, s_buf, (size_t)SCREEN_W * SCREEN_H * sizeof(lv_color_t));
+        s_noMinHr = ti->tm_hour;
+        s_noMinHrAng = hour_angle_now(ti);
+        s_noMinValid = true;
+    }
+    clip_reset();
+    compose_custom(ti, 2, false);
     memcpy(s_under, s_buf, (size_t)SCREEN_W * SCREEN_H * sizeof(lv_color_t));
+    s_underFor = s_buf;
     s_underHr = ti->tm_hour;
     s_underMin = ti->tm_min;
+    s_underMins = (float)ti->tm_min + (float)ti->tm_sec / 60.0f;
+    s_prevMinAng = minute_angle_now(ti);
     s_prevSecValid = false;
     s_fullNext = true;
+    return true;
+}
+
+// Is the s_noMin cache safe to use on THIS design?
+//
+// No, when a MOVING hand sits below the minute hand in the draw order.
+//
+// s_noMin is built with stopKind=1, "everything below the minute hand", and the minute-move
+// path restores rows out of it. That is only sound while the things below the minute hand
+// hold still. With Steam Punk's order — [static1, static2, SECOND, minute, hour] — the
+// second hand is below the minute hand, so it gets composited INTO s_noMin at whatever
+// angle it happened to have when the cache was built, and every later minute move reprints
+// that stale hand. The sweep only ever wipes the box the hand is in NOW, so a copy left at
+// a different angle is never erased.
+//
+// Reported by Greg, 2026-10-06, and the symptoms name the mechanism exactly: a second
+// second hand, with a shadow of its own, absent at boot and appearing a little later (the
+// first minute move), fixed in one spot for ever (the cache is not rebuilt), on the
+// sub-dial, at a position that differs between reboots (wherever the hand was when the
+// cache happened to be built).
+//
+// s_under already handles any draw order — that was Zion's Beige dial, and the fix was to
+// stop the cache at the second hand and redraw everything above it per frame. s_noMin never
+// got the same treatment, because until this theme nothing put a moving hand underneath the
+// minute hand.
+//
+// This is the GUARD, not the cure: it declines the optimisation rather than risking a wrong
+// picture, so these designs fall back to the full rebuild on a minute move — correct, and
+// about every three seconds. The cure is to stop s_noMin below whichever moving hand comes
+// first in the order, and that is a change to the most intricate code on this screen, so it
+// wants hardware in front of it rather than being bundled in here.
+static bool nomin_cache_usable() {
+    const theme_style::Clock &cs = theme_style::clock();
+    if (!cs.hand[2].show) return true;          // no second hand to go stale
+    for (int i = 0; i < cs.orderN; ++i) {
+        if (cs.order[i] == 2) return false;     // second hand reached first: it is BELOW the minute
+        if (cs.order[i] == 1) return true;      // minute hand reached first: the usual case
+    }
+    return true;
+}
+
+// MOVE THE MINUTE HAND WITHOUT REBUILDING THE DIAL.
+//
+// The same trick the sweep uses on the second hand, applied one layer down. Restore only the
+// rows the minute hand covers, out of the cache that has no minute hand in it, draw the hand
+// again, and copy those rows back. 30,000 pixels rather than 217,000, and no plate read.
+//
+// Measured before this, on Zion's Orb: 92 ms every 3.7 seconds, with a sweeping second hand
+// frozen for all of it. One frame at the 14 fps he was getting is 71 ms, so the stall did not
+// fit inside a frame and was seen.
+//
+// Returns false when it cannot be done, and every caller falls back to the full rebuild. That
+// is the whole safety story here: no cache, no sprite, no hand, nothing stale, just slower.
+static bool refresh_minute(const struct tm *ti, float ang) {
+    if (!s_buf || !s_under || !s_noMin || !s_noMinValid) return false;
+    if (!nomin_cache_usable()) return false;   // a moving hand is below the minute: see above
+    if (s_underFor != s_buf) return false;           // a cache of some previous canvas
+    if (s_noMinHr != ti->tm_hour) return false;      // the hour hand moved; that is under us
+    // ...and it moves BETWEEN hours too, which this used to miss entirely. See
+    // hour_cache_minutes: hold the cache until the hour hand's tip has travelled a pixel,
+    // then rebuild rather than keep painting a hand that is no longer where it belongs.
+    {
+        float apart = hour_angle_now(ti) - s_noMinHrAng;
+        while (apart > 180.0f)  apart -= 360.0f;
+        while (apart < -180.0f) apart += 360.0f;
+        if (apart < 0.0f) apart = -apart;
+        if (apart >= hour_cache_minutes() * 0.5f) return false;
+    }
+    const theme_style::Clock &cs = theme_style::clock();
+    const theme_style::Hand &hd = cs.hand[1];
+    if (!hd.show) return false;
+    CustomSprite spr = custom_hand(1);
+    if (!spr.data) return false;
+    if (s_prevMinAng < -900.0f) return false;        // nothing to restore from yet
+
+    lv_area_t box = hand_box(1, ang);
+    area_join(box, hand_box(1, s_prevMinAng));
+    if (box.x2 < box.x1 || box.y2 < box.y1) return false;
+
+    const bool shadow = cs.shadowOn && custom_shadow(1).data;
+    // STATIC, not on the stack, for the reason sweep_frame gives: two arrays of 466 ints is
+    // 3.7 KB on a task whose headroom is measured in single kilobytes. Only one of these runs
+    // at a time.
+    static int runLo[SCREEN_H], runHi[SCREEN_H];
+    const float angs[2] = { s_prevMinAng, ang };
+    for (int y = box.y1; y <= box.y2; ++y) {
+        int lo = 1 << 20, hi = -(1 << 20), a, b;
+        for (int i = 0; i < 2; ++i) {
+            if (sprite_span(y, angs[i], (float)hd.centerX, (float)hd.centerY,
+                            hd.pivotX, hd.pivotY, spr.w, spr.h, a, b)) {
+                if (a < lo) lo = a;
+                if (b > hi) hi = b;
+            }
+            if (shadow && sprite_span(y, angs[i], (float)(hd.centerX + cs.shadowDX),
+                                      (float)(hd.centerY + cs.shadowDY),
+                                      hd.pivotX, hd.pivotY, spr.w, spr.h, a, b)) {
+                if (a < lo) lo = a;
+                if (b > hi) hi = b;
+            }
+        }
+        if (lo < box.x1) lo = box.x1;
+        if (hi > box.x2) hi = box.x2;
+        runLo[y] = lo; runHi[y] = hi;
+        if (hi < lo) continue;
+        memcpy(&s_buf[y * SCREEN_W + lo], &s_noMin[y * SCREEN_W + lo],
+               (size_t)(hi - lo + 1) * sizeof(lv_color_t));
+    }
+
+    // Everything from the minute hand up to the second hand, drawn into exactly what was
+    // wiped. Shadows first, as the full compose does, then the hands in the design's order.
+    s_clipX0 = box.x1; s_clipY0 = box.y1; s_clipX1 = box.x2; s_clipY1 = box.y2;
+    s_runLo = runLo; s_runHi = runHi;
+    const float mins = minute_hand_mins(cs.secondRailway && cs.secondSweep, ti->tm_min, ti->tm_sec);
+    const float hrs  = (ti->tm_hour % 12) + mins / 60.0f;
+    const float all[5] = { hrs * 30.0f, ang, 0.0f, 0.0f, 0.0f };
+    if (cs.shadowOn) {
+        bool past = false;
+        for (int i = 0; i < cs.orderN; ++i) {
+            const int k = cs.order[i];
+            if (k == 2) break;                       // the sweep owns everything from here up
+            if (k < 0 || k > 2) continue;
+            if (!past) { if (k == 1) past = true; else continue; }
+            const theme_style::Hand &oh = cs.hand[k];
+            if (!oh.show) continue;
+            CustomSprite sh = custom_shadow(k);
+            if (sh.data) blend_shadow(sh.data, sh.w, sh.h, oh.pivotX, oh.pivotY,
+                                      (float)(oh.centerX + cs.shadowDX),
+                                      (float)(oh.centerY + cs.shadowDY), all[k]);
+        }
+    }
+    {
+        bool past = false;
+        for (int i = 0; i < cs.orderN; ++i) {
+            const int k = cs.order[i];
+            if (k == 2) break;
+            if (k < 0 || k > 4) continue;
+            if (!past) { if (k == 1) past = true; else continue; }
+            const theme_style::Hand &oh = cs.hand[k];
+            if (!oh.show) continue;
+            CustomSprite os = custom_hand(k);
+            if (os.data) blend_custom_hand(os.data, os.w, os.h, oh.pivotX, oh.pivotY,
+                                           (float)oh.centerX, (float)oh.centerY, all[k], oh.blend);
+        }
+    }
+    // The clip STAYS ON until the layers above the second hand have gone back too. Resetting
+    // it here drew them over the whole dial instead of over the rows this wiped, which is a
+    // louder version of the same fault.
+    //
+    // Back into the cache the sweep restores from, the same rows and no more. Before either
+    // the layers above the second hand or the glass, because that cache holds neither.
+    for (int y = box.y1; y <= box.y2; ++y) {
+        if (runHi[y] < runLo[y]) continue;
+        memcpy(&s_under[y * SCREEN_W + runLo[y]], &s_buf[y * SCREEN_W + runLo[y]],
+               (size_t)(runHi[y] - runLo[y] + 1) * sizeof(lv_color_t));
+    }
+
+    // AND EVERYTHING THE DESIGN DRAWS ABOVE THE SECOND HAND, over the rows this wiped.
+    //
+    // The second hand belongs to the sweep and is not drawn here. Whatever sits ABOVE it does
+    // not: this function has just restored its rows out of a cache that stops below the
+    // minute hand, so those layers are gone from every row it touched, and the sweep frame
+    // that follows only repairs its own small box. Everywhere else they stayed missing until
+    // something repainted the whole dial, which is every few seconds on a creeping minute
+    // hand. Measured on the simulator: 3,496 pixels wrong, and 33 once the frame after it was
+    // allowed to repaint everything, which is what pointed at this rather than at the drawing.
+    //
+    // A design with nothing above its second hand shows none of it, which is why this reached
+    // somebody else's Orb rather than Zion's.
+    {
+        bool past = false;
+        for (int i = 0; i < cs.orderN; ++i) {
+            const int k = cs.order[i];
+            if (k < 0 || k > 4) continue;
+            if (k == 2) { past = true; continue; }
+            if (!past) continue;
+            const theme_style::Hand &oh = cs.hand[k];
+            if (!oh.show) continue;
+            if (cs.shadowOn && k <= 2) {
+                CustomSprite osh = custom_shadow(k);
+                if (osh.data) blend_shadow(osh.data, osh.w, osh.h, oh.pivotX, oh.pivotY,
+                                           (float)(oh.centerX + cs.shadowDX),
+                                           (float)(oh.centerY + cs.shadowDY), all[k]);
+            }
+            CustomSprite os = custom_hand(k);
+            if (os.data) blend_custom_hand(os.data, os.w, os.h, oh.pivotX, oh.pivotY,
+                                           (float)oh.centerX, (float)oh.centerY, all[k], oh.blend);
+        }
+    }
+    // AND THE GLASS BACK OVER WHAT WAS JUST REDRAWN.
+    //
+    // This was missing, and it is Jean-Paul Stringaro's report of 2026-10-05: "portions of
+    // the screen / dial show changes in brightness/darkness as the seconds hand sweeps".
+    //
+    // The caches are deliberately held with no overlay on them, because a sweep frame mixes
+    // the glass in per frame on its way out, over exactly the pixels it restored. This
+    // function restores its own pixels out of the same unglassed cache and never did. So
+    // every few seconds, when the minute hand crept, its bounding box lost the glass and did
+    // not get it back until something repainted the whole dial. Measured on the simulator:
+    // 9,916 pixels, up to 51 levels out of 63, inside exactly the minute hand's box. On a
+    // design with no glass nothing showed at all, which is why it reached a stranger's Orb.
+    //
+    // It is the same loop sweep_frame ends with, over the rows this one wiped.
+    if (const uint8_t *overlay = custom_overlay()) {
+        for (int y = box.y1; y <= box.y2; ++y) {
+            if (runHi[y] < runLo[y]) continue;
+            const int base = y * SCREEN_W;
+            for (int x = runLo[y]; x <= runHi[y]; ++x) {
+                const int i = base + x;
+                const uint8_t a = overlay[i * 3 + 2];
+                if (!a) continue;
+                lv_color_t sc; sc.full = (uint16_t)(overlay[i * 3] | (overlay[i * 3 + 1] << 8));
+                s_buf[i] = lv_color_mix(sc, s_buf[i], a);
+            }
+        }
+    }
+    clip_reset();
+    s_prevMinAng = ang;
+    s_underMin = ti->tm_min;
+    s_underMins = (float)ti->tm_min + (float)ti->tm_sec / 60.0f;
+    // The next sweep frame repaints its whole box rather than trusting what was in s_buf
+    // around the second hand, because this has just rewritten part of it.
+    s_prevSecValid = false;
+    s_fullNext = true;
+    lv_obj_invalidate_area(s_canvas, &box);
     return true;
 }
 
@@ -1470,9 +2397,9 @@ static void sweep_frame(float secs) {
     const theme_style::Hand &hd = cs.hand[2];
     const float ang = secs * 6.0f;
 
-    lv_area_t box = second_box(ang);
+    lv_area_t box = hand_box(2, ang);
     if (s_prevSecValid) area_join(box, s_prevSec);
-    s_prevSec = second_box(ang);
+    s_prevSec = hand_box(2, ang);
     s_prevSecValid = true;
 
     s_clipX0 = box.x1; s_clipY0 = box.y1; s_clipX1 = box.x2; s_clipY1 = box.y2;
@@ -1543,15 +2470,42 @@ static void sweep_frame(float secs) {
         struct tm ti;
         time_for_face(&ti);
         {
-            const float p_sec = (float)ti.tm_sec, p_min = ti.tm_min + p_sec / 60.0f;
+            // The SAME minute rule the cache was built with. This recomputed it with the
+            // plain creeping formula, so on a design that draws its minute hand above the
+            // second hand the cache placed that hand on its mark and this put it back on
+            // the creep, a fraction of a degree away, every frame. 2.16.39 fixed the rule
+            // in compose_custom and missed its twin here, which is the kind of thing having
+            // one shared helper is supposed to prevent.
+            const bool rwAbove = cs.secondRailway && cs.secondSweep;
+            float p_min = minute_hand_mins(rwAbove, ti.tm_min, ti.tm_sec);
+            if (rwAbove && s_stepEase >= 0.0f) p_min = (float)ti.tm_min + s_stepEase;
             const float p_hr = (ti.tm_hour % 12) + p_min / 60.0f;
             const float above[5] = { p_hr * 30.0f, p_min * 6.0f, ang, 0.0f, 0.0f };
+            // THE CACHED PAIR, HERE, WHICH IS WHERE IT ACTUALLY EARNS ANYTHING.
+            //
+            // On a draw order that puts the second hand below the minute and hour — which is
+            // what sent me looking — s_under stops below the second hand and therefore holds
+            // NEITHER of the other two. They are redrawn from here on every sweep frame, and
+            // on the frame after any full rebuild the clip is the whole screen, so that is
+            // the 472 ms of bilinear sprite work the layer cache exists to remove. The first
+            // version of this wired it into draw_custom() only, which the sweep path never
+            // calls: correct, validated, and never once executed on a sweeping dial.
+            //
+            // Order is unchanged from what this loop already did. It draws shadow-then-hand
+            // per hand, so the second hand is already underneath the minute and hour shadows
+            // here; laying the shadow layer and then the hand layer keeps that.
+            const bool layered = layers_tick(above[1], above[0]);
+            if (layered) {
+                if (cs.shadowOn) lay_blit(s_layShadow);
+                lay_blit(s_layHand);
+            }
             bool past = false;
             for (int i = 0; i < cs.orderN; ++i) {
                 const int k = cs.order[i];
                 if (k < 0 || k > 4) continue;
                 if (k == 2) { past = true; continue; }
                 if (!past) continue;
+                if (layered && (k == 0 || k == 1)) continue;   // in the layers already
                 const theme_style::Hand &oh = cs.hand[k];
                 if (!oh.show) continue;
                 if (cs.shadowOn && k <= 2) {
@@ -1656,10 +2610,68 @@ static float second_now() {
 // a pause in a glide and Studio only ever writes the pair together. This was blamed for the
 // hands flashing to twelve in September 2026 and was innocent: that was the clock read
 // underneath it (orb_time.h), and the self-test in sim_main.cpp now holds both apart.
+static const float STOP_AT = 58.5f;   // the second hand parks here and waits for the roll
 static float railway_seconds(float secs) {
     const theme_style::Clock &cs = theme_style::clock();
     if (!cs.secondRailway || !cs.secondSweep) return secs;
-    return secs >= 58.5f ? 60.0f : secs * (60.0f / 58.5f);
+    return secs >= STOP_AT ? 60.0f : secs * (60.0f / STOP_AT);
+}
+
+// The step, drawn rather than jumped. A real railway minute hand takes a moment to cross
+// the gap, and without that moment it simply appears on the far side: correct, and lifeless.
+//
+// It runs in the last STEP_SECS of the stop, BEFORE the minute rolls, not after it. That is
+// the whole trick. From 58.5 s the second hand is already parked at 12, so the full composes
+// this needs cost nothing visible: no other hand is moving. Animating after the roll would
+// have frozen the first third of a second of the second hand's glide, which is the one thing
+// this must not touch. The hand therefore sits a little past its mark for the last third of
+// a second of the minute, which is also what a real one does while it is stepping.
+//
+// Driven by the clock rather than by a frame count, so it lands on the mark at the roll
+// whether the device gets five frames into the window or three.
+static const float STEP_SECS = 0.60f;    // about 8 frames at the ~72 ms a full compose takes
+
+// Ease in, ease out, no overshoot: smoothstep.
+//
+// This was easeOutBack, and at this frame rate that was simply wrong. A back ease puts most
+// of its travel in the first instant, so the first frame alone covered 71% of the gap, the
+// second overshot to 103%, and the last three crawled backwards by a few percent each. Five
+// frames shaped like that do not read as one movement, they read as two: a jump to about the
+// middle, then a small correction onto the mark. Zion described it as "dut dut", which is
+// precisely what those numbers draw.
+//
+// A step this short cannot afford a curve that spends its frames unevenly. Smoothstep moves
+// at most 18% of the gap in any one frame and is symmetric, so the hand accelerates away and
+// decelerates in, which is what momentum looks like when you only have eight frames to say
+// it with. The overshoot went with it: at eight frames a settle is a second motion, not a
+// flourish.
+static float ease_step(float t) {
+    return t * t * (3.0f - 2.0f * t);
+}
+
+// Whether this design can afford to ANIMATE the step at all.
+//
+// Every frame of the step is a whole compose, because the minute hand lives inside the
+// sweep cache. A plain dial composes in about 72 ms and gets eight frames; a busy one with
+// pictures takes three or four times that and gets two. Two frames is the worst of both
+// worlds: not a movement, and not the clean click it replaced. Zion saw exactly that, twice,
+// and described it both times as one big jump followed by a small one, which is what two
+// frames of any curve look like.
+//
+// So the step animates only where there are frames to animate it with, and clicks over in
+// one move everywhere else. Measured per design, not assumed, and re-measured as the design
+// changes.
+static const int STEP_MIN_FRAMES = 6;
+static bool step_affordable(float composeMs) {
+    if (composeMs <= 0.0f) return false;   // nothing measured yet; do not gamble on the first
+    return (STEP_SECS * 1000.0f / composeMs) >= (float)STEP_MIN_FRAMES;
+}
+
+// Where in its step the minute hand is for a given wall second, or -1 when it is not
+// stepping. The window is asserted to sit inside the stop by the simulator self-test.
+static float minute_step_ease(float wallSecs) {
+    const float t = (wallSecs - (60.0f - STEP_SECS)) / STEP_SECS;
+    return (t > 0.0f && t < 1.0f) ? ease_step(t) : -1.0f;
 }
 
 // A tick a second, or a frame every 40 ms while sweeping.
@@ -1680,6 +2692,72 @@ static void retime(void) {
     // renderer, decides when frames happen. That is radar_view's rule about even arrival,
     // applied without having to guess the number.
     lv_timer_set_period(s_tick, sweep_possible() ? sweep_period() : 1000);
+}
+
+// One click a second, from whichever set the worn theme shipped. Nothing else.
+//
+// Guarded like the drawing callback, so an Orb showing another app or sitting under the wind
+// screen is silent. Driven by the second CHANGING rather than by this firing, and re-aimed at
+// the next whole second afterwards, so the interval between two clicks is the clock's own and
+// not this timer's.
+// How long the clock stays silent after it appears, and how long it then takes to come up to
+// the level somebody set.
+//
+// A clock that has just appeared is not yet keeping time smoothly: the first frames are
+// expensive, the art may still be baking, and after a theme install or a flash there is real
+// work going on behind the face. Ticking through that puts the unsteady part of the start
+// into the one thing on this device where unevenness is the whole fault. Zion: "it would be
+// better from a user standpoint to experience the clock ticking once it's going to be
+// absolutely steady."
+//
+// So it waits, then arrives rather than switching on. The ramp is on the level rather than
+// the audio, so it costs nothing and cannot distort anything.
+static const uint32_t TICK_QUIET_MS = 2000;
+static const uint32_t TICK_FADE_MS  = 3000;
+static uint32_t s_faceShownMs = 0;
+
+static void beat_cb(lv_timer_t * /*t*/) {
+    if (!s_beat) return;
+    // Stamped on the transition INTO view, not on every frame, so the wait starts when the
+    // face appears and runs once. Coming back from another app counts, because that redraws
+    // the whole dial and is just as unsteady as a cold start.
+    const bool showing = lv_scr_act() == s_screen && !orb_screen_covered();
+    static bool wasShowing = false;
+    if (showing && !wasShowing) s_faceShownMs = lv_tick_get();
+    wasShowing = showing;
+    if (!showing) return;
+    if (theme_audio::tickCount() <= 0) return;
+    // s_noTime READ, not refreshed. The drawing callback maintains it; calling time_for_face
+    // again here would be a second clock read per wake for an answer that changes about never.
+    if (s_noTime) return;
+
+    struct timeval tv; gettimeofday(&tv, nullptr);
+    static long lastSec = -1;
+    if ((long)tv.tv_sec != lastSec) {
+        lastSec = (long)tv.tv_sec;
+        // Silent while it settles, then up over three ticks. Below one percent is silence
+        // rather than a sound nobody can hear, which audio_play_pcm treats as nothing to do.
+        const uint32_t age = lv_tick_get() - s_faceShownMs;
+        int level = audio_tick_level();
+        if (age < TICK_QUIET_MS) level = 0;
+        else if (age < TICK_QUIET_MS + TICK_FADE_MS)
+            level = (int)((float)level * (float)(age - TICK_QUIET_MS) / (float)TICK_FADE_MS);
+        if (level > 0) {
+            size_t n = 0;
+            if (const uint8_t *pcm = theme_audio::nextTick(n)) audio_play_pcm(pcm, n, false, level);
+        }
+    }
+
+    // ONE wake per second, aimed AT the boundary rather than short of it.
+    //
+    // This used to stop 40 ms early and then poll every 5 ms, which is thirteen wakes a
+    // second instead of one, every one of them on the same task that draws. On a stepping
+    // dial that is invisible; on a sweeping one those wakes land in the middle of the hand's
+    // own frames and Zion saw it stutter. An LVGL timer fires at or after its period, so
+    // aiming at the boundary wakes on it or a few milliseconds after, which is what the
+    // click wants anyway and costs a twelfth of the interruptions.
+    const uint32_t toGo = (uint32_t)((1000000 - tv.tv_usec) / 1000);
+    lv_timer_set_period(s_beat, toGo < 5 ? 5 : toGo);
 }
 
 static void tick_cb(lv_timer_t * /*t*/) {
@@ -1703,8 +2781,32 @@ static void tick_cb(lv_timer_t * /*t*/) {
         const int want = bg_anim_frame();
         if (want != s_bgFrame) {
             s_bgFrame  = want;
-            s_underMin = -1;      // makes the sweep path rebuild below
-            s_fullNext = true;    // and the frame after it repaint in full
+            // INVALIDATE BOTH CACHES, BY THE KEY EACH ONE ACTUALLY USES.
+            //
+            // s_underMin alone was not enough and the comment that used to sit here
+            // ("makes the sweep path rebuild below") was true when it was written and
+            // stopped being true later. s_underMin is the staleness key for a RAILWAY
+            // dial only — `ti.tm_min != s_underMin`. A dial that creeps, which is every
+            // sweeping design that is not a railway clock, is tested against s_underMins,
+            // a float holding minutes-with-fraction, and that was left alone. So on
+            // Steam Punk the frame index advanced and the cache holding the old background
+            // was never rebuilt: the picture only changed when the cache happened to be
+            // rebuilt for its OWN reason, the three-second minute creep, which picked up
+            // whatever frame was current by then.
+            //
+            // Greg, 2026-10-06: "no animation is playing, I occasionally will see a single
+            // frame change on the background but that's it" — which is this exactly, and is
+            // what a six-frame sequence looks like when five of the six invalidations are
+            // dropped on the floor.
+            //
+            // s_noMin needs it too. Its own comment already says it is "rebuilt only when
+            // something under the minute hand actually changes: the hour, the background
+            // frame, or the theme" — the background frame was in the list and not in the
+            // code, so a minute move would restore the previous frame's background.
+            s_underMin   = -1;        // railway dials
+            s_underMins  = -1.0f;     // ...and creeping ones, which is what was missing
+            s_noMinValid = false;     // s_noMin holds the background as well
+            s_fullNext   = true;      // and the frame after it repaints in full
         }
         // Tick fast enough for whichever of the two needs it more, never just the animation.
         //
@@ -1719,16 +2821,126 @@ static void tick_cb(lv_timer_t * /*t*/) {
             const bool running = a2.frames > 0 && (a2.loop || bg_anim_playing());
             const uint32_t base = sweep_possible() ? sweep_period() : 1000;
             const uint32_t need = (uint32_t)(1000 / (a2.fps < 1 ? 1 : a2.fps));
-            const uint32_t want2 = running ? (need < base ? need : base) : base;
+            uint32_t want2 = base;
+            if (running) { want2 = bg_rate(need, base, s_bgEvery); } else { s_bgEvery = 1; }
             if (want2 != s_tickPeriod) { s_tickPeriod = want2; lv_timer_set_period(s_tick, want2); }
         }
+        ++s_bgTick;
     }
 
     if (sweep_possible()) {
-        // The cache is of one minute. When the minute rolls, the hour and minute hands have
-        // moved and everything under the second hand has to be composed again.
-        if (!s_under || ti.tm_min != s_underMin || ti.tm_hour != s_underHr) {
+        // The cache holds the hour and minute hands, so it has to be recomposed before
+        // either of them is visibly out of date. On a railway dial that is once a whole
+        // minute and the hand steps, which is the design. Everywhere else it is roughly
+        // every three seconds, which is how long the minute hand's tip takes to travel one
+        // pixel, and the hand reads as creeping the way a mechanical watch does.
+        //
+        // Railway is a SEPARATE test, not a one-minute budget. Measuring elapsed time from
+        // the last rebuild meant the step landed a whole minute after the previous one,
+        // which is wherever the Orb happened to boot: start at 12:02:15 and it stepped at
+        // :15 past every minute, never at the top. Jean-Paul Stringaro caught it the day
+        // 2.16.38 shipped. The minute roll is an event, so test for the event.
+        const theme_style::Clock &csR = theme_style::clock();
+        const bool railwayDial = csR.secondRailway && csR.secondSweep;
+        // Read the clock ONCE: the step window and the second hand have to agree about
+        // which instant this frame is, or the hand can step against a different second
+        // than the one it is drawn beside.
+        const float wall = second_now();
+        float aged = 0.0f;
+        bool stale;
+        if (railwayDial) {
+            // Each frame of the step moves the hand, so each one needs the cache rebuilt.
+            // When the step ends, one more rebuild puts the hand exactly on the new mark.
+            const bool  canAnimate = step_affordable(s_composeMs);
+#if defined(ESP_PLATFORM)
+            if (!s_stepTold && s_composeMs > 0.0f) {
+                s_stepTold = true;
+                Serial.printf("[step] a compose costs %.0f ms on this design, so the minute "
+                              "hand's step %s (needs %d frames in %.0f ms)\n",
+                              s_composeMs,
+                              canAnimate ? "is animated" : "clicks over in one move",
+                              STEP_MIN_FRAMES, STEP_SECS * 1000.0f);
+            }
+#endif
+            const float ease = canAnimate ? minute_step_ease(wall) : -1.0f;
+            const bool  wasStepping = s_stepEase >= 0.0f;
+            s_stepEase = ease;
+            stale = ease >= 0.0f || wasStepping || ti.tm_min != s_underMin;
+        } else {
+            const float nowMins = (float)ti.tm_min + (float)ti.tm_sec / 60.0f;
+            aged = nowMins - s_underMins;
+            if (aged < 0.0f) aged += 60.0f;                // the hour rolled under us
+            stale = s_underMins < 0.0f || aged >= cache_minutes_allowed();
+        }
+        (void)aged;
+        if (!s_under || stale || ti.tm_hour != s_underHr || s_underFor != s_buf) {
+            // The cheap road first: if the only thing that moved is the minute hand, move it
+            // in place instead of recomposing the dial around it. Falls through to the full
+            // rebuild on any doubt, which is what makes this safe to try.
+            if (s_under && stale && ti.tm_hour == s_underHr) {
+#if defined(ESP_PLATFORM)
+                const uint32_t m0 = micros();
+#endif
+                const bool moved = refresh_minute(&ti, minute_angle_now(&ti));
+#if defined(ESP_PLATFORM)
+                if (moved) {
+                    // Reported beside the full rebuild, because the whole question is which of
+                    // the two the clock is actually doing and what each costs.
+                    static uint32_t mLast = 0, mRuns = 0; static float mGap = 0, mTook = 0;
+                    const uint32_t mNow = millis();
+                    if (mLast) { mGap += (float)(mNow - mLast); mTook += (float)(micros() - m0) / 1000.0f; mRuns++; }
+                    mLast = mNow;
+                    if (mRuns >= 8) {
+                        Serial.printf("[sweep] minute moved in place every %.1f s, %.0f ms each"
+                                      " (hand stops %.0f%% of the time)\n",
+                                      mGap / mRuns / 1000.0f, mTook / mRuns,
+                                      100.0f * (mTook / mRuns) / (mGap / mRuns));
+                        mRuns = 0; mGap = 0; mTook = 0;
+                    }
+                }
+#endif
+                if (moved) {
+                sweep_pad_for_shadow();
+                sweep_frame(railway_seconds(wall));
+                return;
+                }
+            }
+#if defined(ESP_PLATFORM)
+            const uint32_t c0 = micros();
+#endif
             if (!rebuild_under(&ti)) { redraw(&ti); return; }
+#if defined(ESP_PLATFORM)
+            // Same shape as the sweep's own meter below: the WORK, not the gap between
+            // frames, so it cannot feed back into the period that schedules it.
+            {
+                const float took = (float)(micros() - c0) / 1000.0f;
+                if (took < 2000.0f)
+                    s_composeMs = (s_composeMs <= 0.0f) ? took : s_composeMs + 0.2f * (took - s_composeMs);
+
+                // SAY IT OUT LOUD, every eighth rebuild.
+                //
+                // A recompose is the one thing on this screen that stops the sweep dead: the
+                // whole dial is redrawn and the hand cannot move while it happens. How often
+                // that is depends on the minute hand's reach, and how long it takes depends
+                // on the design, so neither can be worked out from here. Zion is watching a
+                // sweep stutter about every seven seconds and asked to be sure rather than
+                // told; this is the Orb answering for itself.
+                static uint32_t lastMs = 0, runs = 0; static float gapSum = 0, tookSum = 0;
+                const uint32_t nowMs = millis();
+                if (lastMs) { gapSum += (float)(nowMs - lastMs); tookSum += took; runs++; }
+                lastMs = nowMs;
+                if (runs >= 8) {
+                    const float avg = tookSum / runs;
+                    Serial.printf("[sweep] FULL recompose every %.1f s, %.0f ms each (hand stops %.0f%% of the time)"
+                                  " -> plate %.0f  text %.0f  hands %.0f  glass %.0f\n",
+                                  gapSum / runs / 1000.0f, avg, 100.0f * avg / (gapSum / runs),
+                                  s_phPlate / runs, s_phText / runs, s_phHands / runs,
+                                  avg - (s_phPlate + s_phText + s_phHands) / runs);
+                    runs = 0; gapSum = 0; tookSum = 0;
+                    s_phPlate = 0; s_phText = 0; s_phHands = 0; s_phRest = 0;
+                }
+            }
+#endif
             // First frame after a rebuild repaints everything, because everything changed.
             // Same path as any other frame, just with the whole dial as its box.
             s_prevSec.x1 = 0; s_prevSec.y1 = 0;
@@ -1736,10 +2948,120 @@ static void tick_cb(lv_timer_t * /*t*/) {
             s_prevSecValid = true;
         }
         sweep_pad_for_shadow();
-        sweep_frame(railway_seconds(second_now()));
+        // Snapped to the beat (see sweep_beat): the hand holds a position for a whole beat
+        // and then moves, which is what an escapement does and what the eye reads as even.
+        sweep_frame(railway_seconds(beat_quantize(wall)));
+        // ...and the next frame is aimed AT the next beat, not merely scheduled soon. A step
+        // that is regular to the millisecond reads as smooth at eight a second; the same step
+        // arriving whenever the renderer happens to finish reads as a stutter, which is the
+        // whole of what "a beat jerky" was.
+        // THE HAND AND THE BACKGROUND ARE NOT ON THE SAME CLOCK, and they should not be.
+        //
+        // A watch's hand beats continuously while its wheels barely turn, and that is the
+        // right shape here for a reason of cost rather than taste: a hand frame repaints
+        // only the box the hand sweeps through, restored out of s_under, while a background
+        // frame repaints all 217,156 pixels and reloads the plate. One is tens of
+        // milliseconds, the other a couple of hundred. So the hand can and should be allowed
+        // to move more often than the picture behind it.
+        //
+        // The tick therefore runs at whichever of the two wants a frame SOONER, and the
+        // background advances only on the ticks where its own index has changed. Taking the
+        // sooner rather than letting the last writer win is the same lesson as the re-aim on
+        // the non-sweep path: this clobbered the bgAnim block's request for one build, and
+        // got away with it only because the theme happened to ask for four of each.
+        if (s_tick) {
+            uint32_t aim = beat_aim();
+            const theme_style::Clock::BgAnim &ba = theme_style::clock().bgAnim;
+            if (ba.frames > 0 && (ba.loop || bg_anim_playing())) {
+                const uint32_t need = 1000u / (uint32_t)(ba.fps < 1 ? 1 : ba.fps);
+                if (need < aim) {
+                    // DIVIDE THE WAIT, do not truncate it.
+                    //
+                    // Taking the smaller of the two threw the aim away. The line above had
+                    // just worked out how long until the real second, which is where the hand
+                    // steps and where the click fires; replacing it with the background's
+                    // period put the frames on a cadence with no relation to the second at
+                    // all. On a ticking dial the hand then moved on whichever of those frames
+                    // happened to cross the boundary first, so it landed up to a whole
+                    // background period after its own sound. At two frames a second that is
+                    // half a second of daylight between the hand and the click.
+                    //
+                    // Zion, 2026-10-07, having turned the sweep off to save frame rate: "the
+                    // hand and audio don't match in their timing". Turning the sweep OFF is
+                    // what exposed it, because a sweeping dial ticks every 77 ms and lands
+                    // near enough the second either way.
+                    //
+                    // Dividing gives the background at least the rate it asked for AND puts
+                    // one of those frames exactly on the second. Same fix as the looping
+                    // background's own stutter, in the branch that was missed.
+                    aim = aim_period(aim, need);
+                }
+            }
+            if (aim != s_tickPeriod) { s_tickPeriod = aim; lv_timer_set_period(s_tick, aim); }
+        }
         return;
     }
+    // The FACE still moves once a second even when the sound beats faster. A watch running at
+    // four does not move its hand four times; the beat is what its sweep is made of, and the
+    // hand it drives still steps once. Drawing four times a second would also cost four full
+    // composes, which is the whole of this screen's budget spent on frames identical to each
+    // other. Unchanged at beat 1, so no existing theme draws any differently.
     redraw(&ti);
+
+    // AIM THE NEXT FRAME AT THE BEAT ITSELF.
+    //
+    // A clock that is not sweeping asked for a frame every 1000 ms, and 1000 ms from WHENEVER
+    // the timer was last set, which is an arbitrary phase against the real second. So the hand
+    // stepped at, say, .47 past every second, for as long as that theme was worn. Nobody
+    // noticed while the hand was the only thing moving, because a second hand half a second
+    // out still looks like a second hand. Giving the clock a voice made it obvious: Zion
+    // heard the tick land about half a second away from where the hand moved.
+    //
+    // Aimed at the second, which is also when the tick fires.
+    //
+    // Re-aimed every frame rather than set once, because the device's clock and LVGL's timer
+    // are not the same clock and will drift apart over hours.
+    if (s_tick && !sweep_possible()) {
+        struct timeval tv; gettimeofday(&tv, nullptr);
+        // ROUNDED UP, AND NEVER SKIPPED. Both halves of this were wrong and both put the
+        // hand behind its own click.
+        //
+        // Integer division truncates, so the wait was always a fraction of a millisecond
+        // SHORT and the timer fired just before the second rather than on it. redraw() then
+        // read a clock that had not rolled yet and drew the old second. Harmless on its own,
+        // except for what happened next: the re-aim found about a millisecond left, the
+        // "too close to chase" guard added a whole second to it, and the hand sat still until
+        // the second after the one it had just missed. The click, which re-aims on a cheap
+        // wake that draws nothing, landed on time and the hand did not.
+        //
+        // Rounding up lands at or just after the boundary, which is where redraw() sees the
+        // new second. And being close is no longer a reason to skip one: a short wait that
+        // catches this second beats a long one that gives up on it. Five milliseconds is the
+        // floor, which is the same floor the audio beat uses.
+        //
+        // Zion, after three wrong diagnoses from me: "the audio and hands don't line up".
+        uint32_t ms = aim_to_second((uint32_t)tv.tv_usec);
+        // ...but never out-wait a background that is mid-play.
+        //
+        // This used to set the period unconditionally, and the bgAnim block at the top of
+        // this same tick had already set it to 1000/fps a few hundred lines earlier. The
+        // last writer won, so on EVERY non-sweeping dial the animation's rate was silently
+        // replaced by "once a second", whatever the theme asked for. A theme asking for
+        // eight frames a second got one, and since bg_anim_frame() derives the frame from
+        // elapsed time rather than from how many frames have been drawn, it then jumped
+        // eight places per draw: a six-frame loop sampled once a second looks like a
+        // flicker, or like nothing at all.
+        //
+        // Steam Punk does not hit this any more because it sweeps, and sweeping dials take
+        // the branch above. It cost a long evening to find on a dial that did not, so the
+        // two requests are reconciled here rather than left to ordering.
+        const theme_style::Clock::BgAnim &ba = theme_style::clock().bgAnim;
+        if (ba.frames > 0 && (ba.loop || bg_anim_playing())) {
+            const uint32_t need = 1000u / (uint32_t)(ba.fps < 1 ? 1 : ba.fps);
+            if (need < ms) ms = need;   // the sooner of the two deadlines
+        }
+        lv_timer_set_period(s_tick, ms);
+    }
 }
 
 // Redraw now, whatever the second says. For coming back from a screen that covered this one
@@ -1749,10 +3071,235 @@ static void tick_cb(lv_timer_t * /*t*/) {
 // the fields behind them, so the test reads as the behaviour it protects.
 bool  clockview::faceHasTime() { struct tm ti; time_for_face(&ti); return !s_noTime; }
 float clockview::handSeconds(float wallSeconds) { return railway_seconds(wallSeconds); }
+float clockview::cacheMinutesAllowed() { return cache_minutes_allowed(); }
+// The movement the sweep is running, in beats a second. x3600 is the beats-per-hour a
+// watchmaker would quote: 8 is 28,800, 4 is 14,400.
+int   clockview::sweepBeat() { return sweep_beat(); }
+float clockview::hourCacheMinutes() { return hour_cache_minutes(); }
+uint32_t clockview::aimPeriod(uint32_t aim, uint32_t need) { return aim_period(aim, need); }
+uint32_t clockview::aimToSecond(uint32_t usec) { return aim_to_second(usec); }
+void clockview::composeCost(float &face, float &plate, float &text, float &hands) {
+    face = s_costFace; plate = s_costPlate; text = s_costText; hands = s_costHands;
+}
+uint32_t clockview::bgTickPeriod(int fps, uint32_t base, uint32_t &every) {
+    return bg_rate((uint32_t)(1000 / (fps < 1 ? 1 : fps)), base, every);
+}
+float clockview::hourTipPixelsIn(float minutes) {
+    const theme_style::Clock &cs = theme_style::clock();
+    const theme_style::Hand &hd = cs.hand[0];
+    CustomSprite spr = custom_hand(0);
+    if (!hd.show || !spr.data) return 0.0f;
+    const float up = (float)hd.pivotY, down = (float)(spr.h - hd.pivotY);
+    const float reach = up > down ? up : down;
+    return reach * (minutes * 0.5f) * DEG2RAD;      // half a degree a minute, at that reach
+}
+// How far one picture is from another, in the panel's own 565 levels, and where. Zero means
+// identical. Both checks below come down to "are these the same".
+static int worst_difference(const lv_color_t *a, const lv_color_t *b, long *count,
+                            int *wx, int *wy) {
+    const size_t n = (size_t)SCREEN_W * SCREEN_H;
+    int worst = 0;
+    if (count) *count = 0;
+    for (size_t i = 0; i < n; ++i) {
+        if (a[i].full == b[i].full) continue;
+        if (count) (*count)++;
+        const int a0 = a[i].full, b0 = b[i].full;
+        const int d[3] = { ((a0 >> 11) & 31) - ((b0 >> 11) & 31),
+                           ((a0 >> 5)  & 63) - ((b0 >> 5)  & 63),
+                           (a0 & 31) - (b0 & 31) };
+        for (int c = 0; c < 3; ++c) {
+            const int m = d[c] < 0 ? -d[c] : d[c];
+            if (m > worst) { worst = m; if (wx) *wx = (int)(i % SCREEN_W); if (wy) *wy = (int)(i / SCREEN_W); }
+        }
+    }
+    return worst;
+}
+
+// Sweep a whole revolution, remember the screen, sweep another, and compare. Same angle, same
+// minute, so the two have to be identical. Anything else is a layer being applied to a pixel
+// that already had it.
+static long sweep_drift_once(int *wx, int *wy) {
+    struct tm ti;
+    time_for_face(&ti);
+    if (!rebuild_under(&ti)) return -1;
+    const size_t n = (size_t)SCREEN_W * SCREEN_H;
+    lv_color_t *shot = (lv_color_t *)malloc(n * sizeof(lv_color_t));
+    if (!shot) return -1;
+    for (int rev = 0; rev < 2; ++rev) {
+        for (int sec = 0; sec < 60; ++sec) { sweep_pad_for_shadow(); sweep_frame((float)sec); }
+        sweep_pad_for_shadow();
+        sweep_frame(0.0f);
+        if (rev == 0) memcpy(shot, s_buf, n * sizeof(lv_color_t));
+    }
+    long count = 0;
+    worst_difference(shot, s_buf, &count, wx, wy);
+    free(shot);
+    return count;
+}
+
+// A SWEPT FRAME AND A FULLY COMPOSED ONE, at the same instant, have to be the same picture.
+//
+// This is the question the drift check does not ask. That one proves the sweep does not
+// DRIFT; it would pass happily while every swept frame was consistently wrong, and a band of
+// dial consistently a shade off from the rest of it is exactly what somebody watching a clock
+// reports as the dial changing brightness where the hand goes.
+//
+// moveMinute also runs the cheap road the minute hand takes every few seconds, which is where
+// the fault actually was.
+static long sweep_vs_full(bool moveMinute, int *wx, int *wy) {
+    struct tm ti;
+    time_for_face(&ti);
+    const size_t n = (size_t)SCREEN_W * SCREEN_H;
+    lv_color_t *full = (lv_color_t *)malloc(n * sizeof(lv_color_t));
+    if (!full) return -1;
+
+    // The whole dial, the way a ticking clock draws it. The same angle both ways, or this
+    // measures the hand being somewhere else rather than the dial being the wrong colour.
+    const float secs = railway_seconds((float)ti.tm_sec);
+    clip_reset();
+    compose_custom(&ti, -1, true);
+    memcpy(full, s_buf, n * sizeof(lv_color_t));
+
+    // The same instant, reached exactly the way the tick callback reaches it. The three lines
+    // after the rebuild are not decoration: a rebuild leaves s_buf holding a compose with no
+    // overlay on it, and it is the first sweep frame, with the whole screen as its box, that
+    // puts the glass back over all of it. Leaving them out measured a dial with no glass
+    // against one with glass and called 75% of the screen a fault.
+    if (!rebuild_under(&ti)) { free(full); return -1; }
+    s_prevSec.x1 = 0; s_prevSec.y1 = 0;
+    s_prevSec.x2 = SCREEN_W - 1; s_prevSec.y2 = SCREEN_H - 1;
+    s_prevSecValid = true;
+    sweep_pad_for_shadow();
+    sweep_frame(secs);
+
+    if (moveMinute) {
+        if (!refresh_minute(&ti, minute_angle_now(&ti))) { free(full); return -1; }
+        sweep_pad_for_shadow();
+        sweep_frame(secs);
+    }
+
+    long count = 0;
+    const int worst = worst_difference(full, s_buf, &count, wx, wy);
+    Serial.printf("[sweep] %s: %ld pixels differ from a full compose, worst %d levels\n",
+                  moveMinute ? "after a minute move" : "a sweep frame", count, worst);
+    free(full);
+    return count;
+}
+
+// DOES THE LAYER CACHE DRAW THE SAME PICTURE? Answered in pixels, not by looking.
+//
+// A cache is only ever as good as its agreement with the thing it replaces, and "hands 0 ms"
+// in the phase breakdown is just as consistent with "the blit is nearly free because the
+// layers are mostly transparent" as it is with "the layers are empty and the hands are
+// missing". Those need telling apart by something other than an opinion about a photograph.
+//
+// Composes the face twice at the same instant — once with the layers refused, once with them
+// used — and reports how many of the 217,156 pixels differ and by how many 565 levels at
+// worst. Zero is the only good answer. A handful of pixels differing by one level would be
+// rounding in the source-over accumulation; thousands, or a large worst-case, means the
+// overlap maths is wrong, and the hub is where two hands overlap.
+long clockview::layerDiffersBy(int *worstOut, int *wx, int *wy) {
+    if (worstOut) *worstOut = -1;
+    if (wx) *wx = -1;
+    if (wy) *wy = -1;
+    if (!s_buf || !s_canvas || s_face != FACE_CUSTOM) return -1;
+    struct tm ti;
+    time_for_face(&ti);
+    const size_t bytes = (size_t)SCREEN_W * SCREEN_H * sizeof(lv_color_t);
+#if defined(ESP_PLATFORM)
+    lv_color_t *ref = (lv_color_t *)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+    lv_color_t *ref = (lv_color_t *)malloc(bytes);
+#endif
+    if (!ref) return -1;
+
+    // The slow path, as the authority.
+    clip_reset();
+    s_layUse = false;
+    compose_custom(&ti, -1, true);
+    memcpy(ref, s_buf, bytes);
+
+    // Then the same face through the layers.
+    // Built OUTRIGHT at these exact angles, not merely accepted as near enough. The
+    // tolerance that makes the cache worth having is up to 0.35 degrees of lag, about a
+    // pixel and a half at the minute hand's tip, and comparing a tolerated layer against a
+    // fresh compose measures that lag rather than whether the compositing is right. 3720
+    // pixels differing by up to 24 levels is what that looked like, and it was the lag.
+    const float minAng = minute_angle_now(&ti), hrAng = hour_angle_now(&ti);
+    const bool used = layers_build(minAng, hrAng);
+    if (used) { s_layMinAng = minAng; s_layHrAng = hrAng; s_layValid = true; s_layBuildY = -1; }
+    clip_reset();
+    s_layUse = used;
+    compose_custom(&ti, -1, true);
+    s_layUse = false;
+
+    long count = 0;
+    const int worst = worst_difference(ref, s_buf, &count, wx, wy);
+    if (worstOut) *worstOut = worst;
+#if defined(ESP_PLATFORM)
+    Serial.printf("[layers] %s: %ld of %ld pixels differ from a full compose, worst %d levels\n",
+                  used ? "in use" : "NOT USED (no memory, or the hands moved)",
+                  count, (long)((size_t)SCREEN_W * SCREEN_H), worst);
+    heap_caps_free(ref);
+#else
+    free(ref);
+#endif
+    if (!used) return -2;   // tell the caller the comparison was vacuous
+    return count;
+}
+
+long clockview::sweepDiffersBy(int *wx, int *wy) {
+    if (wx) *wx = -1;
+    if (wy) *wy = -1;
+    if (!s_buf || !s_canvas) return -1;
+
+    // WITH THE SHADOW ON TOO, whatever this design asked for.
+    //
+    // The shadow is the layer that darkens, and the design the simulator happens to be
+    // holding is not the one anybody reported from. So: run it as the design is, then again
+    // with the shadow forced on, and answer for the worse of the two. s_clock is this
+    // process's own copy of the style and is put back before returning.
+    theme_style::Clock &style = const_cast<theme_style::Clock &>(theme_style::clock());
+    const bool hadShadow = style.shadowOn;
+    long worst = 0;
+    for (int pass = 0; pass < 2; ++pass) {
+        style.shadowOn = pass == 1 ? true : hadShadow;
+        const long checks[3] = { sweep_drift_once(wx, wy),
+                                 sweep_vs_full(false, wx, wy),
+                                 sweep_vs_full(true,  wx, wy) };
+        for (int i = 0; i < 3; ++i) {
+            if (checks[i] < 0) { style.shadowOn = hadShadow; return -1; }
+            if (checks[i] > worst) worst = checks[i];
+        }
+    }
+    style.shadowOn = hadShadow;
+    return worst;
+}
+
+long  clockview::litPixels() {
+    if (!s_buf) return 0;
+    long lit = 0;
+    for (long i = 0; i < (long)SCREEN_W * SCREEN_H; ++i)
+        if (s_buf[i].full) ++lit;
+    return lit;
+}
+float clockview::minuteHandMins(bool railway, int min, int sec) { return minute_hand_mins(railway, min, sec); }
+float clockview::minuteStepEase(float wallSecs) { return minute_step_ease(wallSecs); }
+float clockview::minuteStepSecs() { return STEP_SECS; }
+float clockview::railwayStopStart() { return STOP_AT; }
+uint32_t clockview::beatAim(long usec) {
+    const uint32_t toGo = (uint32_t)((1000000 - usec) / 1000);
+    return toGo < 5 ? 5 : toGo;
+}
+long  clockview::beatSlot(long sec, long usec, int beat) {
+    const int b = beat >= 2 ? beat : 1;
+    return sec * b + (usec * b) / 1000000L;
+}
+bool  clockview::stepAffordable(float composeMs) { return step_affordable(composeMs); }
 
 void clockview::setSweep(int mode) {
     s_forceSweep = mode;
-    s_underMin = -1; s_underHr = -1; s_prevSecValid = false;
+    s_underMin = -1; s_underHr = -1; s_underMins = -1.0f; s_prevSecValid = false;
     retime();
 #if defined(ESP_PLATFORM)
     const bool ok = sweep_possible();
@@ -1772,7 +3319,7 @@ void clockview::refresh() {
 static void apply_face() {
     // The cache belongs to the old theme's dial. Dropping the minute stamp forces a rebuild
     // rather than sweeping a new second hand over somebody else's face.
-    s_underMin = -1; s_underHr = -1; s_prevSecValid = false;
+    s_underMin = -1; s_underHr = -1; s_underMins = -1.0f; s_prevSecValid = false;
     // ...and what the last face COST. Nothing about how often this screen redraws is stored
     // with a design or carried between them: it is measured, here, from whatever is on the
     // glass now. A heavy dial must not leave a light one running at its pace.
@@ -1809,10 +3356,35 @@ void clockview::onEnter() {
         lv_obj_center(s_canvas);
         lv_obj_move_background(s_canvas);
         lv_canvas_fill_bg(s_canvas, COL_BLACK, LV_OPA_COVER);
+
+        // This is a DIFFERENT canvas from the one the sweep caches were built against, and
+        // nothing in them says so: s_under and s_noMin survive onExit, and their timestamps
+        // still read as fresh. So the first tick back on a sweeping dial saw a cache that
+        // was only seconds old, took the cheap road, and restored the second hand's rows
+        // out of it into a canvas that had just been filled black. Every other pixel stayed
+        // black, and the dial painted itself back in one hand-width at a time as the hand
+        // swept past, never reaching the corners, which the hand cannot reach at all.
+        //
+        // Zion found it going into Settings to move the tick level and coming back out.
+        // Stepping dials hid it, because a tick recomposes the whole face anyway.
+        //
+        // The canvas and the caches have to be dropped together, so drop them here, where
+        // the new canvas is taken, and compose one full frame into it before anybody looks.
+        s_underMin = -1; s_underHr = -1; s_underMins = -1.0f;
+        s_noMinValid = false;
+        s_prevSecValid = false;
+        s_prevMinAng = -1000.0f;
+        s_fullNext = true;
+        struct tm ti;
+        time_for_face(&ti);
+        redraw(&ti);
     }
 }
 
 void clockview::onExit() {
+    // 1.3 MB of hand layers, given back like every other screen's art. The Flight Tracker
+    // wants ~1.4 MB of its own on the way in and this is the budget it comes out of.
+    layers_free();
     custom_sprite_release();
     // The canvas and the rotation cache go too. The canvas object stays, pointing at
     // nothing until the next onEnter refills it: deleting and rebuilding an LVGL object
@@ -1894,6 +3466,10 @@ void clockview::init() {
 
     apply_face();
     s_tick = lv_timer_create(tick_cb, 1000, nullptr);
+    // Guarded, because this builder runs again when a theme is applied and two beat timers
+    // would play the set twice a second, half a beat apart, which would sound exactly like
+    // the stutter it is here to remove.
+    if (!s_beat) s_beat = lv_timer_create(beat_cb, 20, nullptr);
     retime();
 }
 

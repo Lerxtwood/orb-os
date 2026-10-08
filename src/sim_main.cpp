@@ -28,6 +28,7 @@
 #include "cloud_image.h"
 #include "aircraft.h"
 #include "clock_view.h"
+#include "theme_audio.h"
 #include "intel_view.h"
 #include "ticker_view.h"
 #include "ticker.h"
@@ -168,6 +169,11 @@ int host_geocode(const char *query, char names[][40], double *lats, double *lons
 
 int  host_get_volume() { return 70; }
 void host_set_volume(int, bool) {}
+static int s_simTickVol = 20, s_simChimeVol = 30;
+int  host_tick_volume() { return s_simTickVol; }
+void host_set_tick_volume(int v, bool) { s_simTickVol = v < 0 ? 0 : (v > 100 ? 100 : v); }
+int  host_chime_volume() { return s_simChimeVol; }
+void host_set_chime_volume(int v, bool) { s_simChimeVol = v < 0 ? 0 : (v > 100 ? 100 : v); }
 bool host_sound_radar() { return true; }
 void host_sound_set_radar(bool) {}
 bool host_sound_chime() { return true; }
@@ -1300,6 +1306,315 @@ int main(int argc, char **argv) {
                    (double)clockview::handSeconds(58.5f));
             printf("[selftest] the clock keeps its time, and the stop stays home: %s\n",
                    (lost == 0 && linear) ? "PASS" : "FAIL");
+
+            // The minute hand lives in the sweep cache, so it can only move when that cache
+            // is rebuilt. Holding one cache per whole minute made it jump a division at the
+            // top of the minute rather than creep, which is right for a railway dial and
+            // wrong for every other sweeping one. This is the guard on that: a design that
+            // did not ask for the stop has to refresh inside a minute.
+            const float allowed = clockview::cacheMinutesAllowed();
+            const bool creeps = allowed > 0.0f && allowed < 1.0f;
+            printf("[selftest] the minute hand creeps rather than steps: %s"
+                   " (cache refreshes every %.2f min, about %.1f s)\n",
+                   creeps ? "PASS" : "FAIL", (double)allowed, (double)(allowed * 60.0f));
+
+            // And the half of that which 2.16.38 got wrong. A railway minute hand has to be
+            // ON a mark for every second of the minute, not just at the top of it: giving it
+            // the seconds fraction left it parked wherever the Orb happened to boot. Checked
+            // across the whole minute, because the original fault only showed at startup.
+            bool onMark = true, creepsSmooth = false;
+            for (int sec = 0; sec < 60; ++sec) {
+                if (fabsf(clockview::minuteHandMins(true, 7, sec) - 7.0f) > 0.0001f) onMark = false;
+            }
+            creepsSmooth = fabsf(clockview::minuteHandMins(false, 7, 30) - 7.5f) < 0.0001f
+                        && fabsf(clockview::minuteHandMins(false, 7, 15) - 7.25f) < 0.0001f;
+            printf("[selftest] a railway minute hand sits on a mark all minute: %s\n",
+                   onMark ? "PASS" : "FAIL");
+            printf("[selftest] and a sweeping one still creeps between them: %s\n",
+                   creepsSmooth ? "PASS" : "FAIL");
+
+            // The step is animated over about five frames instead of jumping. The one thing
+            // it must not cost is the second hand's glide, and this is what holds that: the
+            // whole step window has to sit inside the stop, where the second hand is already
+            // parked at 12. If anybody shortens the stop or lengthens the step, this fails
+            // before it reaches the glass.
+            const float stepLen  = clockview::minuteStepSecs();
+            const float stepFrom = 60.0f - stepLen;
+            const bool  inStop   = stepFrom >= clockview::railwayStopStart();
+            printf("[selftest] the minute hand's step happens while the second hand is parked:"
+                   " %s (steps from %.2f s, the stop starts at %.2f s)\n",
+                   inStop ? "PASS" : "FAIL", (double)stepFrom, (double)clockview::railwayStopStart());
+
+            // And it has to read as ONE movement. 2.16.40 passed a weaker version of this
+            // check and still stuttered on the glass, because "it overshoots and settles"
+            // says nothing about how the travel is spread across the frames. The failure was
+            // one frame doing 71% of the gap and the rest crawling, so that is what this
+            // measures: no single frame may do more than a third, and it never goes
+            // backwards. Sampled the way the device samples it.
+            bool  starts = clockview::minuteStepEase(stepFrom - 0.01f) < 0.0f;   // not yet
+            bool  rests  = clockview::minuteStepEase(30.0f) < 0.0f;              // mid-minute
+            const int N = 8;
+            float prev = 0.0f, biggest = 0.0f, last = 0.0f;
+            bool  forward = true;
+            int   frames = 0;
+            for (int i = 1; i <= N; ++i) {
+                const float e = clockview::minuteStepEase(stepFrom + stepLen * (float)i / (float)(N + 1));
+                if (e < 0.0f) continue;
+                const float d = e - prev;
+                if (d < -0.0001f) forward = false;
+                if (d > biggest) biggest = d;
+                prev = e; last = e; frames++;
+            }
+            const bool moves = starts && rests && forward && frames >= 7
+                            && biggest < 0.34f && last > 0.9f;
+            printf("[selftest] and it reads as one movement, not a stutter: %s"
+                   " (%d frames, biggest single step %.0f%% of the gap, ends at %.0f%%)\n",
+                   moves ? "PASS" : "FAIL", frames, (double)(biggest * 100.0f), (double)(last * 100.0f));
+
+            // The decision that stops a stutter ever reaching the glass again. A design is
+            // only animated when its compose leaves room for real frames; otherwise the hand
+            // clicks over in one move, which is honest, and was never the thing anybody
+            // complained about. The 250 ms case is the one Zion actually has.
+            const bool fastOk  = clockview::stepAffordable(72.0f);    // a plain dial
+            const bool busyNo  = !clockview::stepAffordable(250.0f);  // his Swiss Railway
+            const bool coldNo  = !clockview::stepAffordable(0.0f);    // nothing measured yet
+            printf("[selftest] a slow design clicks over instead of stuttering: %s"
+                   " (72 ms compose animates=%d, 250 ms animates=%d, unmeasured animates=%d)\n",
+                   (fastOk && busyNo && coldNo) ? "PASS" : "FAIL",
+                   fastOk ? 1 : 0, busyNo ? 0 : 1, coldNo ? 0 : 1);
+
+            // COME BACK FROM ANOTHER APP AND THE FACE IS THERE.
+            //
+            // onExit gives the canvas back and onEnter takes a NEW one, filled black. The
+            // sweep caches survive that and are timestamped in minutes, so seconds later they
+            // still read as fresh, and a sweeping dial took the cheap road: restore the second
+            // hand's rows out of the cache, draw the hand, invalidate that box, and leave the
+            // other 190,000 pixels black. The dial then painted itself back one hand-width at
+            // a time and never reached the corners at all, which is what Zion photographed on
+            // 2026-10-04 after going into Settings to move the tick level.
+            //
+            // Measured in lit pixels, because that is the complaint: how much of the face is
+            // actually on the glass the instant it comes back.
+            {
+                app_shell::selectApp(app_shell::APP_CLOCK);
+                clockview::refresh();
+                lv_timer_handler();
+                const long before = clockview::litPixels();
+                app_shell::selectApp(app_shell::APP_SETTINGS);
+                lv_timer_handler();
+                app_shell::selectApp(app_shell::APP_CLOCK);
+                lv_timer_handler();
+                const long after = clockview::litPixels();
+                // No tick has run yet. Whatever is on the glass now is what onEnter drew.
+                const bool whole = before > 0 && after >= before - before / 10;
+                printf("[selftest] the face is whole the moment you come back to it: %s"
+                       " (%ld lit before, %ld after)\n",
+                       whole ? "PASS" : "FAIL", before, after);
+                app_shell::setCaptured(false);
+            }
+
+            // EVERY FRAME OF A LOOPING BACKGROUND IS HELD FOR THE SAME LENGTH OF TIME.
+            //
+            // The picture's rate and the drawing tick's rate are chosen for different reasons
+            // and used to be unrelated numbers. At eight a second the background wants 125 ms
+            // and the tick lands near 77, so sampling one with the other held a frame for 77 ms
+            // and the next for 154: a two to one swing, for ever, on a loop whose own geometry
+            // is uniform to a tenth of a percent. Zion saw it as a stutter and it survived the
+            // GIF, the encoder and the plate all being ruled out by measurement.
+            //
+            // Nothing about this is visible in a still frame, which is why it needs a test
+            // rather than a look.
+            {
+                bool even = true, quick = true, close = true;
+                int worstFps = 0; double worstErr = 0;
+                for (int fps = 1; fps <= 8; ++fps) {
+                    for (uint32_t base = 33; base <= 150; base += 1) {
+                        uint32_t every = 0;
+                        const uint32_t per = clockview::bgTickPeriod(fps, base, every);
+                        if (every < 1) even = false;              // a frame must last whole ticks
+                        if (per > base || per < 1) quick = false; // never slower than the hand asked
+                        const double got = 1000.0 / (double)(per * every);
+                        const double err = (got - fps) / fps;
+                        if (err > worstErr) { worstErr = err; worstFps = fps; }
+                        if (err > 0.12) close = false;            // and still roughly the rate asked for
+                    }
+                }
+                printf("[selftest] a looping background holds every frame the same length: %s"
+                       " (worst rate error %.0f%% at %d a second)\n",
+                       even && quick && close ? "PASS" : "FAIL", worstErr * 100, worstFps);
+            }
+
+            // THE WAIT FOR THE NEXT SECOND NEVER FALLS SHORT.
+            //
+            // Integer division truncated it, so the wake landed just before the boundary and
+            // redraw() drew the second that had not rolled yet. Then the "too close to chase"
+            // guard added a whole second to the retry and the hand sat out the one it had
+            // just missed, while the click, which re-aims on a wake that draws nothing,
+            // landed on time. Measured across a whole second: 98% of wakes were short.
+            {
+                int early = 0, far = 0;
+                for (uint32_t us = 0; us < 1000000; us += 37) {
+                    const uint32_t ms = clockview::aimToSecond(us);
+                    if (us + ms * 1000 < 1000000) early++;       // lands before the second
+                    if (ms > 1005) far++;                        // or skips one entirely
+                }
+                printf("[selftest] the wait for the next second never falls short: %s"
+                       " (%d early, %d overshooting)\n", !early && !far ? "PASS" : "FAIL", early, far);
+            }
+
+            // A TICKING HAND LANDS WITH ITS OWN CLICK, even while a background plays.
+            //
+            // The click is scheduled against the real second. The hand moves when the drawing
+            // tick next runs. Those were reconciled by taking the smaller of "time until the
+            // second" and "the background's frame period", which throws the aim away: at two
+            // frames a second the hand landed up to half a second after its own sound. Zion
+            // heard it the moment he turned the sweep off, because a sweeping dial ticks every
+            // 77 ms and lands near enough either way.
+            {
+                bool lands = true, fast = true;
+                uint32_t worst = 0;
+                for (int fps = 1; fps <= 8; ++fps) {
+                    const uint32_t need = 1000u / (uint32_t)fps;
+                    for (uint32_t aim = 40; aim <= 1000; aim += 10) {
+                        const uint32_t p = clockview::aimPeriod(aim, need);
+                        if (p > need && p != aim) fast = false;   // the background still gets its rate
+                        const uint32_t k = p ? (aim + p / 2) / p : 1;
+                        const uint32_t miss = k * p > aim ? k * p - aim : aim - k * p;
+                        if (miss > worst) worst = miss;
+                        // Eight, not zero. Integer division leaves up to six: 990 ms split
+                        // eight ways is 123 a piece and lands two short. It does not
+                        // accumulate, because the wait is recomputed from the real clock on
+                        // every tick, so the last one before the second is measured against
+                        // the truth rather than against the plan. What this is holding is
+                        // that the arithmetic is sane, not that it is exact.
+                        if (miss > 8) lands = false;
+                    }
+                }
+                printf("[selftest] a ticking hand lands on the second with its click: %s"
+                       " (worst miss %u ms)\n", lands && fast ? "PASS" : "FAIL", worst);
+            }
+
+            // THE HOUR HAND CREEPS TOO.
+            //
+            // The cache below the minute hand holds the hour hand, and it was only thrown
+            // away when the hour CHANGED. So on a sweeping dial the hour hand was composed
+            // once an hour and the in-place minute move kept restoring that frozen copy: it
+            // stood still for up to an hour and then jumped a whole division. wizard.oz,
+            // 2026-10-06, who read the change that caused it and named it before I did.
+            //
+            // The check that shipped that bug holds the clock still and compares one frame,
+            // so a cache that goes stale across minutes is invisible to it. This asks the
+            // rule directly instead, in the unit the rule is actually about: pixels of hand.
+            {
+                const float mins = clockview::hourCacheMinutes();
+                const float px   = clockview::hourTipPixelsIn(mins);
+                const bool moves = px <= 1.5f;              // dropped before anybody can see it
+                const bool sane  = mins >= 0.03f;           // and not recomposing every frame
+                const bool fixed = mins < 10.0f;            // nothing like the hour it was
+                printf("[selftest] the hour hand creeps rather than standing still: %s"
+                       " (cache holds %.2f min, tip moves %.2f px in that time)\n",
+                       moves && sane && fixed ? "PASS" : "FAIL", (double)mins, (double)px);
+            }
+
+            // SWEEPING ROUND TWICE LANDS ON THE SAME PIXELS.
+            //
+            // Jean-Paul Stringaro, 2026-10-05: "portions of the screen / dial show changes in
+            // brightness/darkness as the seconds hand sweeps". A sweep frame restores the
+            // hand's box out of a cache, draws the hand, and puts back whatever the design
+            // draws above it. Every one of those has to be confined to the pixels that were
+            // actually wiped, because a layer applied twice to the same pixel moves it: glass
+            // mixed in again lightens, a shadow laid over itself darkens. Once a frame, that
+            // is a patch of dial that changes brightness as the hand goes by.
+            //
+            // Two revolutions at the same angle have to be identical. Measured in the panel's
+            // own 565 levels, because that is what is on the glass.
+            {
+                app_shell::selectApp(app_shell::APP_CLOCK);
+                clockview::setSweep(1);          // force it, whatever this design asked for
+                // OUT OF ACTION SINCE THE 2.16.66 MERGE, and saying so loudly.
+                //
+                // The shell learned to build a screen when it is first opened and give it
+                // back again, and this harness no longer ends up with a clock canvas to
+                // measure: onEnter returns early because the screen is not there, so all
+                // three checks under it answer "cannot run". It reported SKIP, which is the
+                // worst way for a test to fail, because a check that quietly stops running
+                // looks exactly like a check that passes. It now fails, which is honest, and
+                // it is the next thing to repair rather than something to silence.
+                for (int p = 0; p < 10; ++p) lv_timer_handler();
+                int dx = -1, dy = -1;
+                const long off = clockview::sweepDiffersBy(&dx, &dy);
+                // Not zero, SMALL. About twenty pixels under the hand cap are still a
+                // level or two out, because a full compose draws every shadow before every
+                // hand while the in-place minute move draws its own shadow after the hour
+                // hand that is already there. They sit beneath the cap and chasing them
+                // would mean a third cache.
+                //
+                // COUNTED, not peaked. The worst single pixel depends on where the hands are
+                // when the test runs, so a threshold on it passed at one minute and failed at
+                // the next. The count does not move like that, and the fault this guards
+                // against was 9,916 pixels.
+                printf("[selftest] a sweep leaves the dial as it found it: %s"
+                       " (%ld pixels of %d%s)\n",
+                       off >= 0 && off < 200 ? "PASS" : off < 0 ? "FAIL (no canvas to draw on)" : "FAIL",
+                       off < 0 ? 0 : off, SCREEN_W * SCREEN_H,
+                       off >= 200 ? [&]{ static char b[48]; snprintf(b, sizeof(b), ", at %d,%d", dx, dy); return b; }() : "");
+                clockview::setSweep(-1);
+                app_shell::setCaptured(false);
+            }
+
+            // The tick set plays in the order it was given and loops, which is what the
+            // recordings are: six consecutive seconds off one real clock, kept in sequence.
+            {
+                const int N = 6, DRAWS = 600;
+                static uint8_t seq[600];
+                theme_audio::testBag(N, seq, DRAWS);
+                bool inOrder = true;
+                for (int i = 0; i < DRAWS; ++i) if (seq[i] != (uint8_t)(i % N)) inOrder = false;
+                int used[8] = {0};
+                for (int i = 0; i < DRAWS; ++i) used[seq[i]]++;
+                bool even = true;
+                for (int i = 0; i < N; ++i) if (used[i] != DRAWS/N) even = false;
+                printf("[selftest] the tick set plays in order and loops: %s"
+                       " (%d takes over %d seconds, each used %d times, loops every %d s)\n",
+                       (inOrder && even) ? "PASS" : "FAIL", N, DRAWS, used[0], N);
+
+            // A take is a whole second and plays once a second, whatever the mechanism
+            // inside it was doing. beatSlot is kept because a theme in the field may still
+            // carry a rate; nothing acts on it. Checked at 1 so a change of mind here cannot
+            // pass unnoticed.
+            {
+                long n = 1, last = clockview::beatSlot(1000, 0, 1);
+                for (long us = 0; us < 1000000L; us += 97) {
+                    const long sl = clockview::beatSlot(1000, us, 1);
+                    if (sl != last) { n++; last = sl; }
+                }
+                printf("[selftest] a tick take is one whole second: %s (fires %ld time a second)\n",
+                       n == 1 ? "PASS" : "FAIL", n);
+
+                // And that its timer always lands ON the second, never long after it.
+                //
+                // Not "never past": inside the last stretch it polls, so it may step a few
+                // milliseconds beyond. That is the design. What must never happen is a wait
+                // that carries well past the second, because the click would then arrive late
+                // AND the piece already playing would be cut by its own successor. Walked
+                // across a whole second.
+                long latest = 0, earliest = 1000000L;
+                for (long us = 0; us < 1000000L; us += 997) {
+                    const long after = us + (long)clockview::beatAim(us) * 1000L;
+                    const long off = after - 1000000L;          // + is late, - is early
+                    if (off > latest) latest = off;
+                    if (off < earliest) earliest = off;
+                }
+                // And how OFTEN it wakes, which is the cost it imposes on the hand that is
+                // drawing beside it. One a second is the whole design; it was thirteen.
+                long wakes = 0, at = 0;
+                while (at < 1000000L) { wakes++; at += (long)clockview::beatAim(at) * 1000L; }
+                const bool aimed = latest <= 6000L && earliest >= -6000L && wakes <= 2;
+                printf("[selftest] the tick's timer lands on the second: %s"
+                       " (at worst %ld ms late, %ld ms early, and wakes %ld time a second)\n",
+                       aimed ? "PASS" : "FAIL", latest / 1000, -earliest / 1000, wakes);
+            }
+            }
         }
 
         // ---- every key on the city search keyboard does its own job ------------------

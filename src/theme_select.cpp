@@ -48,6 +48,33 @@ void init() {
         fclose(f);
     }
 #endif
+    // A HALF-INSTALLED THEME IS NOT SOMETHING TO WEAR.
+    //
+    // The stored slug was trusted on its own, and the sentinel was only ever consulted when
+    // there was no stored slug at all. So an Orb part way through re-installing the theme it
+    // was already wearing came back up wearing the wreckage: Zion's booted showing the hands
+    // with no background behind them, because clock_style.json had arrived and the plate had
+    // not. Treating it as unchosen drops through to the pick below, which only ever offers
+    // folders that carry the sentinel, and to Stock when none do.
+    //
+    // Narrow on purpose. Only when the card is mounted AND the folder is there AND the
+    // sentinel is not: that is a theme caught mid-install and nothing else. A card that has
+    // not finished mounting answers no to everything, and must not cost somebody their
+    // choice, which is the same trap the seeding guard fell into twice.
+    bool disowned = false;
+#ifdef ARDUINO
+    if (s_slug[0] && sdcard::mounted()) {
+        char dirPath[80], markerPath[96];
+        snprintf(dirPath, sizeof(dirPath), "/themes/%s", s_slug);
+        snprintf(markerPath, sizeof(markerPath), "/themes/%s/_installed", s_slug);
+        if (SD.exists(dirPath) && !SD.exists(markerPath)) {
+            Serial.printf("[theme] '%s' is only part installed; not wearing it\n", s_slug);
+            s_slug[0] = 0;
+            disowned = true;
+        }
+    }
+#endif
+
     // Nothing chosen, but themes on the card: wear the first one.
     //
     // A factory-fresh Orb has an erased NVS, so there is no stored slug, and it fell back
@@ -66,11 +93,18 @@ void init() {
             strncpy(s_slug, slugs[0], sizeof(s_slug) - 1);
             s_slug[sizeof(s_slug) - 1] = 0;
 #ifdef ARDUINO
-            Preferences w;
-            w.begin("capsuleradar", false);
-            w.putString("themeSlug", s_slug);
-            w.end();
-            Serial.printf("[theme] nothing chosen; wearing '%s' from the card\n", s_slug);
+            // Written down only when the slug was genuinely empty. Standing in for a theme
+            // that is mid-install is for this boot only: finish the install and the Orb goes
+            // back to what its owner chose, rather than having had that choice quietly
+            // replaced by whatever happened to be first.
+            if (!disowned) {
+                Preferences w;
+                w.begin("capsuleradar", false);
+                w.putString("themeSlug", s_slug);
+                w.end();
+            }
+            Serial.printf("[theme] %s; wearing '%s' from the card\n",
+                          disowned ? "that theme is mid-install" : "nothing chosen", s_slug);
 #endif
         }
     }

@@ -41,6 +41,7 @@
 #include "theme_audio.h"   // sounds a theme brings with it: wind.pcm, chime.pcm
 #include "chime_library.h" // every chime on the device, from flash and from every theme
 #include "display.h"                  // M0: CO5300 + LVGL bring-up
+#include "lv_psram_alloc.h"           // [lvmem]: what the LVGL allocator holds, and where
 #include "imu_qmi8658.h"             // face-down sleep
 #include "battery.h"                 // AXP2101 battery gauge
 #include "rtc_pcf85063.h"            // PCF85063 RTC (offline clock + date)
@@ -105,6 +106,12 @@ static RadarSettings         g_settings;
 static WiFiManager           g_wm;
 static int                   g_brightnessDay = BRIGHTNESS_DEFAULT;   // user brightness (web/NVS)
 static int                   g_volume = 60;                          // alert volume 0..100 (web/NVS)
+// The clock's tick and the hourly chime, each 0..100 against g_volume, 0 being off.
+// Deliberately low: a theme that arrives ticking at full volume is one somebody switches off
+// rather than turns down. The tick is quieter than the chime because it is in the room all
+// day where a chime is an event once an hour. Zion, 2026-10-05.
+static int                   g_tickVol = 20;
+static int                   g_chimeVol = 30;
 static bool                  g_muted  = false;                       // mute alert pings
 static int                   g_chimeIdx = 0;                         // selected chime (Settings/NVS)
 static bool                  g_soundRadar = false;                   // on-device: radar pings on/off
@@ -174,6 +181,10 @@ static volatile bool         g_radarViewActive = false;
 static volatile uint32_t     g_lastFeedOkMs = 0;                     // millis() of the last good poll (HUD staleness)
 
 static volatile uint32_t     g_rebootAtMs = 0;
+// Files written by the browser install page this session. Was a static local inside the
+// upload handler; /installed needs to read it to report the count and reset it for the
+// next install, so it lives out here now.
+static int g_sdUpCount = 0;
 // /theme?slug=... — applied from loop() rather than the request handler, because
 // theme_select::set() reboots and would cut the HTTP reply off mid-flight.
 static String                g_pendingSlug;
@@ -663,6 +674,10 @@ static void loadSettings() {
     g_settings.rangeKm = p.getFloat("rangeKm", RANGE_KM_DEFAULT);
     g_brightnessDay    = p.getInt("bright", BRIGHTNESS_DEFAULT);
     g_volume           = p.getInt("vol", 60);
+    g_tickVol          = p.getInt("tickVol", 20);
+    g_chimeVol         = p.getInt("chimeVol", 30);
+    audio_set_tick_level(g_tickVol);
+    audio_set_chime_level(g_chimeVol);
     g_muted            = p.getBool("mute", false);
     g_soundRadar       = p.getBool("sndRadar", false);
     g_soundChime       = p.getBool("sndChime", false);
@@ -1174,6 +1189,18 @@ void host_set_volume(int v, bool save) {
         p.end();
     }
 }
+int  host_tick_volume() { return g_tickVol; }
+void host_set_tick_volume(int v, bool save) {
+    g_tickVol = constrain(v, 0, 100);
+    audio_set_tick_level(g_tickVol);
+    if (save) { Preferences p; p.begin("capsuleradar", false); p.putInt("tickVol", g_tickVol); p.end(); }
+}
+int  host_chime_volume() { return g_chimeVol; }
+void host_set_chime_volume(int v, bool save) {
+    g_chimeVol = constrain(v, 0, 100);
+    audio_set_chime_level(g_chimeVol);
+    if (save) { Preferences p; p.begin("capsuleradar", false); p.putInt("chimeVol", g_chimeVol); p.end(); }
+}
 bool host_sound_radar() { return g_soundRadar; }
 void host_sound_set_radar(bool on) {
     g_soundRadar = on;
@@ -1659,37 +1686,76 @@ static WebServer g_web(80);
 // meant to be there (CanadianAvenger, 2026-09-14). It is not gone, because its endpoints
 // are still what the Settings screen calls and Zion still uses the form to poke at a
 // device: it lives at /legacy, unadvertised.
+//
+// Streamed, not assembled. This built the whole page in an Arduino String with
+// reserve(2600).
+//
+// The fault, as observed on 2.16.63: that String came out of the ~320 KB INTERNAL heap,
+// which by the time a custom theme is up is fragmented into crumbs, and the page failed in
+// SILENCE — Arduino String reports an exhausted heap by quietly truncating, and send() then
+// posts the truncation as a 200. Confirmed by curl against a themed Orb: /health answered
+// and / did not, the only difference between them being that /health builds into a
+// 420-byte stack buffer and asks the heap for nothing. Measured at the time: 2.3 KB free
+// internal with a 628-byte largest block.
+//
+// 2.16.65 lowered the extmem threshold to 512, so a 2.6 KB String now lands in PSRAM and
+// the original would most likely survive. This stays, for two reasons that do not depend
+// on that number: a page assembled in a heap buffer costs memory proportional to the page
+// and this one costs none at all (the static halves stream straight out of flash, and the
+// largest allocation is a 200-byte stack row), and silent truncation remains the failure
+// mode if it ever is short. It is also how /install has always served its own page.
+//
+// The body now goes out in chunks straight from flash, so the largest internal block this
+// page needs is the ~200-byte row below rather than the whole document. Nothing here
+// allocates proportionally to the page any more.
+static const char ROOT_HEAD[] PROGMEM =
+    "<!DOCTYPE html><html><head><meta charset=utf-8>"
+    "<meta name=viewport content='width=device-width,initial-scale=1'>"
+    "<title>The Orb</title><style>"
+    "body{background:#f5f5f4;color:#2a2622;font-family:system-ui,-apple-system,sans-serif;margin:0 auto;padding:28px 20px;max-width:520px}"
+    "h1{font-size:26px;margin:0 0 4px;letter-spacing:-.02em}.sub{color:#7a7570;margin:0 0 22px}"
+    ".card{background:#fff;border:1px solid #e0e0df;border-radius:14px;padding:16px 18px;margin-bottom:14px}"
+    "dl{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;margin:0;font-size:15px}dt{color:#7a7570}dd{margin:0}"
+    "a.b{display:block;padding:12px 14px;border:1px solid #e0e0df;border-radius:10px;color:#2a2622;text-decoration:none;margin-top:8px;font-weight:500}"
+    "a.b:hover{border-color:#a65e3f;color:#a65e3f}small{color:#7a7570;display:block;margin-top:14px;line-height:1.5}"
+    "</style></head><body>"
+    "<h1>The Orb</h1><p class=sub>This Orb, over your WiFi</p>"
+    "<div class=card><dl>";
+
+static const char ROOT_TAIL[] PROGMEM =
+    "</dl></div>"
+    "<div class=card>"
+    "<a class=b href='/install'>Install a theme file</a>"
+    // Upstream 2.16.64 guarded this link: with no OTA partition the page it points at
+    // 404s, so advertising it is a lie. Preserved here because this function moved into a
+    // PROGMEM literal in the same release — string-literal concatenation takes a #if
+    // perfectly well, so the guard survives the move intact.
+#if ORB_OTA_ENABLED
+    "<a class=b href='/update'>Update the firmware over WiFi</a>"
+#endif
+    "<a class=b href='/health'>Health readout</a>"
+    "</div>"
+    "<small>Everything else is set on the Orb itself, with the knob, under Settings: location, "
+    "units, range, brightness, when the screen dims, sound, WiFi. What the screens look like is "
+    "designed in Orb Studio and installed from there over the cable, or as a file through the "
+    "link above.</small>"
+    "</body></html>";
+
 static void handleRoot() {
-    String html;
-    html.reserve(2600);
-    html += "<!DOCTYPE html><html><head><meta charset=utf-8>"
-            "<meta name=viewport content='width=device-width,initial-scale=1'>"
-            "<title>The Orb</title><style>"
-            "body{background:#f5f5f4;color:#2a2622;font-family:system-ui,-apple-system,sans-serif;margin:0 auto;padding:28px 20px;max-width:520px}"
-            "h1{font-size:26px;margin:0 0 4px;letter-spacing:-.02em}.sub{color:#7a7570;margin:0 0 22px}"
-            ".card{background:#fff;border:1px solid #e0e0df;border-radius:14px;padding:16px 18px;margin-bottom:14px}"
-            "dl{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;margin:0;font-size:15px}dt{color:#7a7570}dd{margin:0}"
-            "a.b{display:block;padding:12px 14px;border:1px solid #e0e0df;border-radius:10px;color:#2a2622;text-decoration:none;margin-top:8px;font-weight:500}"
-            "a.b:hover{border-color:#a65e3f;color:#a65e3f}small{color:#7a7570;display:block;margin-top:14px;line-height:1.5}"
-            "</style></head><body>"
-            "<h1>The Orb</h1><p class=sub>This Orb, over your WiFi</p>"
-            "<div class=card><dl>";
+    // CONTENT_LENGTH_UNKNOWN puts the reply in chunked transfer encoding, which is what
+    // lets the body leave in pieces without knowing the total up front.
+    g_web.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    g_web.send(200, "text/html", "");
+    g_web.sendContent_P(ROOT_HEAD);
     char row[200];
     snprintf(row, sizeof(row), "<dt>Firmware</dt><dd>%s</dd><dt>Wearing</dt><dd>%s</dd><dt>Address</dt><dd>%s</dd>",
              FW_VERSION, theme_style::themeLabel(), WiFi.localIP().toString().c_str());
-    html += row;
-    html += "</dl></div>"
-            "<div class=card>"
-            "<a class=b href='/install'>Install a theme file</a>"
-            "<a class=b href='/update'>Update the firmware over WiFi</a>"
-            "<a class=b href='/health'>Health readout</a>"
-            "</div>"
-            "<small>Everything else is set on the Orb itself, with the knob, under Settings: location, "
-            "units, range, brightness, when the screen dims, sound, WiFi. What the screens look like is "
-            "designed in Orb Studio and installed from there over the cable, or as a file through the "
-            "link above.</small>"
-            "</body></html>";
-    g_web.send(200, "text/html", html);
+    // The (ptr, len) overloads throughout, never the String ones: sendContent(const char *)
+    // converts through an Arduino String, which is an internal-heap allocation and exactly
+    // what this page is being moved off.
+    g_web.sendContent(row, strlen(row));
+    g_web.sendContent_P(ROOT_TAIL);
+    g_web.sendContent("", 0);    // the zero-length chunk that ends a chunked body
 }
 
 static void handleLegacyConfig() {
@@ -1784,8 +1850,29 @@ static void handleLegacyConfig() {
         tzopts += o;
     }
     static const size_t BUFSZ = 10240;
-    static char *buf = (char *)ps_malloc(BUFSZ);   // PSRAM: keep this big page buffer off the scarce
-    if (!buf) return;                              //   internal heap (the contiguous RAM mbedTLS needs)
+    // PSRAM: keep this big page buffer off the scarce internal heap (the contiguous RAM
+    // mbedTLS needs).
+    //
+    // Retried, and loud when it fails. This was `static char *buf = ps_malloc(BUFSZ)`
+    // followed by `if (!buf) return;`, which is two faults in two lines. The bare return
+    // sent NO HTTP RESPONSE, so the browser sat there until its own timeout and the device
+    // looked wedged rather than short of memory. And `static` cached the failure: one
+    // unlucky allocation — a themed Orb mid-app-switch is the easy way to get one — meant
+    // this page never worked again until a reboot, however much PSRAM freed up afterwards.
+    // Allocate on each attempt until one succeeds, and otherwise SAY what was missing.
+    static char *buf = nullptr;
+    if (!buf) buf = (char *)ps_malloc(BUFSZ);
+    if (!buf) {
+        char why[192];
+        snprintf(why, sizeof(why),
+                 "out of memory for this page: wanted %u B of PSRAM, %u KB free, "
+                 "largest block %u KB", (unsigned)BUFSZ,
+                 (unsigned)(ESP.getFreePsram() / 1024),
+                 (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) / 1024));
+        Serial.printf("[web] /legacy: %s\n", why);
+        g_web.send(503, "text/plain", why);
+        return;
+    }
     snprintf(buf, BUFSZ,
         "<!DOCTYPE html><html><head><meta charset=utf-8>"
         "<meta name=viewport content='width=device-width,initial-scale=1'>"
@@ -2350,6 +2437,11 @@ $('#f').onchange=async e=>{
    if(!r.ok) throw new Error(it.name+' failed to write ('+r.status+')');
    say((i+1)+'/'+items.length+'  '+it.name);
   }
+  // Tell the Orb the send is over. It cannot work this out for itself: a finished
+  // transfer and an abandoned one both end with files simply stopping, and without this
+  // the device sat for twelve seconds and then announced "Update interrupted" over an
+  // install that had completely succeeded.
+  try { await fetch('/installed',{method:'POST'}); } catch(e) {}
   say('Done.','ok'); refresh();
  }catch(err){ say(String(err.message||err),'bad'); }
 };
@@ -2392,9 +2484,8 @@ static void handleSdPutUpload() {
             Serial.printf("[sdput] done %s (%u bytes)\n", g_sdUpPath.c_str(), (unsigned)up.totalSize);
             // Tell the user the device is mid-update. Without this, files arrived in
             // silence and the reboot that follows read as a crash or a stale load.
-            static int s_updateFiles = 0;
             const int slash = g_sdUpPath.lastIndexOf('/');
-            update_ui::file_received(g_sdUpPath.c_str() + (slash >= 0 ? slash + 1 : 0), ++s_updateFiles);
+            update_ui::file_received(g_sdUpPath.c_str() + (slash >= 0 ? slash + 1 : 0), ++g_sdUpCount);
         }
     }
 }
@@ -2436,6 +2527,23 @@ static void psram_mark(const char *stage) {
     if (s_prevInt) Serial.printf("   (%+ld B)", (long)((int32_t)nowInt - (int32_t)s_prevInt));
     Serial.println();
     s_prevInt = nowInt;
+
+#if ORB_LV_STATS
+    // ...and how much of that internal RAM is the LVGL allocator's, which is the half the
+    // [intram] line above cannot answer. `held` against `free` says whether LVGL IS the
+    // problem; the histogram says what a different ORB_LV_BIG_ALLOC would actually move,
+    // since everything in the bands below the current threshold is what a lower one sends
+    // to PSRAM. See the note over the threshold in lv_psram_alloc.h.
+    // ONE line per milestone, not three. This printed a total, a size histogram and a
+    // fallback count at each of the thirteen boot marks — thirty-nine lines of diagnostics
+    // for a question (is LVGL holding internal RAM?) that has been answered. The histogram
+    // is what sized ORB_LV_BIG_ALLOC and it still exists, on the runtime line below and in
+    // ?orb mem, where it can be asked for rather than being printed at everyone.
+    Serial.printf("[lvmem] %-25s held %6u B in %4u allocs (peak %6u B)  psram %u B%s\n",
+                  stage, (unsigned)orb_lv_live_int_bytes, (unsigned)orb_lv_live_int_count,
+                  (unsigned)orb_lv_peak_int_bytes, (unsigned)orb_lv_live_ext_bytes,
+                  (orb_lv_fallback_to_int || orb_lv_fallback_to_ext) ? "  (FALLBACKS)" : "");
+#endif
 }
 
 
@@ -2453,6 +2561,33 @@ static unsigned host_lvgl_load() {
     if (lastMs && now > lastMs) v = (unsigned)(((us - last) / 1000UL) * 1000UL / (now - lastMs));
     last = us; lastMs = now;
     return v;
+}
+// How many of the theme's declared background frames are actually baked into themeart.
+// Read-only: theme_art::has() is an index lookup, it decodes and allocates nothing.
+static int host_bg_frames_baked() {
+    const int want = theme_style::clock().bgAnim.frames;
+    const char *slug = theme_select::activeSlug();
+    int got = 0;
+    for (int i = 1; i <= want; ++i) {
+        char name[32];
+        snprintf(name, sizeof(name), "clock_plate_%02d.png", i);
+        if (theme_art::has(slug, name)) ++got;
+    }
+    return got;
+}
+
+// Internal-heap block counts, for the leak hunt. A rising allocated-block count with a
+// falling free total is a leak; a steady count with a falling total is fragmentation.
+// They are different faults with different fixes, and "free KB" cannot tell them apart.
+static unsigned host_internal_alloc_blocks() {
+    multi_heap_info_t hi;
+    heap_caps_get_info(&hi, MALLOC_CAP_INTERNAL);
+    return (unsigned)hi.allocated_blocks;
+}
+static unsigned host_internal_free_blocks() {
+    multi_heap_info_t hi;
+    heap_caps_get_info(&hi, MALLOC_CAP_INTERNAL);
+    return (unsigned)hi.free_blocks;
 }
 static unsigned host_flush_load() {
     static uint32_t last = 0, lastMs = 0;
@@ -2528,17 +2663,38 @@ void setup() {
     // RTC_NOINIT holds whatever was in it, including rubbish after a real power cycle, so it
     // is only trusted when the companion magic says we wrote it. Same guard diag_log uses.
 
-    // Prefer PSRAM for ordinary allocations above 1 KB, reserving internal RAM
-    // for WiFi and hardware crypto. Explicit DMA allocations are unaffected.
-    heap_caps_malloc_extmem_enable(1024);
-    // Install before any network task starts. TLS buffers can live in PSRAM;
-    // hardware crypto's explicit DMA allocations still use internal memory.
-    mbedtls_platform_set_calloc_free(
-        [](size_t n, size_t size) -> void* {
-            if (size && n > SIZE_MAX / size) return nullptr;
-            return heap_caps_calloc(n, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        },
-        [](void* p) { heap_caps_free(p); });
+    // Send large allocations (>=4KB) to PSRAM instead of the ~300KB internal heap.
+    // TLS handshakes (WiFiClientSecure, fresh one built for every poll of every feed —
+    // ADS-B every 2s, weather, wx radar, cloud imagery, aircraft photos) were the
+    // biggest thing routinely landing on the internal heap, and repeatedly allocating
+    // and freeing those over a long uptime fragmented it badly enough that eventually
+    // no single free block was big enough for the next handshake, even with plenty of
+    // total free memory — mbedTLS calls it "SSL - Memory allocation failed", and it was
+    // tripping the "feed stuck 180s -> reboot" recovery every few minutes. Internal
+    // memory allocations don't get restructured at all; they're just redirected to the
+    // ~8MB PSRAM pool, which has vastly more room to absorb the same churn.
+    //
+    // 512, NOT 4096, SINCE 2.16.65. Everything under 4 KB still landed on the internal heap:
+    // HTTP and socket buffers, JSON documents, Strings, the aircraft vector. None of them are
+    // large, all of them are allocated and freed constantly, and over a long uptime that churn
+    // cuts the internal heap into pieces even while plenty of it is free. That is the state
+    // everything else fails from. Greg Takacs named it in #fix-requests on 2026-10-06, "a
+    // memory starvation problem across the board", and Techtobi83 had already measured it in
+    // their fork: a soak test ended in a task-watchdog reset with the WiFi driver unable to
+    // get a transmit buffer, largest internal block around 5 KB. At 512 they measured the
+    // largest block back at 18.4 KB.
+    //
+    // Nothing that must be internal is affected, because nothing that must be internal relies
+    // on this. Checked rather than assumed: the LVGL draw buffer asks for
+    // MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA, the audio scratch and the rotation and frame
+    // buffers ask for MALLOC_CAP_SPIRAM, task stacks and the WiFi driver's own allocations ask
+    // by capability, and LVGL routes its heap through orb_lv_malloc with its own threshold.
+    // This moves the ordinary malloc/new/String traffic and nothing else.
+    //
+    // What it trades is speed for room: that traffic now sits behind the slower external bus.
+    // None of it is in the render loop. If the Orb feels slower rather than steadier, this is
+    // the line to put back.
+    heap_caps_malloc_extmem_enable(512);
 
     psram_mark("boot start");
     sdcard::begin();
@@ -2598,7 +2754,18 @@ void setup() {
         if (done == 0 && !name) update_ui::bake_begin(total);
         else update_ui::bake_progress(name, done, total);
     });
-    theme_art::bake_active_theme();
+    {
+        // A /rebake asked for from the web page, carried across the restart. Cleared before
+        // the bake rather than after, so a bake that panics cannot wedge the device in a
+        // re-bake loop.
+        Preferences rp;
+        rp.begin("capsuleradar", false);
+        const bool forced = rp.getBool("rebake", false);
+        if (forced) rp.putBool("rebake", false);
+        rp.end();
+        if (forced) Serial.println("[theme_art] /rebake: honouring the request from before the restart");
+        theme_art::bake_active_theme(forced);
+    }
     ui_splash_show();          // the theme's title card, clean, with the install behind it
     update_ui::bake_done();    // no-op on an ordinary boot
     // After the bake and after lv_init(): the font loader reads the freshly baked fonts,
@@ -2691,6 +2858,9 @@ void setup() {
     clockview::init();
     psram_mark("after clockview");
     // onEnter takes the canvas, onExit gives it back. It answers neither a turn nor a press.
+    // The Clock stays built for ever. It is registered eagerly, which app_shell treats as
+    // pinned: it is the screen people come back to, and a rebuild would be felt there more
+    // than anywhere else. See the residency note in app_shell.h.
     app_shell::add(clockview::screen(), theme_style::names().clock, nullptr, nullptr, false, clockview::onEnter, clockview::onExit, !theme_style::apps().clock);
     app_shell::add(radarScreen, theme_style::names().flight, radar_press_custom_or_theme, radar_turn_select, false, radar_show_home_custom, radar_exit_release_style, !theme_style::apps().flight);
 #if !APPS_LAUNCH_ONE
@@ -2705,10 +2875,14 @@ void setup() {
     // were written as bare integers and moving anything would have pointed the jumps at
     // the wrong screen. They name app_shell::Slot now, so the menu can be ordered the way it
     // should read: Settings last, after everything it configures.
-    intelview::init();
-    psram_mark("after intelview");
-    app_shell::add(intelview::screen(), theme_style::names().headlines,
-                   intelview::onPress, intelview::onTurn, false, intelview::onEnter, intelview::onExit, !theme_style::apps().headlines);  // push fetches now, or toggles scroll mode when the type size overflows; onEnter resets to the top
+    // Built the first time it is opened, like Settings. ~303 LVGL allocations and ~7.4 KB
+    // of internal RAM. Its network step keeps running while the screen is unbuilt, so the
+    // headlines are current when you do open it — see the note in intel_view.h.
+    app_shell::addLazy(theme_style::names().headlines,
+                       intelview::build, intelview::destroy,
+                       intelview::onPress, intelview::onTurn, false,
+                       intelview::onEnter, intelview::onExit, !theme_style::apps().headlines);  // push fetches now, or toggles scroll mode when the type size overflows; onEnter resets to the top
+    psram_mark("after intelview (lazy)");
 #if !APPS_LAUNCH_ONE
     tickerview::init();
     psram_mark("after tickerview");
@@ -2719,11 +2893,16 @@ void setup() {
 #if ORB_COMPANION
     companion::registerPrinter();
 #endif
-    settingsview::init();
-    psram_mark("after settingsview");
-    app_shell::add(settingsview::screen(), theme_style::names().settings,
-                   settingsview::onPress, settingsview::onTurn,
-                   true, settingsview::onEnter, settingsview::onExit, false);  // captures the knob on entry; onEnter resets to the menu and takes the text canvas, onExit gives it back
+    // Settings is built the first time somebody opens it, not here. It was the single
+    // largest holder of internal RAM on the device — 909 LVGL allocations and ~24 KB,
+    // measured 2026-10-06 — for the screen reached least often, and internal RAM is the
+    // pool that runs out (docs/memory.md). app_shell keeps it resident afterwards under
+    // RESIDENT_CACHE, so coming straight back to it costs no rebuild.
+    app_shell::addLazy(theme_style::names().settings,
+                       settingsview::build, settingsview::destroy,
+                       settingsview::onPress, settingsview::onTurn,
+                       true, settingsview::onEnter, settingsview::onExit, false);  // captures the knob on entry; onEnter resets to the menu and takes the text canvas, onExit gives it back
+    psram_mark("after settingsview (lazy)");
     // Before anything jumps to a slot by name. See app_shell::verifySlots(): the enum and
     // the registration order above have drifted apart twice, and both times the only
     // symptom was the wrong screen appearing with nothing said about it.
@@ -2746,7 +2925,9 @@ void setup() {
                               "read and kept; nothing draws them.\n", c.name);
     }
 #endif
-    app_shell::verifySlots(settingsview::screen());
+    // By build function, not screen: a lazy Settings has no screen yet. Still a pointer
+    // comparison, so the check that caught two silent slot reorders is undiminished.
+    app_shell::verifySlots(nullptr, settingsview::build);
     app_shell::begin();                // start on the clock (index 0 — see comment above)
     psram_mark("after app_shell::begin");
 
@@ -2954,6 +3135,26 @@ void setup() {
 
     // configuration web page (http://theorb.local/)
     g_web.on("/diag", []{ g_web.send(200, "text/plain", diag::text()); });
+    // Does the hand-layer cache draw the same picture as a full compose? In pixels.
+    //
+    // Over HTTP because the answer takes two full composes (about a second on a heavy
+    // design) and because "it looks right" is not a measurement — a layer that came out
+    // empty and a layer that is simply mostly transparent produce the same phase timing.
+    g_web.on("/layercheck", []{
+        int worst = -1, wx = -1, wy = -1;
+        const long differ = clockview::layerDiffersBy(&worst, &wx, &wy);
+        char b[220];
+        if (differ == -2)
+            snprintf(b, sizeof(b), "{\"ok\":false,\"why\":\"layers not in use\"}");
+        else if (differ < 0)
+            snprintf(b, sizeof(b), "{\"ok\":false,\"why\":\"not a custom face, or no memory\"}");
+        else
+            snprintf(b, sizeof(b),
+                     "{\"ok\":true,\"pixels_differing\":%ld,\"of\":%ld,\"worst_levels\":%d,"
+                     "\"worst_at\":[%d,%d]}",
+                     differ, (long)(466L * 466L), worst, wx, wy);
+        g_web.send(200, "application/json", b);
+    });
     // Per-task and heap-fragmentation detail, added for the 2026-08-22 investigation into
     // why ADS-B reads start timing out a minute or two into Flight Tracker. /health already
     // gives one internal-heap number; this is who is holding the rest of it, and how broken
@@ -2962,7 +3163,7 @@ void setup() {
     g_web.on("/taskmem", []{
         multi_heap_info_t hi;
         heap_caps_get_info(&hi, MALLOC_CAP_INTERNAL);
-        char b[640];
+        char b[900];   // the theme-config fields pushed it past 640
         snprintf(b, sizeof(b),
             "{\"internal\":{\"free_bytes\":%u,\"largest_free_block\":%u,"
             "\"free_blocks\":%u,\"allocated_blocks\":%u,\"total_blocks\":%u},"
@@ -2981,6 +3182,76 @@ void setup() {
     // ledger prints) otherwise means physically unplugging the device, and the serial
     // port cannot be held open during a flash anyway. Deliberately delayed so the HTTP
     // response reaches the caller first, same pattern as the settings handlers above.
+    // Force a clean re-bake of the active theme's art, then restart into it.
+    //
+    // Why this has to exist: baked art is only ever dropped for the slug being re-baked, so
+    // a theme the owner deleted from the card keeps its flash for ever, and the automatic
+    // clean slate in install_begin() only fires once the remainder is already under 4 MB.
+    // A rich theme arriving next to a stale one therefore loses whatever bakes LAST — and
+    // what bakes last is the background animation frames, which have no SD fallback at all.
+    // Measured on Steam Punk, 2026-10-06: partition 97.4% full, 252 KB free against 424 KB
+    // per frame, the hand shadows falling back to SD and the frames simply absent.
+    //
+    // POST, not GET: it erases every baked asset on the device and takes a minute of
+    // decoding, so a link preview or a crawler must not be able to set it off.
+    g_web.on("/rebake", HTTP_POST, []{
+        Serial.println("[theme_art] /rebake: requested; will run at the next boot");
+        {   // Remembered, not done now. See the note in loop().
+            Preferences p;
+            p.begin("capsuleradar", false);
+            p.putBool("rebake", true);
+            p.end();
+        }
+        g_web.send(200, "text/plain",
+                   "the Orb will restart and re-bake the active theme during boot; "
+                   "give it a minute, then check bg_frames_baked in /health");
+        g_rebootAtMs = millis() + 400;
+    });
+    // What the active theme actually HAS, declares, and got baked — the three-way comparison
+    // that tools/read-orb-bundle.py does for a .orb file, for a theme already on the card.
+    //
+    // Needed because a theme pushed straight from Orb Studio over the cable leaves no bundle
+    // behind to inspect, and the bake skips a declared asset in SILENCE when the file is not
+    // readable. "frames: 8 declared, 0 baked, 8.5 MB free" is not explicable from the device
+    // without this: it could be a missing file, an undeclared one, or a decode that failed.
+    //
+    // declared = theme.json's asset list said so (nothing undeclared is ever baked).
+    // baked    = it is in themeart now, which is the only place frames are read from.
+    g_web.on("/themefiles", []{
+        const char *slug = theme_select::activeSlug();
+        char dir[64];
+        snprintf(dir, sizeof(dir), "/themes/%s", slug);
+        g_web.setContentLength(CONTENT_LENGTH_UNKNOWN);
+        g_web.send(200, "text/plain", "");
+        char line[160];
+        snprintf(line, sizeof(line), "slug %s\n%-28s %9s  declared  baked\n", slug, "file", "bytes");
+        g_web.sendContent(line, strlen(line));
+        File d = SD.open(dir);
+        if (!d || !d.isDirectory()) {
+            const char *err = "(cannot open the theme directory)\n";
+            g_web.sendContent(err, strlen(err));
+            g_web.sendContent("", 0);
+            return;
+        }
+        int n = 0;
+        for (File f = d.openNextFile(); f; f = d.openNextFile()) {
+            const char *nm = f.name();
+            const int slash = (int)strlen(nm);
+            const char *leaf = nm;
+            for (int i = slash - 1; i >= 0; --i) if (nm[i] == '/') { leaf = nm + i + 1; break; }
+            snprintf(line, sizeof(line), "%-28s %9lu  %-8s  %s\n", leaf,
+                     (unsigned long)f.size(),
+                     theme_style::hasAsset(leaf) ? "yes" : "NO",
+                     theme_art::has(slug, leaf)  ? "yes" : "NO");
+            g_web.sendContent(line, strlen(line));
+            f.close();
+            ++n;
+        }
+        d.close();
+        snprintf(line, sizeof(line), "%d file(s)\n", n);
+        g_web.sendContent(line, strlen(line));
+        g_web.sendContent("", 0);
+    });
     g_web.on("/reboot", []{
         g_web.send(200, "text/plain", "rebooting");
         update_ui::rebooting();     // no-op unless the update overlay is up
@@ -3030,7 +3301,17 @@ void setup() {
     // free: an allocation can fail with plenty of total free PSRAM if churn has
     // fragmented it below the requested size.
     g_web.on("/health", []{
-        char b[420];
+        // 1024, not 640. Measured rather than estimated: a real reading off Zion's Orb on
+        // 2026-10-07 was 587 bytes, so 640 had 53 to spare, and the five compose fields
+        // below are 70. It would have truncated on the first device that reported them.
+        //
+        // This is a bigger number, not a fix. Greg's open PR #5 replaces the fixed buffer,
+        // because the fault is that snprintf returns what it WOULD have written and nobody
+        // checks, so the next field to be added breaks every reader silently. Take that one;
+        // do not treat this line as having dealt with it.
+        char b[1024];
+        float cFace = 0, cPlate = 0, cText = 0, cHands = 0;
+        clockview::composeCost(cFace, cPlate, cText, cHands);
         snprintf(b, sizeof(b),
                  // slug is the permanent folder id, theme is the display name. Reporting
                  // only the slug is what made "Modern" and "the-office" look unrelated.
@@ -3043,6 +3324,40 @@ void setup() {
                  "\"heap_free_kb\":%u,\"heap_largest_kb\":%u,"
                  "\"fps\":%u,\"lvgl_ms_per_s\":%u,\"flush_ms_per_s\":%u,"
                  "\"screens_per_s\":%u,"
+                 // The allocation CENSUS, not just the free total. Added 2026-10-06 after
+                 // /health showed internal free falling 59 KB -> 11 KB over a 30-minute
+                 // uptime and the device then rebooting: a leak, which "free" alone can
+                 // report but cannot attribute. alloc_blocks climbing is the signature;
+                 // lv_int/lv_allocs say whether LVGL is the one doing it, which is the
+                 // single most useful split because it separates the UI from the network
+                 // stack. The same numbers print to serial as [lvmem]/[memdbg], but a leak
+                 // takes half an hour to show and a cable cannot be left attached that
+                 // long without ESP_RST_USB rebooting the thing being measured.
+                 // Whether the animated background CAN play, which until now was only
+                 // answerable with a cable and a lucky boot. bg_frames is what the theme
+                 // declares, bg_frames_baked is how many of them are actually in themeart.
+                 // Unequal means the partition filled before the frames were reached and
+                 // the dial is stuck on frame 0 — see custom_plate_frame().
+                 // The theme's own answers, because three separate diagnoses in one session
+                 // went wrong through assuming them. Whether the dial sweeps decides which
+                 // compose path runs at all, and loop/fps/everySec decide how often a
+                 // background frame is asked for. All four are in clock_style.json, which
+                 // nothing on the device could report until now.
+                 "\"sweep\":%s,\"railway\":%s,\"beat_per_s\":%d,\"bph\":%d,"
+                 // NAMED SO THEY CANNOT BE MISREAD, which the first version was.
+                 //
+                 // bgAnim.frames counts the EXTRA, numbered files; the rotation is
+                 // `% (frames + 1)` and index 0 is the unnumbered clock_plate.png. So a
+                 // theme shipping twelve pictures declares eleven, and reporting the raw
+                 // field as "bg_frames" reads as one of them having gone missing. Report
+                 // what someone actually wants to know: how many pictures are in the loop
+                 // and how long the loop lasts.
+                 "\"bg_extra_frames\":%d,\"bg_extra_baked\":%d,"
+                 "\"bg_cycle_frames\":%d,\"bg_cycle_s\":%.2f,"
+                 "\"bg_fps\":%d,\"bg_loop\":%s,\"bg_every_s\":%d,"
+                 "\"alloc_blocks\":%u,\"free_blocks\":%u,"
+                 "\"lv_int\":%u,\"lv_allocs\":%u,\"lv_peak_int\":%u,"
+                 "\"compose_ms\":%d,\"plate_ms\":%d,\"text_ms\":%d,\"hands_ms\":%d,\"rest_ms\":%d,"
                  "\"wifi_rssi\":%d,\"boot_reason\":\"%s\"}",
                  FW_VERSION, theme_select::activeSlug(), theme_style::themeLabel(),
                  (unsigned long)CUSTOM_WELD_HASH,
@@ -3053,13 +3368,36 @@ void setup() {
                  (unsigned)(ESP.getFreeHeap() / 1024),
                  (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024),
                  host_fps(), host_lvgl_load(), host_flush_load(), host_screens_per_s(),
+                 theme_style::clock().secondSweep   ? "true" : "false",
+                 theme_style::clock().secondRailway ? "true" : "false",
+                 clockview::sweepBeat(), clockview::sweepBeat() * 3600,
+                 theme_style::clock().bgAnim.frames, host_bg_frames_baked(),
+                 theme_style::clock().bgAnim.frames + 1,
+                 (double)(theme_style::clock().bgAnim.frames + 1) /
+                     (double)(theme_style::clock().bgAnim.fps < 1 ? 1 : theme_style::clock().bgAnim.fps),
+                 theme_style::clock().bgAnim.fps,
+                 theme_style::clock().bgAnim.loop ? "true" : "false",
+                 theme_style::clock().bgAnim.everySec,
+                 host_internal_alloc_blocks(), host_internal_free_blocks(),
+                 (unsigned)orb_lv_live_int_bytes, (unsigned)orb_lv_live_int_count,
+                 (unsigned)orb_lv_peak_int_bytes,
+                 (int)(cFace + 0.5f), (int)(cPlate + 0.5f), (int)(cText + 0.5f),
+                 (int)(cHands + 0.5f), (int)(cFace - cPlate - cText - cHands + 0.5f),
                  (int)WiFi.RSSI(),
-                 esp_reset_reason() == ESP_RST_POWERON ? "power-on" :
-                 esp_reset_reason() == ESP_RST_SW      ? "software" :
-                 esp_reset_reason() == ESP_RST_TASK_WDT ? "watchdog" : "other");
+                 // Was three cases and "other", which reported a USB-triggered reset
+                 // and a panic as the same word. diag_log.cpp owns the full mapping; use
+                 // it rather than keeping a second, shorter copy here that can disagree.
+                 diag::resetReasonText());
         g_web.send(200, "application/json", b);
     });
     g_web.on("/sdput", HTTP_POST, handleSdPutDone, handleSdPutUpload);   // Launch Kit pushes theme files here
+    // "I am done sending." Without it the install overlay has no way to tell the end of a
+    // transfer from the death of one — see update_ui::installed().
+    g_web.on("/installed", HTTP_POST, []{
+        update_ui::installed(g_sdUpCount);
+        g_sdUpCount = 0;
+        g_web.send(200, "text/plain", "ok");
+    });
     // The page that drives /sdput from a browser, so a theme can arrive over WiFi from any
     // device on the network rather than only down a USB cable from a Chromium desktop.
     g_web.on("/install", []{ g_web.send_P(200, "text/html", INSTALL_PAGE); });
@@ -3228,6 +3566,19 @@ void loop() {
 #endif
     serial_wifi_join_tick();   // a join asked for over the cable; a no-op otherwise
 
+    // THE FORCED RE-BAKE IS NOT DONE HERE, and the first version of it was.
+    //
+    // Baking decodes PNGs, and decode_png wants 424-651 KB of PSRAM for its output on top of
+    // the ~355 KB it takes to read the file. At boot there is 7902 KB free and every asset
+    // fits. From loop() the live screen is holding its art — canvas, rotation cache, hand
+    // layers — and the measurement that caught this was 545 KB free: the fonts baked, being
+    // raw copies that decode nothing, and every plate and every animation frame either
+    // failed to decode or could not even be read. The endpoint "succeeded" and left the
+    // device with FEWER frames baked than before it ran.
+    //
+    // So /rebake records the request and restarts, and setup() does the work where the
+    // memory is. See the Preferences flag read there.
+
     // scheduled reboot after a fresh WiFi config (see setSaveConfigCallback)
     if (g_rebootAtMs && (int32_t)(millis() - g_rebootAtMs) >= 0) { delay(50); ESP.restart(); }
 
@@ -3386,6 +3737,48 @@ void loop() {
                               (unsigned)audio_stack_free_bytes(),
                               (unsigned)uxTaskGetStackHighWaterMark(nullptr),
                               (int)g_radarViewActive, realFps);
+#if ORB_LV_STATS
+                // Every FOURTH [memdbg], i.e. once a minute, and only when a number has
+                // actually moved.
+                //
+                // At 115200 baud these three lines are about 300 bytes, and Serial.printf
+                // blocks the render loop while they go out: measured at roughly 50 ms of
+                // every second in the windows they landed in, which showed up as a real fps
+                // dip and briefly looked like the animation burst I was hunting. A
+                // diagnostic that perturbs the thing it measures has to be rare.
+                static int      s_lvEvery = 0;
+                static uint32_t s_lvPrevInt = 0;
+                static uint32_t s_lvPrevCount = 0;
+                const bool lvMoved = (orb_lv_live_int_bytes != s_lvPrevInt) ||
+                                     (orb_lv_live_int_count != s_lvPrevCount);
+                s_lvPrevInt   = orb_lv_live_int_bytes;
+                s_lvPrevCount = orb_lv_live_int_count;
+                if (++s_lvEvery >= 4 && lvMoved) {
+                    s_lvEvery = 0;
+                    // The interesting state is the one AFTER a theme is up and apps have been
+                    // switched, which no boot mark can reach.
+                    Serial.printf("[lvmem] runtime: held %u B internal in %u allocs (peak %u), "
+                                  "psram %u B in %u; bands <64:%u <128:%u <256:%u <512:%u "
+                                  "<1k:%u <2k:%u <4k:%u 4k+:%u\n",
+                                  (unsigned)orb_lv_live_int_bytes, (unsigned)orb_lv_live_int_count,
+                                  (unsigned)orb_lv_peak_int_bytes,
+                                  (unsigned)orb_lv_live_ext_bytes, (unsigned)orb_lv_live_ext_count,
+                                  (unsigned)orb_lv_hist_count[0], (unsigned)orb_lv_hist_count[1],
+                                  (unsigned)orb_lv_hist_count[2], (unsigned)orb_lv_hist_count[3],
+                                  (unsigned)orb_lv_hist_count[4], (unsigned)orb_lv_hist_count[5],
+                                  (unsigned)orb_lv_hist_count[6], (unsigned)orb_lv_hist_count[7]);
+                    // BYTES per band as well as counts. The first capture printed only counts,
+                    // and a count cannot answer "how much would a lower threshold move?" — 1612
+                    // allocations under 64 bytes could be 30 KB or 60 KB and the two lead to
+                    // different decisions. This is the line that settles it.
+                    Serial.printf("[lvmem] runtime bytes: <64:%u <128:%u <256:%u <512:%u "
+                                  "<1k:%u <2k:%u <4k:%u 4k+:%u\n",
+                                  (unsigned)orb_lv_hist_bytes[0], (unsigned)orb_lv_hist_bytes[1],
+                                  (unsigned)orb_lv_hist_bytes[2], (unsigned)orb_lv_hist_bytes[3],
+                                  (unsigned)orb_lv_hist_bytes[4], (unsigned)orb_lv_hist_bytes[5],
+                                  (unsigned)orb_lv_hist_bytes[6], (unsigned)orb_lv_hist_bytes[7]);
+                }
+#endif
             }
         }
 #if DEBUG_MEM

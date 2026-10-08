@@ -37,6 +37,10 @@ extern bool host_location_name(char *out, size_t n);
 extern void host_recents_add(const char *name, double lat, double lon);
 extern int  host_get_volume();
 extern void host_set_volume(int v, bool save);
+extern int  host_tick_volume();
+extern void host_set_tick_volume(int v, bool save);
+extern int  host_chime_volume();
+extern void host_set_chime_volume(int v, bool save);
 extern bool host_sound_radar();
 extern void host_sound_set_radar(bool on);
 extern bool host_sound_chime();
@@ -187,7 +191,12 @@ namespace {
     #define WHEEL_FADE     (chrome().wheelFade)
 
     // --- sound submenu ---
-    enum { SND_RADAR = 0, SND_CHIME, SND_CHIME_SEL, SND_VOLUME, SND_BACK, SND_COUNT };
+    enum { SND_RADAR = 0, SND_CHIME, SND_CHIME_SEL, SND_CHIME_VOL, SND_TICK_VOL, SND_VOLUME, SND_BACK, SND_COUNT };
+    // Which level the one slider page is adjusting. Three sliders that look identical and
+    // behave identically do not want three pages: the page is the control, and this is what
+    // it is pointed at.
+    enum VolTarget { VOL_MASTER = 0, VOL_TICK, VOL_CHIME };
+    int s_volTarget = VOL_MASTER;
 
     constexpr int VOL_STEP = 10;
 
@@ -317,6 +326,10 @@ namespace {
     bool   s_searching = false;
 
     lv_obj_t *s_screen  = nullptr;
+    // The two repeating timers, so destroy() can stop them. See the note where they
+    // are created at the end of init().
+    lv_timer_t *s_searchTimer = nullptr;
+    lv_timer_t *s_wifiTimer   = nullptr;
     lv_obj_t *s_menu    = nullptr;
     lv_obj_t *s_hl      = nullptr;
     lv_obj_t *s_items[ITEM_COUNT] = { nullptr };
@@ -357,6 +370,7 @@ namespace {
     lv_obj_t *s_designItems[theme_select::MAX_THEMES + 1] = { nullptr };   // installed themes + Back
     lv_obj_t *s_designNoticePage = nullptr;   // "restarting..." heads-up, shown right before the reboot
     lv_obj_t *s_volPage = nullptr;   // volume adjuster
+    lv_obj_t *s_volTitle = nullptr;  // retitled per target: Volume / Tick level / Chime level
     lv_obj_t *s_volFill = nullptr;
     lv_obj_t *s_volPct  = nullptr;
     lv_obj_t *s_plateImg = nullptr;    // themed background, built on enter / freed on exit
@@ -698,6 +712,16 @@ namespace {
         lv_label_set_text(s_sndItems[SND_CHIME], b);
         snprintf(b, sizeof(b), "Audio: %s", host_chime_name(host_chime_index()));
         lv_label_set_text(s_sndItems[SND_CHIME_SEL], b);
+        // OFF rather than 0%, because zero is a state and not a quantity: somebody scanning
+        // this menu wants to know whether the clock ticks, not what number it ticks at.
+        const int cv = host_chime_volume();
+        snprintf(b, sizeof(b), "Chime level   %s", cv ? "" : "OFF");
+        if (cv) snprintf(b, sizeof(b), "Chime level   %d%%", cv);
+        lv_label_set_text(s_sndItems[SND_CHIME_VOL], b);
+        const int tv = host_tick_volume();
+        snprintf(b, sizeof(b), "Tick level   %s", tv ? "" : "OFF");
+        if (tv) snprintf(b, sizeof(b), "Tick level   %d%%", tv);
+        lv_label_set_text(s_sndItems[SND_TICK_VOL], b);
         snprintf(b, sizeof(b), "Volume   %d%%", host_get_volume());
         lv_label_set_text(s_sndItems[SND_VOLUME], b);
         lv_label_set_text(s_sndItems[SND_BACK], "Back");
@@ -801,8 +825,11 @@ namespace {
     void refresh_vol() {
         lv_obj_set_width(s_volFill, (lv_coord_t)(4 + s_vol * (236 - 4) / 100));
         char buf[8];
-        snprintf(buf, sizeof(buf), "%d%%", s_vol);
+        if (s_vol == 0) snprintf(buf, sizeof(buf), "OFF");
+        else            snprintf(buf, sizeof(buf), "%d%%", s_vol);
         lv_label_set_text(s_volPct, buf);
+        if (s_volTitle) lv_label_set_text(s_volTitle,
+            s_volTarget == VOL_TICK ? "Tick level" : s_volTarget == VOL_CHIME ? "Chime level" : "Volume");
     }
 
     void refresh_locmenu() {
@@ -1247,7 +1274,15 @@ namespace {
     }
 }
 
+// Null-guarded because this screen may not exist. Settings is registered with
+// app_shell::addLazy(), so between boot and the first visit — and after the shell evicts
+// it again — s_screen and every widget pointer in this file are null. main.cpp calls
+// several of these from setup() and from loop() without knowing or caring which app is
+// up (setNetInfo every loop, setHomeCoords on every GPS/geocode answer), and the
+// simulator self-test calls the rest. Every one of them has to be a no-op rather than a
+// crash in that state. A guard can; a comment saying "call this only when built" cannot.
 void settingsview::onTurn(int delta) {
+    if (!s_screen) return;   // not built; see the note above this function
     const int step = (delta > 0) ? 1 : -1;
     if (s_mode == MODE_MENU) {
         s_sel = (s_sel + step < 0) ? 0 : (s_sel + step >= ITEM_COUNT ? ITEM_COUNT - 1 : s_sel + step);
@@ -1306,7 +1341,12 @@ void settingsview::onTurn(int delta) {
         s_vol += delta * VOL_STEP;
         if (s_vol < 0) s_vol = 0;
         if (s_vol > 100) s_vol = 100;
-        host_set_volume(s_vol, false);      // live preview level
+        // Live, so the number on screen and the thing in the room agree while turning. Not
+        // saved until Back, which is what makes turning it all the way down and back up again
+        // cost nothing.
+        if (s_volTarget == VOL_TICK)       host_set_tick_volume(s_vol, false);
+        else if (s_volTarget == VOL_CHIME) host_set_chime_volume(s_vol, false);
+        else                               host_set_volume(s_vol, false);
         refresh_vol();
     } else if (s_mode == MODE_WIFI_LIST) {
         const int total = wifi_item_count();
@@ -1388,11 +1428,13 @@ namespace {
 // Called by app_shell when the shell switches away from Settings. Gives back the text
 // canvas and the background art so they are not held while another app needs the PSRAM.
 void settingsview::onExit() {
+    if (!s_screen) return;   // not built; see the note above this function
     settings_text::release();
     settings_art_release();
 }
 
 void settingsview::onEnter() {
+    if (!s_screen) return;   // not built; see the note above this function
     settings_art_acquire();
     settings_text::acquire();
     s_sel = DEFAULT_SEL;
@@ -1400,6 +1442,7 @@ void settingsview::onEnter() {
 }
 
 void settingsview::onPress() {
+    if (!s_screen) return;   // not built; see the note above this function
     if (s_mode == MODE_FIRSTBOOT) {
         if (s_fbSel == FB_ONDEVICE) {
             // Straight into the scan/pick/type flow that has existed in this file all
@@ -1537,8 +1580,14 @@ void settingsview::onPress() {
             s_chimeSel = host_chime_index();
             show_page(MODE_CHIME_SELECT);
             host_chime_preview(s_chimeSel);             // preview the current pick on entry
+        } else if (s_sndSel == SND_CHIME_VOL) {
+            s_volTarget = VOL_CHIME; s_vol = host_chime_volume();
+            show_page(MODE_VOLUME);
+        } else if (s_sndSel == SND_TICK_VOL) {
+            s_volTarget = VOL_TICK; s_vol = host_tick_volume();
+            show_page(MODE_VOLUME);
         } else if (s_sndSel == SND_VOLUME) {
-            s_vol = host_get_volume();
+            s_volTarget = VOL_MASTER; s_vol = host_get_volume();
             show_page(MODE_VOLUME);
         } else {                                        // Back -> exit Settings to the app switcher
             app_shell::setCaptured(false);
@@ -1571,8 +1620,9 @@ void settingsview::onPress() {
         // transitional page — the device reboots before this could ever fire; only
         // reachable at all on the sim, and only if something presses during that instant
     } else if (s_mode == MODE_VOLUME) {
-        host_set_volume(s_vol, true);
-        host_sound_preview_beep();                      // hear the new level
+        if (s_volTarget == VOL_TICK)       host_set_tick_volume(s_vol, true);
+        else if (s_volTarget == VOL_CHIME) host_set_chime_volume(s_vol, true);
+        else                             { host_set_volume(s_vol, true); host_sound_preview_beep(); }
         app_shell::setCaptured(false);      // back always exits to the switcher, not one level up
         app_shell::openSwitcher();
     } else if (s_mode == MODE_LOCATION) {
@@ -2141,6 +2191,7 @@ void settingsview::init() {
     lv_obj_set_size(s_volPage, SCREEN_W, SCREEN_H); lv_obj_center(s_volPage);
     lv_obj_clear_flag(s_volPage, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_t *vlabel = lv_label_create(s_volPage);
+    s_volTitle = vlabel;
     lv_label_set_text(vlabel, "Volume");
     lv_obj_set_style_text_color(vlabel, C_WHITE, 0);
     lv_obj_set_style_text_font(vlabel, &lv_font_montserrat_20, 0);
@@ -2354,8 +2405,117 @@ void settingsview::init() {
 
     s_bri = host_get_brightness();
     show_page(MODE_MENU);
-    lv_timer_create(search_tick, 200, nullptr);
-    lv_timer_create(wifi_tick, 300, nullptr);
+    // Handles kept, and never created twice.
+    //
+    // These were anonymous: lv_timer_create's return was dropped, so the two timers ran
+    // every 200 and 300 ms for the life of the device and nothing could ever stop them.
+    // That was survivable while this screen was built once at boot and kept for ever.
+    // It is not survivable now the screen can be given back (destroy()): a timer still
+    // firing after its widgets are freed walks a dangling pointer on the UI thread, which
+    // is the "wedged display thread" in docs/memory.md — the failure that looks like a
+    // healthy device because core 0 keeps logging.
+    if (!s_searchTimer) s_searchTimer = lv_timer_create(search_tick, 200, nullptr);
+    if (!s_wifiTimer)   s_wifiTimer   = lv_timer_create(wifi_tick, 300, nullptr);
+}
+
+// Build on demand for app_shell::addLazy. init() is re-runnable because destroy() puts
+// every pointer back to null, so this is just "make it if it is not there".
+lv_obj_t *settingsview::build() {
+    if (!s_screen) init();
+    return s_screen;
+}
+
+// Give the whole screen back: ~909 LVGL allocations and ~24 KB of INTERNAL RAM, measured
+// 2026-10-06, for the app reached least often. See the residency note in app_shell.h.
+//
+// Order matters here and each step is load-bearing:
+//   1. the timers, before anything they touch stops existing;
+//   2. the text canvas and the background art, because both modules hold their OWN
+//      pointers to objects parented to s_screen — deleting the screen first would leave
+//      settings_text::s_canvas and s_plateImg/s_ovImg dangling, and both are null-guarded
+//      so calling their release twice is free;
+//   3. the screen, which deletes the entire widget tree under it in one go;
+//   4. every pointer this file kept into that tree, back to null.
+// Step 4 is generated from the declarations rather than typed, because it has to be
+// exhaustive: one missed pointer is a use-after-free on the next entry.
+void settingsview::destroy() {
+    if (s_searchTimer) { lv_timer_del(s_searchTimer); s_searchTimer = nullptr; }
+    if (s_wifiTimer)   { lv_timer_del(s_wifiTimer);   s_wifiTimer   = nullptr; }
+    settings_text::release();
+    settings_art_release();
+    if (s_screen) { lv_obj_del(s_screen); s_screen = nullptr; }
+    s_aboutImg = nullptr;
+    s_aboutPage = nullptr;
+    s_barFill = nullptr;
+    s_bright = nullptr;
+    s_chimeSelHl = nullptr;
+    s_chimeSelPage = nullptr;
+    s_designHl = nullptr;
+    s_designNoticePage = nullptr;
+    s_designPage = nullptr;
+    s_dspHl = nullptr;
+    s_dspPage = nullptr;
+    s_fbHl = nullptr;
+    s_fbPage = nullptr;
+    s_fbPhonePage = nullptr;
+    s_hl = nullptr;
+    s_lmCity = nullptr;
+    s_lmCoords = nullptr;
+    s_lmHl = nullptr;
+    s_lmPage = nullptr;
+    s_menu = nullptr;
+    s_noSdPage = nullptr;
+    s_ovImg = nullptr;
+    s_passText = nullptr;
+    s_pct = nullptr;
+    s_plateImg = nullptr;
+    s_rangeHl = nullptr;
+    s_rangePage = nullptr;
+    s_recCoord = nullptr;
+    s_recName = nullptr;
+    s_recPage = nullptr;
+    s_resetPage = nullptr;
+    s_sndHl = nullptr;
+    s_sndPage = nullptr;
+    s_srchPage = nullptr;
+    s_srchText = nullptr;
+    s_themeNoticePage = nullptr;
+    s_themeSelHl = nullptr;
+    s_themeSelPage = nullptr;
+    s_unitsHl = nullptr;
+    s_unitsPage = nullptr;
+    s_volFill = nullptr;
+    s_volPage = nullptr;
+    s_volPct = nullptr;
+    s_volTitle = nullptr;
+    s_wifiHl = nullptr;
+    s_wifiListHint = nullptr;
+    s_wifiListPage = nullptr;
+    s_wifiPassHint = nullptr;
+    s_wifiPassPage = nullptr;
+    s_wifiPassTitle = nullptr;
+    s_wifiStatusHint = nullptr;
+    s_wifiStatusLbl = nullptr;
+    s_wifiStatusPage = nullptr;
+    memset(s_chimeSelItems, 0, sizeof(s_chimeSelItems));
+    memset(s_designItems, 0, sizeof(s_designItems));
+    memset(s_dspItems, 0, sizeof(s_dspItems));
+    memset(s_fbItems, 0, sizeof(s_fbItems));
+    memset(s_hints, 0, sizeof(s_hints));
+    memset(s_items, 0, sizeof(s_items));
+    memset(s_lmItems, 0, sizeof(s_lmItems));
+    memset(s_rangeItems, 0, sizeof(s_rangeItems));
+    memset(s_sndItems, 0, sizeof(s_sndItems));
+    memset(s_strip, 0, sizeof(s_strip));
+    memset(s_sug, 0, sizeof(s_sug));
+    memset(s_themeSelItems, 0, sizeof(s_themeSelItems));
+    memset(s_unitsItems, 0, sizeof(s_unitsItems));
+    memset(s_wifiRows, 0, sizeof(s_wifiRows));
+    memset(s_wkStrip, 0, sizeof(s_wkStrip));
+    // Back to the state a fresh build expects, so a rebuild opens on the menu rather than
+    // on whatever sub-page the user happened to leave from.
+    s_mode = MODE_MENU;
+    s_sel  = DEFAULT_SEL;
 }
 
 lv_obj_t *settingsview::screen() { return s_screen; }
@@ -2368,12 +2528,14 @@ lv_obj_t *settingsview::screen() { return s_screen; }
 // both, in the order they have to be fixed. The card comes first because it is the one that
 // needs somebody to go and find a physical object.
 void settingsview::openNoSdCardNotice(bool alsoNeedsWifi) {
+    if (!s_screen) return;   // not built; see the note above this function
     s_pendingWifiSetup = alsoNeedsWifi;
     s_sel = ITEM_WIFI;
     show_page(MODE_NO_SDCARD);
 }
 
 void settingsview::openWifiSetupPrompt() {
+    if (!s_screen) return;   // not built; see the note above this function
     // The choice screen first, not the scan. Both paths lead somewhere that works, and the
     // on-device one is pre-selected so the default is still a single press — see the
     // FB_LABELS block above for why this screen is allowed to ask at all.
@@ -2390,6 +2552,7 @@ void settingsview::openWifiSetupPrompt() {
 // splash art up indefinitely (push the knob to leave) instead of the normal boot
 // splash's 2s-then-fade, so a just-pushed design stays on screen to look at.
 const char *settingsview::designRowText(int i) {
+    if (!s_screen) return nullptr;   // not built; see the note above this function
     if (s_mode != MODE_DESIGN_SELECT || i < 0 || i >= design_item_count()) return nullptr;
     return lv_label_get_text(s_designItems[i]);
 }
@@ -2397,9 +2560,13 @@ const char *settingsview::designRowText(int i) {
 // The search keyboard, for the self-test. searchType() puts the ring on the key carrying
 // `c` and presses it through the same handler a knob press reaches, so the test exercises
 // the real dispatch rather than a copy of it.
-const char *settingsview::searchKeys() { return KEYS; }
+const char *settingsview::searchKeys() {
+    // No guard needed: KEYS is a compile-time string, not a widget.
+    return KEYS;
+}
 
 const char *settingsview::searchType(char c) {
+    if (!s_screen) return nullptr;   // not built; see the note above this function
     const char *at = strchr(KEYS, c);
     if (!at) return s_str;
     s_mode  = MODE_SEARCH;
@@ -2409,6 +2576,7 @@ const char *settingsview::searchType(char c) {
 }
 
 void settingsview::openLocationPage() {
+    if (!s_screen) return;   // not built; see the note above this function
     s_sel = ITEM_LOCATION;
     s_lmSel = 0;
     show_page(MODE_LOCATION);
@@ -2418,11 +2586,13 @@ void settingsview::openLocationPage() {
 // coordinates and never told what they mean. Reading the label rather than calling
 // host_location_name() again is the point: this asserts what is ON THE GLASS.
 const char *settingsview::locCityText() {
+    if (!s_screen) return nullptr;   // not built; see the note above this function
     if (!s_lmCity || lv_obj_has_flag(s_lmCity, LV_OBJ_FLAG_HIDDEN)) return nullptr;
     return lv_label_get_text(s_lmCity);
 }
 
 void settingsview::openAboutPage() {
+    if (!s_screen) return;   // not built; see the note above this function
     s_sel = ITEM_ABOUT;
     show_page(MODE_ABOUT);
 }
@@ -2430,15 +2600,18 @@ void settingsview::openAboutPage() {
 // Called from the host's status loop. Stored rather than drawn immediately: the About
 // page is usually hidden, and the loop runs far more often than anyone opens it.
 void settingsview::setHomeCoords(double lat, double lon, bool set) {
-    char coords[sizeof(s_homeCoords)] = "";
-    if (set) snprintf(coords, sizeof(coords), "%.5f, %.5f", lat, lon);
-    if (strcmp(coords, s_homeCoords) == 0) return;
-    snprintf(s_homeCoords, sizeof(s_homeCoords), "%s", coords);
-    if (s_mode == MODE_LOCATION) refresh_locmenu();
+    // The STORE is unconditional and only the redraw is guarded. s_homeCoords is a char
+    // buffer, not a widget, and the comment above is the reason: the value arrives while
+    // this page is hidden and is drawn whenever it is next opened. Guarding the store
+    // would drop every coordinate that arrived before the first visit to Settings.
+    if (set) snprintf(s_homeCoords, sizeof(s_homeCoords), "%.5f, %.5f", lat, lon);
+    else     s_homeCoords[0] = '\0';
+    if (s_screen && s_mode == MODE_LOCATION) refresh_locmenu();
 }
 
 void settingsview::setNetInfo(const char *line) {
+    // Stored unconditionally, drawn only if built — same reasoning as setHomeCoords above.
     if (!line) return;
     snprintf(s_netInfo, sizeof(s_netInfo), "%s", line);
-    if (s_mode == MODE_ABOUT) splash_lines::setNetwork(s_netInfo);
+    if (s_screen && s_mode == MODE_ABOUT) splash_lines::setNetwork(s_netInfo);
 }

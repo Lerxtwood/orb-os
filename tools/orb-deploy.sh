@@ -36,7 +36,9 @@ else
 fi
 
 step "build simulator"
-"$PIO" run -e native 2>&1 | tail -2 | grep -q SUCCESS || fail "simulator build"
+# Exit status, not a grep down a pipe: see the note in publish-firmware.sh. A `grep -q`
+# match SIGPIPEs the tail feeding it and `set -o pipefail` reports that as a failed build.
+"$PIO" run -e native >/dev/null 2>&1 || fail "simulator build"
 echo "ok"
 
 step "simulator selftest (knob -> menu -> settings, real input_router)"
@@ -45,7 +47,7 @@ echo "$OUT" | tail -3
 echo "$OUT" | grep -q "Settings>Range: PASS" || fail "sim selftest"
 
 step "build device firmware"
-"$PIO" run -e esp32-s3-amoled-175 2>&1 | tail -2 | grep -q SUCCESS || fail "device build"
+"$PIO" run -e esp32-s3-amoled-175 >/dev/null 2>&1 || fail "device build"
 echo "$SUM" > "$STAMP"
 echo "ok"
 
@@ -57,7 +59,7 @@ for e in json.load(sys.stdin):
 [ -n "$PORT" ] && echo "$PORT" || fail "no Orb on USB"
 
 step "flash"
-"$PIO" run -e esp32-s3-amoled-175 -t upload --upload-port "$PORT" 2>&1 | tail -2 | grep -q "1 succeeded" || fail "flash"
+"$PIO" run -e esp32-s3-amoled-175 -t upload --upload-port "$PORT" >/dev/null 2>&1 || fail "flash"
 echo "ok"
 
 step "wait for the Orb on WiFi"

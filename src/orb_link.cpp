@@ -24,6 +24,7 @@
 #include "app_shell.h"   // selectApp/nameAt for the app + apps commands
 #include <strings.h>     // strncasecmp
 #include <esp_heap_caps.h> // heap_caps_get_info for the "mem" command
+#include "lv_psram_alloc.h" // ?orb mem: what the LVGL allocator holds in internal RAM
 #include "radar_view.h"  // debugHideLayer for the "layer" command
 void host_set_poll_override(uint32_t ms);   // main.cpp
 void host_location_reset();                 // main.cpp
@@ -506,11 +507,34 @@ void cmd_mem() {
     multi_heap_info_t ps;
     heap_caps_get_info(&ps, MALLOC_CAP_SPIRAM);
     out_reset();
-    out_fmt("{\"ok\":true,\"free\":%u,\"largest\":%u,\"freeBlocks\":%u,\"allocBlocks\":%u,\"psramFree\":%u,\"psramLargest\":%u,\"psramFreeBlocks\":%u}",
+    out_fmt("{\"ok\":true,\"free\":%u,\"largest\":%u,\"freeBlocks\":%u,\"allocBlocks\":%u,\"psramFree\":%u",
             (unsigned)hi.total_free_bytes, (unsigned)hi.largest_free_block,
             (unsigned)hi.free_blocks, (unsigned)hi.allocated_blocks,
-            (unsigned)ps.total_free_bytes, (unsigned)ps.largest_free_block,
-            (unsigned)ps.free_blocks);
+            (unsigned)ESP.getFreePsram());
+#if ORB_LV_STATS
+    // What the LVGL allocator holds, and at what sizes. `lvInt` against `allocBlocks`/the
+    // internal heap total is the question ORB_LV_BIG_ALLOC has twice been tuned without:
+    // if LVGL holds most of internal RAM then the threshold is the fix and `hist` says
+    // where to put it, and if it does not then the leak is somewhere else entirely.
+    //
+    // hist[] is LIVE INTERNAL allocations by size: 0:<64 1:<128 2:<256 3:<512 4:<1k
+    // 5:<2k 6:<4k 7:4k+. With the threshold at 2048 everything from index 6 up is
+    // already going to PSRAM and should read ~0 bar fallbacks, so indices 0-5 are the
+    // whole of what a LOWER threshold could move out of the scarce pool.
+    out_fmt(",\"lvInt\":%u,\"lvIntCount\":%u,\"lvExt\":%u,\"lvExtCount\":%u,\"lvPeakInt\":%u"
+            ",\"lvFallbackInt\":%u,\"lvFallbackExt\":%u,\"lvThreshold\":%u",
+            (unsigned)orb_lv_live_int_bytes, (unsigned)orb_lv_live_int_count,
+            (unsigned)orb_lv_live_ext_bytes, (unsigned)orb_lv_live_ext_count,
+            (unsigned)orb_lv_peak_int_bytes,
+            (unsigned)orb_lv_fallback_to_int, (unsigned)orb_lv_fallback_to_ext,
+            (unsigned)ORB_LV_BIG_ALLOC);
+    out_str(",\"histCount\":[");
+    for (int i = 0; i < ORB_LV_NBUCKETS; ++i) out_fmt(i ? ",%u" : "%u", (unsigned)orb_lv_hist_count[i]);
+    out_str("],\"histBytes\":[");
+    for (int i = 0; i < ORB_LV_NBUCKETS; ++i) out_fmt(i ? ",%u" : "%u", (unsigned)orb_lv_hist_bytes[i]);
+    out_str("]");
+#endif
+    out_str("}");
     out_send();
 }
 
@@ -528,6 +552,9 @@ void cmd_mem() {
 // and on files this size (style JSON, a few KB) throughput is irrelevant.
 File     s_putFile;
 bool     s_putOpen     = false;
+// When the open transfer last heard anything. A transfer that stops being fed is a dead one,
+// and the Orb has to decide that for itself: see the timeout in poll().
+uint32_t s_putTouchedMs = 0;
 uint32_t s_putExpected = 0;
 uint32_t s_putWritten  = 0;
 char     s_putName[48] = "";
@@ -818,9 +845,28 @@ void cmd_put_begin(char *args) {
         if (!SD.exists(path) && !SD.mkdir(path)) { path[i] = '/'; reply_error("mkdir failed"); return; }
         path[i] = '/';
     }
+    // THE FOLDER STOPS BEING A FINISHED THEME the moment anything is written into it.
+    //
+    // _installed is the sentinel that says "this folder is a whole theme", and every install
+    // path sends it last so a transfer that dies leaves a folder without one. That works for
+    // a NEW theme and not at all for a re-install: overwriting a theme the Orb already has
+    // left the previous install's sentinel sitting there the whole time, so a folder half
+    // way through being replaced still swore it was complete. Zion's Orb booted wearing one:
+    // the hands of the theme with no background behind them, because clock_style.json had
+    // arrived and the plate had not.
+    //
+    // Removing it here costs one SD call per file and makes the claim honest. put_end does
+    // not put it back, because the sentinel is itself one of the files being sent, last.
+    if (!isRoads) {
+        char marker[96];
+        snprintf(marker, sizeof(marker), "/themes/%s/_installed", slug);
+        if (strcmp(file, "_installed") != 0 && SD.exists(marker)) SD.remove(marker);
+    }
+
     s_putFile = SD.open(path, FILE_WRITE);   // truncates any existing file
     if (!s_putFile) { reply_error("open failed"); return; }
     s_putOpen     = true;
+    s_putTouchedMs = millis();
     s_putExpected = (uint32_t)strtoul(size, nullptr, 10);
     s_putWritten  = 0;
     strlcpy(s_putName, file, sizeof(s_putName));
@@ -841,6 +887,7 @@ void cmd_put_data(const char *b64) {
         put_abort(); reply_error("short write (card full or removed?)"); return;
     }
     s_putWritten += rawLen;
+    s_putTouchedMs = millis();
     // Tell the screen a chunk landed. Without this the interrupted-watchdog only ever hears
     // about COMPLETED files, so any file taking more than twelve seconds looked like a dead
     // transfer while it was still arriving.
@@ -861,6 +908,19 @@ void cmd_put_end() {
     update_ui::file_received(s_putName, ++s_putCount);
     out_reset();
     out_fmt("{\"ok\":true,\"file\":\"%s\",\"bytes\":%lu}", s_putName, (unsigned long)s_putWritten);
+    out_send();
+}
+
+// "That was the last file." put-end closes ONE file and cannot know whether another is
+// coming, so the overlay stayed in its receiving state and the watchdog eventually called a
+// finished install an interrupted one. Reported on the cable path as well as the browser
+// one, which is what showed the fault was the missing terminal state rather than either
+// transport. Old versions of Studio simply never send this and get the previous behaviour.
+void cmd_put_done() {
+    update_ui::installed(s_putCount);
+    s_putCount = 0;
+    out_reset();
+    out_str("{\"ok\":true,\"installed\":true}");
     out_send();
 }
 
@@ -906,6 +966,7 @@ void dispatch(char *line) {
     else if (!strcmp(line, "put-begin")) cmd_put_begin(arg);
     else if (!strcmp(line, "put-data"))  cmd_put_data(arg);
     else if (!strcmp(line, "put-end"))   cmd_put_end();
+    else if (!strcmp(line, "put-done"))  cmd_put_done();
     else if (!strcmp(line, "wifi-scan"))     cmd_wifi_scan();
     else if (!strcmp(line, "wifi-networks")) cmd_wifi_networks();
     else if (!strcmp(line, "wifi-join"))     cmd_wifi_join(arg);
@@ -926,7 +987,36 @@ void begin() { s_len = 0; s_overflow = false; }
 
 bool transferActive() { return s_putOpen; }
 
+// HOW LONG AN OPEN TRANSFER MAY SAY NOTHING BEFORE IT IS ABANDONED.
+//
+// A transfer that is interrupted leaves a file open here, and FOUR commands refuse to run
+// while one is open: handover, sync, wipe and delete. Only a new put-begin cleared it. So an
+// Orb whose install was cut off part way, by a reload, an unplug, a flash or an account
+// change, answered "install in progress" to everything that could have got it out of that
+// state, for as long as it stayed powered. Studio stopped at the first refusal and never
+// reached the put-begin that would have cleared it.
+//
+// Zion, 2026-10-05, switching his Orb to a test account: "it gets hung up, or it boots up
+// with the hands of a previous theme with no background. Then when I try to sync it, it is
+// not getting the files onto it."
+//
+// The screen already noticed. update_ui's watchdog calls it interrupted after twelve seconds
+// and tidies its own overlay away after twenty, which told the person standing there that
+// something had gone wrong and left the link wedged behind it. Saying so is not the same as
+// doing something about it.
+//
+// Thirty seconds, rather than the overlay's twelve, because this ends a transfer that might
+// still be alive rather than just labelling it. A host sending chunks touches this every few
+// milliseconds; half a minute of silence is not a slow sender, it is a gone one.
+static const uint32_t PUT_IDLE_MS = 30000;
+
 void poll() {
+    if (s_putOpen && (uint32_t)(millis() - s_putTouchedMs) > PUT_IDLE_MS) {
+        Serial.printf("[orb_link] transfer of %s went quiet for %lus - abandoning it, "
+                      "so sync and handover work again\n",
+                      s_putName, (unsigned long)(PUT_IDLE_MS / 1000));
+        put_abort();
+    }
     // Bounded per call. A host that floods the port cannot hold loop() hostage and stall
     // the knob; leftovers are simply read on the next pass a few milliseconds later.
     int budget = 640;   // a full put-data line per pass; still bounded, still knob-safe

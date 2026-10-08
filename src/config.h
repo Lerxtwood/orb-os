@@ -123,6 +123,27 @@ static const float RANGE_STEPS_KM[] = {10.0f, 20.0f, 30.0f, 50.0f, 100.0f};
 // ---------- Screen (CO5300 AMOLED) ----------
 #define SCREEN_W            466
 #define SCREEN_H            466
+// KNOWN, MEASURED, AND DELIBERATELY LEFT ALONE (2026-10-04).
+//
+// 466 is an even number, so the panel has no exact centre pixel: true centre is 232.5 and
+// this is 233. Everything that rotates does so about a point half a pixel off the dial's
+// real middle, which is why a hand can sit a hair to one side of the mark it points at.
+//
+// Worth saying what was ruled out, so nobody re-runs it. On the theme that showed it, the
+// hand artwork measured dead straight (axis at exactly 16.50 on all 527 of its rows, 0.000
+// degrees of lean) and the uploaded dial's sixty marks measured exact (ring rotation 0.000
+// degrees, worst mark 0.1, which was the sampling step). Nothing is crooked. The residual is
+// this half pixel, worth under about 0.15 degrees at the mark ring, roughly 2% of a six
+// degree minute division.
+//
+// It shows more than that number suggests because a minute hand is about 19 screen pixels
+// wide against a 4 pixel dash, and because an off-centre pivot puts the error on OPPOSITE
+// sides at the top and bottom of the dial rather than leaning everything one way. That
+// signature is how to tell this apart from something actually rotated.
+//
+// Zion's call: leave it, revisit if it bothers anybody else. Changing it means moving the
+// centre every screen in this firmware is built around, for a sub-pixel gain. The matching
+// half pixel on the Studio side is noted at the pivot default in studio.tsx.
 #define SCREEN_CX           233
 #define SCREEN_CY           233
 #define RADAR_R_OUTER_PX    218            // outer ring radius in pixels

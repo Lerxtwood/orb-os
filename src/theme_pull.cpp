@@ -185,6 +185,22 @@ bool fetch_manifest() {
             }
         }
     }
+    // EVERY THEME ABOUT TO CHANGE STOPS CLAIMING TO BE FINISHED, before a byte of it moves.
+    //
+    // Each file lands atomically here, written to .part and renamed, so no single file is
+    // ever half there. The SET is not atomic: a pull that stops after three of ten files
+    // leaves a theme whose art is partly new and partly old, and until now that folder still
+    // carried the _installed sentinel from the install before it, so it swore it was whole.
+    // The sentinel is one of the files being fetched and goes last, which puts the claim back
+    // only when the set really is complete. Same reasoning as the cable path, same fix.
+    for (int i = 0; i < s_jobN; ++i) {
+        bool first = true;
+        for (int j = 0; j < i; ++j) if (!strcmp(s_jobs[j].slug, s_jobs[i].slug)) { first = false; break; }
+        if (!first) continue;
+        char marker[128];
+        snprintf(marker, sizeof(marker), "/themes/%s/_installed", s_jobs[i].slug);
+        if (SD.exists(marker)) SD.remove(marker);
+    }
     Serial.printf("[pull] manifest: %d file(s) to fetch (%lu KB), %d folder(s) to remove, active '%s'\n",
                   s_jobN, (unsigned long)(s_bytesAll / 1024), s_removeN, s_active);
     return true;

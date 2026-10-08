@@ -28,7 +28,25 @@ void audio_play(AudioCue cue);      // non-blocking: signals the playback task
 // `ignoreMute` is for a preview: picking a chime out of a menu is a deliberate "let me hear
 // it", the same reason cue 4 and the self-test ignore mute, and a picker that plays nothing
 // because the device is muted is a picker you cannot use.
-void audio_play_pcm(const uint8_t *pcm, size_t bytes, bool ignoreMute = false);
+// `trimPct` scales this one sound against the device volume, 0..100, and 0 plays nothing at
+// all rather than writing silence to the speaker. It exists because the clock's tick and the
+// hourly chime are the two sounds somebody lives with rather than hears occasionally: an
+// aircraft alert is welcome at whatever the volume knob says, and a tick at that level is a
+// dripping tap. See audio_set_tick_level.
+void audio_play_pcm(const uint8_t *pcm, size_t bytes, bool ignoreMute = false, int trimPct = 100);
+
+// How loud the clock's tick and the hourly chime are, each against the device volume, 0..100.
+// Zero is off.
+//
+// Deliberately low, because a theme that arrives ticking at full volume is one somebody
+// switches off rather than turns down, and the quiet version is the one that earns its place
+// on a desk. The TICK starts at 20 and the chime at 30: a chime is an event once an hour and
+// a tick is a thing in the room all day, so the tick has to be quieter than feels right when
+// you are listening for it. Zion's number, after living with it.
+void audio_set_tick_level(int pct);
+int  audio_tick_level();
+void audio_set_chime_level(int pct);
+int  audio_chime_level();
 // Stop `pcm` if it is playing and WAIT until the playback task has let go of it, so the
 // caller can free it. Interrupting alone is not enough: the task can be halfway through a
 // chunk when the request to stop arrives, and freeing under it is a use-after-free that would
