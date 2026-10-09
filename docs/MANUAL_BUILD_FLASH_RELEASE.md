@@ -267,20 +267,30 @@ if ($LASTEXITCODE -ne 0) { throw 'CI checks did not pass.' }
 
 ### Choose a new version
 
+Match the firmware version from the most recently merged upstream revision and
+append `-companion`. For example, upstream `2.17.00` releases as
+`v2.17.00-companion`; retain the upstream spelling, including leading zeroes.
+Keep upstream's `FW_VERSION` in source. The release workflow checks the tag
+against that version and stamps the suffix into the published firmware.
+
 ```powershell
 gh release list -R Lerxtwood/orb-os --limit 10
 git fetch origin --tags
 if ($LASTEXITCODE -ne 0) { throw 'Tag fetch failed.' }
 git status -sb
 git log -1 --oneline
-$releaseTag = Read-Host 'Enter a NEW tag, for example v2.16.37-companion'
+$versionMatch = [regex]::Match((Get-Content src/config.h -Raw), '#define FW_VERSION "([^"]+)"')
+if (-not $versionMatch.Success) { throw 'Could not read FW_VERSION.' }
+$upstreamVersion = $versionMatch.Groups[1].Value -replace '-companion$', ''
+$releaseTag = "v$upstreamVersion-companion"
+Write-Host "Release tag: $releaseTag"
 if ($releaseTag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+-companion$') { throw 'Use vX.Y.Z-companion.' }
 if (($releaseTag + '-orb').Length -gt 31) { throw 'Version is too long for the firmware descriptor.' }
 if (git status --porcelain) { throw 'Commit or preserve working-tree changes before releasing.' }
 git ls-remote --tags origin "refs/tags/$releaseTag"
 ```
 
-The version is an example, not a fixed next version. If the last command lists an existing tag, choose a new one; also check `git tag --list $releaseTag` for a local tag. Use `vX.Y.Z-companion`, advancing from the latest companion release and matching the current `FW_VERSION` base when incorporating a newer upstream version. Release the tested commit, with a clean working tree and `main` pushed. Local binaries are not uploaded: CI stamps Orb with the tag without `v`, and PrintSphere with the full tag plus `-orb`.
+If the last command lists an existing tag, stop; also check `git tag --list $releaseTag` for a local tag. Do not advance a separate companion version counter or overwrite a published tag. If another release is needed before the next upstream merge, explicitly resolve the naming exception and workflow validation first. Release the tested commit, with a clean working tree and `main` pushed. Local binaries are not uploaded: CI stamps Orb with the tag without `v`, and PrintSphere with the full tag plus `-orb`.
 
 ### Write release notes
 

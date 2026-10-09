@@ -99,6 +99,13 @@ back files on the SD card. The helper verifies the backup hash before writing.
 
 ## Publishing releases and the website
 
+Use the firmware version from the most recently merged upstream revision with
+`-companion` appended: upstream `2.17.00` becomes `v2.17.00-companion`.
+Keep upstream's `FW_VERSION` in source; the release workflow validates the tag
+against it and stamps the companion suffix into the published firmware. Do not
+increment a separate companion version counter. If that tag already exists,
+resolve the release naming explicitly rather than overwriting a published tag.
+
 The fork's `release.yml` builds both firmwares on a `v*` tag and publishes exactly
 four public images plus `companion-release.json`. PrintSphere's source revision is
 pinned in `printsphere-ref.txt`. Its settings-storage and installer-link adaptations

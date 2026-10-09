@@ -65,7 +65,14 @@ jobs:
           if len(tag + '-orb') > 31:
               raise SystemExit('Version exceeds ESP-IDF app descriptor capacity')
           source = Path('src/config.h')
-          text, count = re.subn(r'#define FW_VERSION "[^"]+"', '#define FW_VERSION "' + tag[1:] + '"', source.read_text())
+          source_text = source.read_text()
+          version = re.search(r'#define FW_VERSION "([^"]+)"', source_text)
+          if not version:
+              raise SystemExit('Could not read merged upstream firmware version')
+          expected = 'v' + version[1].removesuffix('-companion') + '-companion'
+          if tag != expected:
+              raise SystemExit(f'Release tag must match merged upstream version: {expected}')
+          text, count = re.subn(r'#define FW_VERSION "[^"]+"', '#define FW_VERSION "' + tag[1:] + '"', source_text)
           if count != 1:
               raise SystemExit('Could not stamp Orb firmware version')
           source.write_text(text)
