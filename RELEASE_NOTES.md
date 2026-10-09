@@ -18,7 +18,7 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
-## 2.16.72
+## 2.16.71
 
 - The second hand on a sweeping clock no longer jerks its way around the dial. Its
   wake-up was timed from when the previous frame FINISHED rather than when it began, so
