@@ -1,43 +1,44 @@
-# Data source — ADS-B feed
+# Aircraft data sources
 
-## Primary: airplanes.live (free, no key)
-Independent ADS-B/MLAT aggregator. **Educational / non-commercial use only** — fits this project. Be a good citizen: poll every 1–2 s max, send a descriptive `User-Agent`.
+The device contacts both providers directly over HTTPS; no gateway is used for aircraft positions.
 
-### Endpoint (position + radius)
-```
-GET https://api.airplanes.live/v2/point/{lat}/{lon}/{radius_nm}
-```
-- `lat`, `lon`: decimal degrees (our home coords).
-- `radius_nm`: nautical miles (max 250). Convert from our range: `nm = km * 0.539957`.
+## Primary: adsb.lol
 
-### Response (readsb format)
-JSON object; the aircraft list is under key **`ac`** (older/raw readsb files use `aircraft` — handle both). Each entry includes (keys omitted when unavailable):
+`GET https://api.adsb.lol/v2/point/{lat}/{lon}/{radius_nm}`
 
-| Field          | Meaning                                  | Use |
-|----------------|------------------------------------------|-----|
-| `hex`          | 24-bit ICAO id (may start with `~`)      | stable key / de-dupe |
-| `flight`       | callsign (8 chars)                       | label |
-| `lat`,`lon`    | position, decimal degrees                | project to screen |
-| `alt_baro`     | barometric altitude (ft) or `"ground"`   | altitude color |
-| `track`        | ground track, ° from true N             | glyph rotation |
-| `true_heading` | heading, ° (fallback when no `track`)   | glyph rotation |
-| `gs`           | ground speed (kt)                        | detail card |
-| `baro_rate`    | vertical rate (fpm, ±)                   | V/S arrow |
-| `squawk`       | transponder code                         | emergency detect (7500/7600/7700) |
-| `seen_pos`     | seconds since last position fix          | stale/expiry + trail |
-| `t` / `type`   | aircraft type (e.g. B738) when present   | detail card |
-| `dbFlags`      | bitfield (military, etc.)                | "interesting" alerts |
+## Fallback: adsb.fi
 
-### Fallback: adsb.lol
-Same readsb format. `GET https://api.adsb.lol/v2/point/{lat}/{lon}/{radius_nm}`. Wire it as an automatic failover if airplanes.live errors/times out.
+`GET https://opendata.adsb.fi/api/v3/lat/{lat}/lon/{lon}/dist/{radius_nm}`
 
-### Not used: OpenSky
-Now requires OAuth2 client-credentials and has tighter anonymous limits — awkward for an always-on embedded device. Keep as a documented alternative only.
+Use v3 for geographic queries: the older adsb.fi v2 geographic response has a different format.
+Both providers return an `ac` array; the parser also accepts `aircraft`. Radius is in nautical
+miles and capped at 250. Fields used: `hex`, `flight`, `t`, `lat`, `lon`, `alt_baro`, `track`,
+`true_heading`, `gs`, `baro_rate`, `squawk`, `seen_pos`, and `dbFlags`.
 
-## On-device math (implemented in src/geo.h)
-For each aircraft, given home `(lat0, lon0)` and range `R_km` (outer ring):
-1. **Distance** via haversine (km).
-2. **Bearing** from home to aircraft (° from N, clockwise).
-3. **Project** to screen: `r_px = (dist_km / R_km) * R_px_outer`; with north-up,
-   `x = cx + r_px * sin(bearing)`, `y = cy - r_px * cos(bearing)`.
-4. Drop aircraft beyond `R_km` (or clamp to the rim with a "beyond range" marker).
+The client tries adsb.lol first, then adsb.fi if it fails or is cooling down. Transport/server
+failures pause that provider for 60 seconds; HTTP 4xx responses pause it for five minutes.
+A successful fallback is a successful poll, so it does not trigger the global failure backoff.
+There is at most one request per provider per poll, with at least 1.1 seconds between requests
+to the same provider. No DNS-edge rotation is used to bypass rate limits. Multiple devices
+sharing a public IP must collectively respect the provider limit.
+
+## TLS memory
+
+Before networking starts, `tls_memory_begin()` installs the stock mbedTLS runtime allocator
+callbacks. TLS allocations explicitly use PSRAM, rather than the SDK default of internal RAM.
+The normal malloc threshold alone does not affect SDK allocations that require internal RAM.
+The hook is global to mbedTLS and must never be swapped while sessions are active.
+Each aircraft request closes its TLS connection before weather/photo requests run; JSON is
+streamed and parsed in PSRAM. Requests use HTTP/1.1 (adsb.lol rejects HTTP/1.0 with status 426). StreamUtils decodes
+chunked responses before JSON parsing, without accumulating the full response body.
+The default certificate policy remains `ADSB_HTTPS_INSECURE=1` (encryption without server
+certificate verification). Setting it to 0 enables the SDK's built-in root CA bundle.
+
+## Terms and attribution
+
+- adsb.lol: [API documentation](https://api.adsb.lol/docs), ODbL data.
+- [adsb.fi](https://adsb.fi): personal, non-commercial use with attribution and a home-page link;
+  public API limit is one request per second per IP. See [official terms](https://github.com/adsbfi/opendata).
+
+Airport routes are separate: `route_client.cpp` calls the existing Orb gateway, documented
+there as querying adsbdb.com. Switching aircraft transport does not change route lookup.

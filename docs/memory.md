@@ -12,13 +12,19 @@ not were a threading question about the same buffers.
 | Internal RAM | ~320 KB. Task stacks, the LVGL draw buffer, DMA. Contended and small. |
 | Flash | 16 MB, of which `themeart` holds pre-baked theme artwork. |
 
-`heap_caps_malloc_extmem_enable(4096)` is set at boot, so any allocation over 4 KB goes to
+`heap_caps_malloc_extmem_enable(512)` is set at boot, so ordinary allocations of 512 bytes or more go to
 PSRAM without asking. That is why the internal heap survives at all.
 
-**Internal RAM is the scarce one, not PSRAM.** The Orb cannot do TLS because it cannot raise
-two contiguous ~16 KB internal blocks, and it never will while the display and WiFi are up.
-Anything you write that wants a big buffer must say `MALLOC_CAP_SPIRAM` explicitly or be
-over 4 KB. A 3 KB buffer without the flag comes out of the 320 KB.
+**Internal RAM is the scarce one, not PSRAM.** The stock TLS allocator explicitly asks for
+internal RAM, so the ordinary malloc-to-PSRAM threshold does not move its buffers.
+`tls_memory_begin()` now installs mbedTLS runtime callbacks before networking to allocate
+TLS memory in PSRAM. Aircraft TLS sessions are closed after each request to make that memory
+available to other clients. This hook affects all mbedTLS users, so PSRAM headroom and long
+runtime still need checking alongside the internal heap.
+
+Anything else that wants a big buffer must say `MALLOC_CAP_SPIRAM` explicitly or exceed the
+ordinary allocation threshold (currently 512 bytes in setup). Capability-specific allocations
+for DMA, WiFi and task stacks remain internal.
 
 ## The unit costs
 
