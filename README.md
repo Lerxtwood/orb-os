@@ -24,7 +24,7 @@ relevant.
 Four screens, reached by rocking the knob to open the app menu and turning to choose:
 
 - **Clock**: analogue hands over the theme's own dial, with optional date and second banners, hand shadows, a plate that can turn with a hand, and a chime on the hour if you turn that on.
-- **Flight tracker**: live traffic from [adsb.lol](https://api.adsb.lol), a sweep, trails, coastlines, roads and airports, with a card for the selected aircraft and up to three readout lines the theme composes itself.
+- **Flight tracker**: live traffic directly over HTTPS from [adsb.lol](https://api.adsb.lol), with [adsb.fi](https://adsb.fi) as fallback, a sweep, trails, coastlines, roads and airports, with a card for the selected aircraft and up to three readout lines the theme composes itself.
 - **News**: headlines from BBC, the Guardian or NASA. Turn to move the highlight, press to read the story's own summary in the same band the list was in.
 - **Settings**: display, location, sound, units, range, WiFi, theme, and About, on a knob-driven wheel.
 
@@ -122,4 +122,4 @@ Adding or changing a screen? Read [`docs/adding-a-screen.md`](docs/adding-a-scre
 
 The Orb OS began as a fork of [Quique Tortosa's Capsule Radar](https://github.com/socquique/capsule-radar) and carries his copyright alongside Zion Brock's. See [`LICENSE`](LICENSE) for what came from where.
 
-Aircraft data from **adsb.lol**, free and non-commercial. First location from **ip-api.com** and city search from **Open-Meteo**'s geocoding. Map data **© OpenStreetMap contributors**, ODbL, credited on the Orb's own About screen where it cannot be switched off. Headlines from **BBC**, **The Guardian** and **NASA** RSS.
+Aircraft data from **adsb.lol** (ODbL) and fallback **[adsb.fi](https://adsb.fi)** (personal, non-commercial use). First location from **ip-api.com** and city search from **Open-Meteo**'s geocoding. Map data **© OpenStreetMap contributors**, ODbL, credited on the Orb's own About screen where it cannot be switched off. Headlines from **BBC**, **The Guardian** and **NASA** RSS.

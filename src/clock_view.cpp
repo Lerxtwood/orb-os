@@ -422,10 +422,27 @@ static void draw_digital(const struct tm *ti) {
 static constexpr float OFFICE_MINUTE_IMG_ZOOM = 1.0f;
 static constexpr float OFFICE_HOUR_IMG_ZOOM   = 1.0f;
 
+// 565 BACK TO 8 BITS, REACHING 255 AT THE TOP.
+//
+// Shifting left alone leaves the top of each range short: 31 << 3 is 248, 63 << 2 is 252.
+// Which is invisible when the answer is only going to be shown, and is not invisible at
+// all when it is going to be multiplied. blend_custom_hand and blit_upright put BOTH the
+// hand pixel and the dial pixel through here and then compute src * dst / 255, so a hand
+// with a white backing over a white dial came out 248 * 248 / 255 = 241, one 565 step
+// darker on every channel. Multiply over white is supposed to change nothing, and instead
+// it laid a soft grey rectangle of the hand's own image box onto the dial. Zion found it
+// on a white watch face, 2026-10-11, and screen blend had the same error upward.
+//
+// Replicating the high bits into the low ones maps 0 to 0 and the top of each range to 255
+// exactly, which is the property that matters: white has to come back as white. Two shifts
+// and an or per channel, in a loop that only runs for a hand that asked for a blend.
 static inline void unpack565(uint16_t v, uint8_t &r, uint8_t &g, uint8_t &b) {
-    r = (uint8_t)(((v >> 11) & 0x1F) << 3);
-    g = (uint8_t)(((v >> 5)  & 0x3F) << 2);
-    b = (uint8_t)((v & 0x1F) << 3);
+    const uint8_t r5 = (uint8_t)((v >> 11) & 0x1F);
+    const uint8_t g6 = (uint8_t)((v >> 5)  & 0x3F);
+    const uint8_t b5 = (uint8_t)(v & 0x1F);
+    r = (uint8_t)((r5 << 3) | (r5 >> 2));
+    g = (uint8_t)((g6 << 2) | (g6 >> 4));
+    b = (uint8_t)((b5 << 3) | (b5 >> 2));
 }
 
 // Rotates+scales a baked hand sprite by hand and alpha-blends it straight into the
@@ -1161,8 +1178,6 @@ static bool layers_usable(float minAng, float hrAng) {
     return dm < 0.35f && dh < 0.35f;
 }
 
-// The combined hour/minute layer can only replace two adjacent hands above seconds.
-// Otherwise it would repaint a hand already in s_under, or cross a static layer.
 static bool sweep_layers_usable(const theme_style::Clock &cs) {
     int hour = -1, minute = -1, second = -1;
     for (int i = 0; i < cs.orderN; ++i) {
@@ -2741,9 +2756,26 @@ static void sweep_frame(float secs) {
             if (rwAbove && s_stepEase >= 0.0f) p_min = (float)ti.tm_min + s_stepEase;
             const float p_hr = (ti.tm_hour % 12) + p_min / 60.0f;
             const float above[5] = { p_hr * 30.0f, p_min * 6.0f, ang, 0.0f, 0.0f };
-            // Hands below seconds are already in s_under. Only reuse the pair when
-            // both belong above seconds, and blit it at its actual place in the order.
-            const bool layered = sweep_layers_usable(cs) && layers_tick(above[1], above[0], true);
+            // THE CACHED PAIR, HERE, WHICH IS WHERE IT ACTUALLY EARNS ANYTHING.
+            //
+            // On a draw order that puts the second hand below the minute and hour — which is
+            // what sent me looking — s_under stops below the second hand and therefore holds
+            // NEITHER of the other two. They are redrawn from here on every sweep frame, and
+            // on the frame after any full rebuild the clip is the whole screen, so that is
+            // the 472 ms of bilinear sprite work the layer cache exists to remove. The first
+            // version of this wired it into draw_custom() only, which the sweep path never
+            // calls: correct, validated, and never once executed on a sweeping dial.
+            //
+            // Reuse the pair only for adjacent, normally blended hands above seconds,
+            // inserting it at the first hand's position so static layers keep their order.
+            // A sweep frame is by definition a fast frame — the beat it is stepping at is
+            // at least a beat a second, and the aim will not schedule one any slower than
+            // that — so the rebuild this starts is driven INLINE, a band per sweep frame:
+            // eight bands across eight tens-of-milliseconds frames, the seam between them
+            // the sub-pixel fraction of a degree the tolerance already covers. This is
+            // the arrangement the 2.16.71 hardware run verified, unchanged.
+            const bool layered = sweep_layers_usable(cs) &&
+                                 layers_tick(above[1], above[0], true);
             bool laidPair = false;
             bool past = false;
             for (int i = 0; i < cs.orderN; ++i) {
@@ -3602,6 +3634,20 @@ bool  clockview::layersTick(float minAng, float hrAng, bool spread) { return lay
 bool  clockview::layersRebuilding() { return s_layBuildY >= 0; }
 void  clockview::layersForceStale() { s_layMinAng += 30.0f; s_layHrAng += 30.0f; }
 void  clockview::layersPump() { lay_advance(); }
+
+// The blend arithmetic on its own, source and destination the same colour, which is the
+// case the Multiply blend exists to make invisible. Kept to exactly what blit_upright and
+// blend_custom_hand do between them, so the test holds the real path rather than a copy
+// that can drift away from it.
+uint16_t clockview::blendSelf(uint16_t packed565, int blend) {
+    uint8_t sr, sg, sb, dr, dg, db;
+    unpack565(packed565, sr, sg, sb);
+    unpack565(packed565, dr, dg, db);
+    if (blend == 1) { sr = (uint8_t)(sr * dr / 255); sg = (uint8_t)(sg * dg / 255); sb = (uint8_t)(sb * db / 255); }
+    else if (blend == 2) { sr = (uint8_t)(255 - (255 - sr) * (255 - dr) / 255); sg = (uint8_t)(255 - (255 - sg) * (255 - dg) / 255); sb = (uint8_t)(255 - (255 - sb) * (255 - db) / 255); }
+    lv_color_t out; out = LV_COLOR_MAKE(sr, sg, sb);
+    return (uint16_t)out.full;
+}
 
 // The sweep's beat arithmetic for the self-test — PURE, and the whole point is that it
 // can be: the wait given a fire phase against the grid, the milliseconds the wake has

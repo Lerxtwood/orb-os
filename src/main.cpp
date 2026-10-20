@@ -12,6 +12,7 @@
 #include "aircraft.h"
 #include "geo.h"
 #include "adsb_client.h"
+#include "tls_memory.h"
 #include "route.h"
 #include "route_client.h"
 #include "photo.h"
@@ -2721,16 +2722,9 @@ void setup() {
     // RTC_NOINIT holds whatever was in it, including rubbish after a real power cycle, so it
     // is only trusted when the companion magic says we wrote it. Same guard diag_log uses.
 
-    // Send large allocations (>=4KB) to PSRAM instead of the ~300KB internal heap.
-    // TLS handshakes (WiFiClientSecure, fresh one built for every poll of every feed —
-    // ADS-B every 2s, weather, wx radar, cloud imagery, aircraft photos) were the
-    // biggest thing routinely landing on the internal heap, and repeatedly allocating
-    // and freeing those over a long uptime fragmented it badly enough that eventually
-    // no single free block was big enough for the next handshake, even with plenty of
-    // total free memory — mbedTLS calls it "SSL - Memory allocation failed", and it was
-    // tripping the "feed stuck 180s -> reboot" recovery every few minutes. Internal
-    // memory allocations don't get restructured at all; they're just redirected to the
-    // ~8MB PSRAM pool, which has vastly more room to absorb the same churn.
+    // Ordinary malloc/new allocations >=512 bytes go to PSRAM. The stock
+    // mbedTLS allocator explicitly requests internal RAM, so TLS needs the
+    // separate runtime callbacks installed below as well.
     //
     // 512, NOT 4096, SINCE 2.16.65. Everything under 4 KB still landed on the internal heap:
     // HTTP and socket buffers, JSON documents, Strings, the aircraft vector. None of them are
@@ -2753,6 +2747,7 @@ void setup() {
     // None of it is in the render loop. If the Orb feels slower rather than steadier, this is
     // the line to put back.
     heap_caps_malloc_extmem_enable(512);
+    tls_memory_begin();  // before WiFi/tasks: TLS allocations explicitly use PSRAM
 
     psram_mark("boot start");
     sdcard::begin();
