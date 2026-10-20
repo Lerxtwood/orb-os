@@ -18,6 +18,14 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.17.02
+
+- Flight tracking connects directly to adsb.lol over HTTPS, restoring aircraft data after plain HTTP stopped working
+- If adsb.lol is unavailable, flight tracking automatically tries adsb.fi
+- Secure aircraft requests use PSRAM to leave internal memory available for the display and WiFi
+
+---
+
 ## 2.17.01
 
 - The hands are stacked the way the design asks again. The second hand was being pinned
