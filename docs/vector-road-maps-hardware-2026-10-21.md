@@ -1,6 +1,6 @@
 # Vector road-map hardware observation — 2026-10-21
 
-User-installed firmware: 2.18.18. Captured COM6 at 115200 baud and polled
+User-installed firmware: MiltonBanana/2.18.18. Captured COM6 at 115200 baud and polled
 `/roads.json` approximately every 0.5 seconds, with periodic `/health` samples.
 Firmware and settings were not changed by the monitor.
 
@@ -82,7 +82,7 @@ in favour of the shared About/startup credits, and uses ASCII weather credits
 to avoid the missing copyright glyph warnings. These changes await a hardware
 retest; the investigation did not flash the device.
 
-## 2.18.19 reboot regression
+## MiltonBanana/2.18.19 reboot regression
 
 After the user installed 2.18.19, serial capture confirmed repeated panic resets
 about every nine seconds. The assertion was:
@@ -105,7 +105,7 @@ build-validated and still requires installation and hardware verification.
 
 Capture: `.pio/vector-tests/restart219-serial.log` and `restart219-status.jsonl`.
 
-## 2.18.20 range-change crash
+## MiltonBanana/2.18.20 range-change crash
 
 During a user-triggered 58-to-100 km change, capture `range220-serial.log` recorded
 a panic at +14.875 seconds and return to Clock after reboot. Decoding the matching

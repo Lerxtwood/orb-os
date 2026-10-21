@@ -19,22 +19,22 @@ retry countdown or failure. It also reports cache clearing. The banner updates
 twice per second and hides once coverage is complete or the theme disables Map.
 The background worker supplies atomic counters; all LVGL changes stay on the UI task.
 
-This is a prototype, with host tests and a firmware build. User-installed 2.18.18
+This is a prototype, with host tests and a firmware build. User-installed MiltonBanana/2.18.18
 has now been monitored on hardware: [Salt Lake City observation](vector-road-maps-hardware-2026-10-21.md).
-Version 2.18.20 replaces per-tile stack allocation with one persistent
-24 KiB internal worker stack reserved early during startup. Version 2.18.19's
+Version MiltonBanana/2.18.20 replaces per-tile stack allocation with one persistent
+24 KiB internal worker stack reserved early during startup. Version MiltonBanana/2.18.19's
 PSRAM stack caused a confirmed TCP assertion/reboot and must not be used.
 Cold loads, stack use under heap pressure, SD/audio
 contention and visual placement still need hardware validation. The monitoring work did not flash or
 deploy firmware.
 
-Version 2.18.21 also defers range-change radar rendering while Settings is shown.
+Version MiltonBanana/2.18.21 also defers range-change radar rendering while Settings is shown.
 LVGL prefers PSRAM for new allocations when internal free memory approaches
 16 KiB, retaining room for file locks/network work. Both road readers and the
 download manager defer SD operations below 8 KiB internal free or a 2 KiB largest
 block. These are best-effort headroom checks, not reservations against concurrent
 network allocations. PSRAM allocation failure retains the allocator's existing
-internal fallback. The observed 2.18.20 range-change crash was inside newlib's
+internal fallback. The observed MiltonBanana/2.18.20 range-change crash was inside newlib's
 file-lock allocation, reached by an immediate hidden-radar SD reprojection.
 When changing `include/lv_psram_alloc.h`, ensure LVGL's `lv_mem.c` is rebuilt:
 the observed PlatformIO incremental build did not track that custom include.
@@ -110,7 +110,7 @@ and thirty-second total deadlines, with cancellation checked during reads. Trunc
 bodies, invalid framing, excess size and empty HTTP 200 bodies are rejected with
 specific errors. This replaces the generic `incomplete tile` error observed with
 HTTP 200 and zero bytes; whether it resolves that device's failure awaits a retest.
-Firmware 2.18.18 fixes the subsequently identified cause of `tile input limit`
+Firmware MiltonBanana/2.18.18 fixes the subsequently identified cause of `tile input limit`
 with a 24,211-byte response: the SDK's POSIX `MAX_INPUT` macro (255 terminal bytes)
 overrode the generic constant name at worker call sites. Renamed tile-budget
 constants retain 512 KiB even after SDK headers are included. `inputLimit` and

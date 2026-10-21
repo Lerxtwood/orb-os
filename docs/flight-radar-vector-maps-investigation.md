@@ -19,12 +19,12 @@ global int16 latitude/longitude format would discard much of the precision gaine
 
 ## Branch comparison
 
-The current `fix/flight-tracker-vector-maps` branch is at `3c0c3ec`, the same base
-as the previous experiment. `fix/flight-tracker-maps` adds:
+The current `MiltonBanana/fix/flight-tracker-vector-maps` branch is at `MiltonBanana/3c0c3ec`, the same base
+as the previous experiment. `MiltonBanana/fix/flight-tracker-maps` adds:
 
-- `d42c8cd`: automatic road downloads, generation, validation and radar integration.
-- `5158df6`: optimization work and browser preload, including the reusable snapshot
-  fix. Its firmware version is 2.18.14; the current branch remains 2.18.00.
+- `MiltonBanana/d42c8cd`: automatic road downloads, generation, validation and radar integration.
+- `MiltonBanana/5158df6`: optimization work and browser preload, including the reusable snapshot
+  fix. Its firmware version is MiltonBanana/2.18.14; the current branch remains MiltonBanana/2.18.00.
 
 Consequently, automatic downloads and browser preload are absent here rather than
 already inherited. Preserve useful fixes and integration deliberately when building
