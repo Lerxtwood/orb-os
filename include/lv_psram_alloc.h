@@ -159,9 +159,18 @@ static inline void orb_lv_note_free(void *p) {
 static const uint32_t orb_lv_zero_bucket[ORB_LV_NBUCKETS] = { 0 };
 #endif  // ORB_LV_STATS
 
+// Leave internal headroom for newlib file locks and TCP while Settings builds
+// its many small objects. Waiting until internal malloc fails is too late:
+// newlib aborts rather than returning an error when its lock allocation fails.
+#define ORB_LV_INTERNAL_RESERVE (16u * 1024u)
+static inline int orb_lv_prefer_external(size_t size) {
+    const size_t available = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    return size >= ORB_LV_BIG_ALLOC || available < ORB_LV_INTERNAL_RESERVE ||
+           size > available - ORB_LV_INTERNAL_RESERVE;
+}
 static inline void *orb_lv_malloc(size_t size) {
     void *p;
-    if (size >= ORB_LV_BIG_ALLOC) {
+    if (orb_lv_prefer_external(size)) {
         p = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!p) {
             p = heap_caps_malloc(size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
@@ -189,7 +198,7 @@ static inline void *orb_lv_realloc(void *p, size_t size) {
     // pointer cannot be asked how big it was.
     orb_lv_note_free(p);
     void *q;
-    if (size >= ORB_LV_BIG_ALLOC) {
+    if (orb_lv_prefer_external(size)) {
         q = heap_caps_realloc(p, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!q) q = heap_caps_realloc(p, size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     } else {

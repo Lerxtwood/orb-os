@@ -12,6 +12,7 @@
 #include "geo.h"
 #include "coastline.h"
 #include "roads_sd.h"
+#include "map_snapshot.h"
 #include "airports.h"
 #include "text_tokens.h"   // shared {token} expansion, see radar_fmt()
 #include "photo.h"
@@ -203,6 +204,7 @@ static const char *THEME_NAMES[THEME_COUNT] = { "ORB", "MILITARY", "AVIATOR" };
 // The sweep starts turning and then visibly stops for a few seconds, which reads as a
 // crash rather than as loading. So say what is happening.
 static lv_obj_t   *s_loading         = nullptr;
+static lv_obj_t   *s_roadStatus      = nullptr;
 static bool        s_loadingPending  = false;   // shown, waiting for the first update()
 static uint32_t    s_loadStartMs     = 0;       // lv_tick_get() when loading began, for the elapsed-time line
 static int         s_loadShownSec    = -1;      // last elapsed-second value painted, so a still-frozen number is never redrawn as "live"
@@ -684,7 +686,8 @@ static void grid_draw_cb(lv_event_t *e) {
         td.border_color = lv_color_hex(0x8A4A00);
         td.border_width = 1;
         td.border_opa = 160;
-        roads_sd::draw(d, road_color(), 130, 1);
+        if(theme_style::radar().mapRoadsOn) roads_sd::draw(d,lv_color_hex(theme_style::radar().mapRoadColor),
+            (lv_opa_t)theme_style::radar().mapRoadOpacity,std::max(1,std::min(8,theme_style::radar().mapRoadWidth)));
         coastline_draw(d, coast_color(), 170, 2);    // landmass outline under the triangle
         if (s_airportsEnabled) airports_draw(d, airport_color(), 150);
         lv_draw_polygon(d, &td, tri, 3);
@@ -695,7 +698,8 @@ static void grid_draw_cb(lv_event_t *e) {
     // Steel blue (sepia in Aviator) + 2 px so the coastline reads as a map
     // outline, distinct from the altitude-trail palette; roads are a thinner,
     // more muted neutral so they don't compete with it.
-    roads_sd::draw(d, road_color(), 150, 1);
+    if(theme_style::radar().mapRoadsOn) roads_sd::draw(d,lv_color_hex(theme_style::radar().mapRoadColor),
+        (lv_opa_t)theme_style::radar().mapRoadOpacity,std::max(1,std::min(8,theme_style::radar().mapRoadWidth)));
     coastline_draw(d, coast_color(), 165, 2);
     if (s_airportsEnabled) airports_draw(d, airport_color(), 150);
 
@@ -2142,6 +2146,15 @@ void init(void *lv_parent) {
     lv_obj_set_style_text_line_space(s_feedWarn, 3, 0);
     show(s_feedWarn, false);
 
+    s_roadStatus = make_label(parent,"",&lv_font_montserrat_14,lv_color_white(),LV_ALIGN_TOP_MID,0,50);
+    lv_obj_set_width(s_roadStatus,280);
+    lv_obj_set_style_bg_color(s_roadStatus,lv_color_black(),0);
+    lv_obj_set_style_bg_opa(s_roadStatus,LV_OPA_70,0);
+    lv_obj_set_style_radius(s_roadStatus,6,0);
+    lv_obj_set_style_pad_all(s_roadStatus,5,0);
+    lv_obj_set_style_text_align(s_roadStatus,LV_TEXT_ALIGN_CENTER,0);
+    show(s_roadStatus,false);
+
     s_themeLabel = make_label(parent, "", &lv_font_montserrat_20, lv_color_white(), LV_ALIGN_TOP_MID, 0, 92);
     lv_obj_set_style_bg_color(s_themeLabel, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(s_themeLabel, LV_OPA_90, 0);
@@ -2289,6 +2302,7 @@ static bool         s_flatTook[3] = { false, false, false };   // static1, stati
 // flattened background, and the live layer is hidden. Zion's three-section architecture
 // assumes the map is "etched in"; this makes that assumption true.
 static lv_img_dsc_t *s_mapSnap  = nullptr;
+static MapSnapshot s_mapSnapshot;
 static bool          s_mapBaked = false;
 static bool          s_ringsBaked = false;   // the etching went into the flat plate, so hide the live object
 
@@ -2298,8 +2312,8 @@ static void take_map_snapshot() {
     // events, and a hidden object draws nothing, which would etch an empty map.
     show(s_gridLayer, true);
     lv_obj_update_layout(s_gridLayer);
-    if (s_mapSnap) { lv_snapshot_free(s_mapSnap); s_mapSnap = nullptr; }
-    s_mapSnap = lv_snapshot_take(s_gridLayer, LV_IMG_CF_TRUE_COLOR_ALPHA);
+    s_mapSnapshot.take(s_gridLayer);
+    s_mapSnap = s_mapSnapshot.image();
     if (!s_mapSnap) { Serial.println("[radar] map snapshot failed; live layer stays"); return; }
 
     // Punch the exclusion zones out of the etched map.
@@ -2584,28 +2598,40 @@ void refreshCustomStyle() {
     // reads the finished state rather than trying to predict it, and it hides only
     // what it has actually absorbed, so a failure here degrades to the live stack
     // rather than to a missing layer.
+    take_map_snapshot();  // theme colours and visibility may change without new geometry
     rebuild_flat_background();
     apply_grid_visibility();
     applyRadarLayerOrder();
 }
 
-void update(const std::vector<Aircraft> &aircraft, const RadarSettings &s) {
-    std::vector<AcDraw> out;
-    out.reserve(aircraft.size());
-    std::set<std::string> present;
+void setRoadStatus(const char *message) {
+    if(!s_roadStatus)return;
+    if(!message)message="";
+    if(strcmp(lv_label_get_text(s_roadStatus),message))lv_label_set_text(s_roadStatus,message);
+    show(s_roadStatus,*message!=0);
+    if(*message)lv_obj_move_foreground(s_roadStatus);
+}
+
+void refreshMap(const RadarSettings &s) {
+    if(!s_gridLayer)return;
     const float R = (float)RADAR_R_OUTER_PX;
-    ++s_flowGen;                                  // one tick per poll; flow segments age in these units
-    s_lastRangeKm = s.rangeKm;                    // kept current for the range banner (radar_range_fmt)
 
     // Reproject the coastline only when the scope geometry actually changes (home
     // moved or range zoomed) — never per frame. Then repaint the static chrome layer.
     static double s_coLat = 1e9, s_coLon = 1e9; static float s_coRange = -1.0f;
-    if (s.homeLat != s_coLat || s.homeLon != s_coLon || s.rangeKm != s_coRange) {
+    static unsigned mapRevision=~0u;
+    static bool roadsOn=false;
+    bool geometryChanged=s.homeLat != s_coLat || s.homeLon != s_coLon || s.rangeKm != s_coRange;
+    bool enabled=theme_style::radar().mapRoadsOn;
+    if (geometryChanged || mapRevision!=roads_sd::revision() || roadsOn!=enabled) {
         const bool firstFix = (s_coRange < 0.0f);
+        if(!roads_sd::project(s.homeLat,s.homeLon,enabled?s.rangeKm:0,s_cx,s_cy,R))return;
         s_coLat = s.homeLat; s_coLon = s.homeLon; s_coRange = s.rangeKm;
-        coastline_project(s.homeLat, s.homeLon, s.rangeKm, s_cx, s_cy, R);
-        airports_project(s.homeLat, s.homeLon, s.rangeKm, s_cx, s_cy, R);
-        roads_sd::project(s.homeLat, s.homeLon, s.rangeKm, s_cx, s_cy, R);
+        if(geometryChanged) {
+            coastline_project(s.homeLat, s.homeLon, s.rangeKm, s_cx, s_cy, R);
+            airports_project(s.homeLat, s.homeLon, s.rangeKm, s_cx, s_cy, R);
+        }
+        mapRevision=roads_sd::revision();roadsOn=enabled;
         if (s_gridLayer) lv_obj_invalidate(s_gridLayer);
         // The projection is new, so the etched copy is stale: render it once at the new
         // geometry and fold it back into the flattened background. Costs one frame's
@@ -2616,7 +2642,7 @@ void update(const std::vector<Aircraft> &aircraft, const RadarSettings &s) {
             rebuild_flat_background();
             apply_grid_visibility();
         }
-        if (!firstFix) {
+        if (!firstFix && geometryChanged) {
             // Scope scale/center changed: old trails were plotted at the previous
             // projection and would be wrong now — drop them and clear the flow layer.
             s_trails.clear();
@@ -2625,6 +2651,16 @@ void update(const std::vector<Aircraft> &aircraft, const RadarSettings &s) {
         }
     }
 
+}
+
+void update(const std::vector<Aircraft> &aircraft, const RadarSettings &s) {
+    std::vector<AcDraw> out;
+    out.reserve(aircraft.size());
+    std::set<std::string> present;
+    const float R = (float)RADAR_R_OUTER_PX;
+    ++s_flowGen;
+    s_lastRangeKm = s.rangeKm;
+    refreshMap(s);
     std::map<std::string, lv_point_t> prevPos;        // smooth-motion: glide starts here
     for (const AcDraw &a : s_acs) prevPos[a.hex] = a.pos;
 

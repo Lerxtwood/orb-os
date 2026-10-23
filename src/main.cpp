@@ -53,6 +53,7 @@
 #include "diag_log.h"                // RTC-memory event ring buffer, survives a reboot
 #include "sdcard.h"                  // microSD (TF) slot, SPI mode
 #include "roads_sd.h"                // worldwide roads read off the SD card
+#include "road_vector_download.h"
 #include "clock_view.h"              // clock app (app two)
 #include "weather_view.h"           // animated weather-radar app (knob channel)
 #include "settings_view.h"          // settings app (menu; captures the knob)
@@ -788,8 +789,12 @@ static void onRangeChange(float km) {
     g_adsb.setMinDistKm(deadZoneKm());   // px-based zone, so a new range means a new km threshold
     g_requeryKm = queryRadiusKm();
     g_requery = true;
-    radar::update(g_snap, g_settings);   // instant visual zoom from the last snapshot
-    ui_on_data_updated();
+    // Settings owns the screen here. Reproject when radar becomes visible,
+    // using the existing catch-up path rather than reopening map files now.
+    if (g_radarViewActive) {
+        radar::update(g_snap, g_settings);
+        ui_on_data_updated();
+    }
 }
 
 // Settings > Range hooks (declared extern in settings_view.cpp).
@@ -1727,6 +1732,7 @@ static const char ROOT_TAIL[] PROGMEM =
     "</dl></div>"
     "<div class=card>"
     "<a class=b href='/install'>Install a theme file</a>"
+    "<a class=b href='/roads'>Road maps and cache</a>"
     // Upstream 2.16.64 guarded this link: with no OTA partition the page it points at
     // 404s, so advertising it is a lie. Preserved here because this function moved into a
     // PROGMEM literal in the same release — string-literal concatenation takes a #if
@@ -1942,6 +1948,7 @@ static void handleLegacyConfig() {
         "<div class=card><div class=t>Network</div>"
         "<p style='color:#9affc8;font-size:13px;margin:0 0 4px'>Forget the saved WiFi and reopen the setup portal.</p>"
         "<form method=POST action=/wifi><button class=w>Reset WiFi</button></form></div>"
+        "<p class=ft><a href=/roads style='color:#9affc8'>Road maps and attribution</a></p>"
         // The "Firmware update" link only exists when there is an OTA partition to write
         // into; otherwise it would advertise a page that 404s.
 #if ORB_OTA_ENABLED
@@ -2750,6 +2757,7 @@ void setup() {
     tls_memory_begin();  // before WiFi/tasks: TLS allocations explicitly use PSRAM
 
     psram_mark("boot start");
+    road_vector_download::prepareWorker();
     sdcard::begin();
     psram_mark("after sdcard");
 
@@ -3509,6 +3517,7 @@ void setup() {
         g_web.send(200, "application/json", b);
     });
     g_web.on("/sdput", HTTP_POST, handleSdPutDone, handleSdPutUpload);   // Launch Kit pushes theme files here
+    road_vector_download::begin(g_web);
     // "I am done sending." Without it the install overlay has no way to tell the end of a
     // transfer from the death of one — see update_ui::installed().
     g_web.on("/installed", HTTP_POST, []{
@@ -3684,6 +3693,19 @@ void loop() {
     // ever touched from this task. The update panel is up throughout, so the frames this
     // costs are frames of a screen nobody is looking at.
     if (theme_pull::active()) theme_pull::step();
+    road_vector_download::step(g_settings.homeLat,g_settings.homeLon,g_settings.rangeKm,
+                              g_locationSet && theme_style::radar().mapRoadsOn,
+                              theme_pull::active() || orb_link::transferActive() || (bool)g_sdUpFile);
+    static uint32_t roadStatusAt=0;
+    if(int32_t(millis()-roadStatusAt)>=0) {
+        roadStatusAt=millis()+500;
+        char message[144]={};
+        if(g_locationSet&&theme_style::radar().mapRoadsOn)
+            road_vector_download::progressText(message,sizeof(message));
+        radar::setRoadStatus(message);
+    }
+    if(g_radarViewActive && g_locationSet && !theme_pull::active() && !orb_link::transferActive())
+        radar::refreshMap(g_settings);
 #if ORB_COMPANION
     companion::poll();
 #endif
