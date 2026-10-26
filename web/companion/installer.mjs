@@ -1,4 +1,4 @@
-import {FLASH_SIZE, require, identifyLayout, validateRelease, validateImage, validateCache, flashPlan, resetToFirmware} from './layout.mjs';
+import {FLASH_SIZE, require, identifyLayout, validateRelease, validateImage, validateCache, flashPlan, settingsResetPlan, resetToFirmware} from './layout.mjs';
 const $ = id => document.getElementById(id);
 let releases = [], loader, transport, layout, settingsHash, cacheError = '', busy = false;
 const connectionLog = $('log');
@@ -27,6 +27,8 @@ function lock(value) {
   $('disconnect').disabled = value;
   $('install').disabled = value || !layout || (!!cacheError && !$('rebuild-cache').checked);
   $('rebuild-cache').disabled = value;
+  $('confirm-reset').disabled = value;
+  $('reset').disabled = value || layout !== 'companion' || !$('confirm-reset').checked;
 }
 const md5 = bytes => SparkMD5.ArrayBuffer.hash(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
 async function readVerified(address, size) {
@@ -69,6 +71,9 @@ async function disconnect(reset = true) {
   loader = transport = layout = settingsHash = undefined;
   cacheError = '';
   $('rebuild-cache').checked = false;
+  $('confirm-reset').checked = false;
+  $('reset-settings').hidden = true;
+  $('reset-settings').open = false;
   $('ready').hidden = $('disconnect').hidden = true;
   lock(false);
   return restarted;
@@ -91,6 +96,7 @@ $('connect').addEventListener('click', async () => {
     cacheError = '';
     $('rebuild-cache').checked = false;
     $('cache-option').hidden = layout === 'blank';
+    $('reset-settings').hidden = layout !== 'companion';
     if (layout === 'orb') {
       const cache = await readVerified(0x650000, 8192);
       try { validateCache(cache); }
@@ -133,6 +139,41 @@ $('disconnect').addEventListener('click', async () => {
   lock(true);
   const restarted = await disconnect();
   status(restarted ? 'Disconnected. Restart requested.' : 'Disconnected. Unplug and reconnect USB to restart the device.', !restarted);
+});
+$('confirm-reset').addEventListener('change', () => { if (!busy) lock(false); });
+$('reset').addEventListener('click', async () => {
+  if (busy) return;
+  lock(true);
+  let wrote = false;
+  try {
+    require($('confirm-reset').checked, 'Confirm deletion of both firmwares’ settings before resetting.');
+    const plan = settingsResetPlan(layout);
+    require(identifyLayout(await readVerified(0x8000, 4096)) === layout,
+      'Device layout changed. Reconnect before resetting.');
+    status('Resetting both firmwares’ settings. Keep this page open and the cable connected…');
+    wrote = true;
+    await loader.writeFlash({fileArray: plan, flashSize: 'keep', flashMode: 'keep', flashFreq: 'keep',
+      eraseAll: false, compress: true, calculateMD5Hash: md5,
+      reportProgress: (file, done, total) => progress(70 * (file + done / total) / plan.length)});
+    const total = plan.reduce((sum, part) => sum + part.data.length, 0);
+    let verified = 0;
+    for (const part of plan) {
+      for (let offset = 0; offset < part.data.length; offset += 0x8000) {
+        const size = Math.min(0x8000, part.data.length - offset);
+        require((await readVerified(part.address + offset, size)).every(byte => byte === 255),
+          'Settings reset verification failed.');
+        verified += size;
+        progress(70 + 30 * verified / total);
+      }
+    }
+    const restarted = await disconnect();
+    progress(100);
+    status(restarted ? 'Both firmwares’ settings cleared and verified. Restart requested. Set up Wi-Fi in Orb, then open PrintSphere.'
+      : 'Both firmwares’ settings cleared and verified. Unplug and reconnect USB, then set up Wi-Fi in Orb and open PrintSphere.', !restarted);
+  } catch (error) {
+    await disconnect(!wrote);
+    status(error.message + (wrote ? ' Reset did not finish. Reconnect and retry before restarting the device.' : ' Nothing was written.'), true);
+  } finally { lock(false); }
 });
 $('install').addEventListener('click', async () => {
   lock(true);

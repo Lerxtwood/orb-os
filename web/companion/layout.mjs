@@ -80,6 +80,14 @@ export function validateCache(bytes) {
     require(offset >= 8192 && offset + length <= 0x480000, 'A cached theme would be truncated. Nothing was changed.');
   }
 }
+export function settingsResetPlan(layout) {
+  require(layout === 'companion', 'Settings reset requires an installed Orb + PrintSphere companion layout. Nothing was changed.');
+  // Erase only settings, then clear boot selection so the next boot starts Orb.
+  return ['nvs', 'ps_nvs', 'otadata'].map(name => ({
+    address: EXPECTED[name][2], data: new Uint8Array(EXPECTED[name][3]).fill(255), name,
+  }));
+}
+
 export function flashPlan(layout, files, rebuildCache = false) {
   require(['companion', 'orb', 'blank'].includes(layout), 'Unsupported existing firmware. Nothing was changed.');
   const appNames = ['Orb-companion.bin', 'PrintSphere-companion.bin'];

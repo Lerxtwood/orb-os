@@ -31,6 +31,13 @@
           <p id="cache-note" class="note">Clear cached artwork and rebuild it from your SD-card theme files on the next boot. Keep the SD card inserted. Saved settings and theme files are kept; the first boot may take longer.</p>
         </div>
         <button id="install" disabled>Install both firmwares</button>
+        <details id="reset-settings" hidden>
+          <summary>Reset device settings</summary>
+          <p>Start fresh without reinstalling. This permanently clears Wi-Fi credentials, shared credentials, printer profiles, cloud sign-ins, and all other saved settings in both Orb and PrintSphere. The device restarts in Orb for Wi-Fi setup.</p>
+          <p class="note">Firmware, cached artwork, uploaded sounds, and SD-card files are kept. To test Wi-Fi sharing, configure Wi-Fi in Orb first, then open PrintSphere without configuring Wi-Fi there.</p>
+          <label class="check-option"><input id="confirm-reset" type="checkbox"> I understand that both firmwares’ saved settings will be deleted.</label>
+          <button id="reset" class="secondary" disabled>Reset both firmwares’ settings</button>
+        </details>
       </div>
       <progress id="progress" max="100" value="0" aria-label="Installation progress" hidden></progress>
       <details><summary>Connection details</summary><pre id="log" aria-label="Connection log"></pre></details>

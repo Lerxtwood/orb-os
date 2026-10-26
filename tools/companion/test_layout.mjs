@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {identifyLayout, validateRelease, validateCache, flashPlan, PARTS, resetToFirmware} from '../../web/companion/layout.mjs';
+import {identifyLayout, validateRelease, validateCache, flashPlan, settingsResetPlan, PARTS, resetToFirmware} from '../../web/companion/layout.mjs';
 const table = entries => {
   const bytes = new Uint8Array(4096).fill(255), view = new DataView(bytes.buffer);
   entries.forEach(([name, kind, subtype, offset, size], index) => {
@@ -26,6 +26,92 @@ test('routine updates touch only the two firmware slots', () => {
   assert.deepEqual(plan.map(p => p.address), [0x10000,0xAD0000]);
   assert.deepEqual(plan.map(p => p.data.length), [0x640000,0x400000]);
 });
+test('settings reset clears both NVS partitions and selects Orb without touching firmware or artwork', () => {
+  const plan = settingsResetPlan('companion');
+  assert.deepEqual(plan.map(p => [p.address, p.data.length]), [[0x9000, 0x5000], [0xED0000, 0x80000], [0xE000, 0x2000]]);
+  for (const p of plan) {
+    assert.ok(p.data.every(b => b === 255));
+    for (const [start, end] of [[0, 0x9000], [0x10000, 0xED0000], [0xF50000, 0x1000000]])
+      assert.ok(p.address + p.data.length <= start || p.address >= end);
+  }
+  for (const layout of ['orb', 'blank', 'unknown', undefined]) assert.throws(() => settingsResetPlan(layout));
+});
+
+test('settings reset requires consent, rechecks layout, verifies erasure and leaves failed writes in bootloader', async () => {
+  const {readFile} = await import('node:fs/promises');
+  const vm = await import('node:vm');
+  const source = (await readFile(new URL('../../web/companion/installer.mjs', import.meta.url), 'utf8'))
+    .replace(/^import .*?;\s*/, '')
+    .replace("await import('https://cdn.jsdelivr.net/npm/esptool-js@0.7.0/bundle.js')", 'fakeTools');
+  for (const mode of ['success', 'unconfirmed', 'changed-layout', 'failed-write', 'corrupt-readback']) {
+    const nodes = new Map(), writes = [], reads = [];
+    const memory = new Uint8Array(0x1000000).fill(0x5A);
+    memory.set(companion, 0x8000);
+    let restarts = 0;
+    const element = id => {
+      if (!nodes.has(id)) nodes.set(id, {value:'0', checked:false, textContent:'', classList:{toggle() {}},
+        listeners:{}, replaceChildren() {}, closest:() => element('details'),
+        addEventListener(name, callback) { this.listeners[name] = callback; }});
+      return nodes.get(id);
+    };
+    class Loader {
+      chip = {CHIP_NAME:'ESP32-S3'};
+      async main() {} async detectFlashSize() { return '16MB'; }
+      async readFlash(address, size) { reads.push([address,size]); return memory.slice(address,address+size); }
+      async flashMd5sum() { return 'verified'; }
+      async writeFlash(options) {
+        assert.equal(element('reset').disabled, true);
+        assert.equal(element('install').disabled, true);
+        assert.equal(element('disconnect').disabled, true);
+        writes.push(options);
+        if (mode === 'failed-write') throw Error('USB write failed');
+        for (const p of options.fileArray) memory.set(p.data, p.address);
+        if (mode === 'corrupt-readback') memory[0xED0000] = 0;
+      }
+    }
+    const sandbox = {FLASH_SIZE:0x1000000, require:(ok,msg) => { if (!ok) throw Error(msg); },
+      identifyLayout, validateCache, flashPlan, settingsResetPlan,
+      resetToFirmware:async () => { ++restarts; },
+      document:{getElementById:element}, navigator:{serial:{requestPort:async () => ({})}},
+      window:{addEventListener() {}}, ResizeObserver:class { observe() {} },
+      SparkMD5:{ArrayBuffer:{hash:() => 'verified'}},
+      fakeTools:{ESPLoader:Loader, Transport:class { async disconnect() {} }},
+      fetch:async () => ({ok:false}), Uint8Array};
+    await vm.runInNewContext('(async () => {' + source + '})()', sandbox);
+    await element('connect').listeners.click();
+    assert.equal(element('reset-settings').hidden, false);
+    assert.equal(element('reset').disabled, true);
+    if (mode !== 'unconfirmed') {
+      element('confirm-reset').checked = true;
+      element('confirm-reset').listeners.change();
+      assert.equal(element('reset').disabled, false);
+    }
+    if (mode === 'changed-layout') memory.set(original, 0x8000);
+    await element('reset').listeners.click();
+    if (['unconfirmed', 'changed-layout'].includes(mode)) {
+      assert.equal(writes.length, 0);
+      assert.match(element('status').textContent, /Nothing was written/);
+    } else {
+      assert.equal(writes.length, 1);
+      assert.equal(writes[0].eraseAll, false);
+      for (const [start,end] of [[0,0x8000], [0x10000,0xED0000], [0xF50000,0x1000000]])
+        assert.ok(memory.subarray(start,end).every(byte => byte === 0x5A));
+      assert.deepEqual(memory.slice(0x8000,0x9000), companion);
+      if (mode === 'success') {
+        assert.match(element('status').textContent, /settings cleared and verified/);
+        assert.equal(restarts, 1);
+        assert.ok(reads.some(([address]) => address === 0xED0000));
+        assert.ok(reads.every(([,size]) => size <= 0x8000));
+      } else {
+        assert.equal(restarts, 0);
+        assert.match(element('status').textContent, /Reset did not finish/);
+      }
+    }
+    assert.equal(element('confirm-reset').checked, false);
+    assert.equal(element('reset').disabled, true);
+  }
+});
+
 test('migration writes never overlap Orb NVS or theme cache, even with maximum images', () => {
   const plan = flashPlan('orb', files);
   for (const part of plan) for (const [start,end] of [[0x9000,0xE000],[0x650000,0xAD0000]]) {
