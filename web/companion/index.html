@@ -33,8 +33,9 @@
         <button id="install" disabled>Install both firmwares</button>
         <details id="reset-settings" hidden>
           <summary>Reset device settings</summary>
-          <p>Start fresh without reinstalling. This permanently clears Wi-Fi credentials, shared credentials, printer profiles, cloud sign-ins, and all other saved settings in both Orb and PrintSphere. The device restarts in Orb for Wi-Fi setup.</p>
+          <p>Start fresh without reinstalling. This clears Wi-Fi credentials, shared credentials, printer profiles, cloud sign-ins, and all other saved settings from both firmwares’ internal storage. The device restarts in Orb for Wi-Fi setup.</p>
           <p class="note">Firmware, cached artwork, uploaded sounds, and SD-card files are kept. To test Wi-Fi sharing, configure Wi-Fi in Orb first, then open PrintSphere without configuring Wi-Fi there.</p>
+          <p class="note">PrintSphere versions with SD backup restore printer and cloud setup from the card after a reset. To forget that setup completely, delete the card’s <code>/printsphere</code> backup folder before resetting.</p>
           <label class="check-option"><input id="confirm-reset" type="checkbox"> I understand that both firmwares’ saved settings will be deleted.</label>
           <button id="reset" class="secondary" disabled>Reset both firmwares’ settings</button>
         </details>

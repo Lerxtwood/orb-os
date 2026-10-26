@@ -97,7 +97,12 @@ jobs:
           esp_idf_version: v5.5.4
           target: esp32s3
           path: .pio/companion/PrintSphere
-          command: idf.py -B ../ps-build -D PRINTSPHERE_HW_VARIANT=amoled_1_75 -D PRINTSPHERE_RELEASE_VERSION=${{ steps.version.outputs.tag }}-orb build
+          command: |
+            set -e
+            idf.py -B ../ps-build -D PRINTSPHERE_HW_VARIANT=amoled_1_75 -D PRINTSPHERE_RELEASE_VERSION=${{ steps.version.outputs.tag }}-orb build
+            gcc -I"$IDF_PATH/components/json/cJSON" -c "$IDF_PATH/components/json/cJSON/cJSON.c" -o /tmp/backup-cJSON.o
+            g++ -std=c++17 -O2 -UNDEBUG -Imain/include -I"$IDF_PATH/components/json/cJSON" tests/test_printer_backup.cpp /tmp/backup-cJSON.o -o /tmp/test_printer_backup
+            /tmp/test_printer_backup /tmp/printsphere-backup-test
       - name: Collect public release images
         env:
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
@@ -135,6 +140,21 @@ jobs:
             PrintSphere starts on printer status. Page movement waits briefly for the dial
             to settle, so opening the return menu does not bounce between print screens.
             Orb's existing web configuration and theme uploads remain available while Orb runs.
+
+            PrintSphere reads Orb's normal saved Wi-Fi credentials directly when it has no
+            Wi-Fi settings of its own. No separate Wi-Fi-sharing update to Orb is needed.
+
+            PrintSphere backs up its cloud sign-in/session, printer profiles, access codes,
+            selected printer, and connection mode to the SD card after a live printer
+            connection is established. Leave the SD card inserted and let it connect once
+            before testing a settings reset. Missing printer setup is restored from SD on
+            startup; existing configuration takes priority. Wi-Fi is not part of this backup.
+
+            The backup contains readable cloud credentials/tokens and printer access codes
+            in `/printsphere/printer-settings.json`. The installer settings reset preserves
+            SD files. Delete the card's `/printsphere` backup folder before resetting if you
+            want to forget printer/cloud setup permanently. Cloud sessions can still expire
+            or require fresh verification. No SD formatting is performed.
 
             These are separate images for the companion layout. Do not flash one at offset 0
             or use a stock standalone firmware installer. Device-specific backups are never

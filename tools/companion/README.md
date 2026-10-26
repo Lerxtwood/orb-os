@@ -22,6 +22,9 @@ Wi-Fi in Orb, then open PrintSphere without configuring its Wi-Fi separately.
 This action does not install a firmware update; install the PrintSphere version
 with Wi-Fi import before testing. Orb needs no Wi-Fi-sharing update. Reset is
 unavailable for standalone or unknown layouts.
+PrintSphere versions with SD printer backup restore printer/cloud configuration
+from the card afterward. Delete the SD card's `/printsphere` backup directory
+before resetting if you want to forget that configuration permanently.
 
 For the 16 MiB ESP32-S3 AMOLED 1.75 device. Orb remains the normal firmware;
 select **Printer**, then press to reboot into PrintSphere. From v2.16.27-companion,
@@ -53,6 +56,47 @@ No shared-copy keys or Orb update are required. PrintSphere's own WiFi settings
 take priority, and PrintSphere never saves its WiFi configuration over Orb's.
 Configure the printer through
 PrintSphere's existing interface. The original PrintSphere checkout is untouched.
+
+## SD backup of printer setup
+
+PrintSphere automatically backs up printer-binding settings after a live local
+or cloud MQTT connection has been stable for five seconds. A cloud login alone
+does not trigger backup. Changes are saved after two seconds without further
+configuration writes. An existing setup is backed up too, so no
+reconfiguration is needed after installing this feature; let it connect once.
+The serial log confirms `Printer profiles and cloud settings backed up to SD`.
+
+The card should stay inserted while using backup/restore. It is mounted only
+for a restore or backup operation, then unmounted to release SPI/DMA and file
+resources. Devices with existing configuration do not initialize SD before MQTT
+starts. Backups wait when internal RAM is too low, and empty profile slots are
+omitted to reduce allocation pressure.
+The backup memory guard requires 8 KiB free internal RAM with a 4 KiB contiguous
+block, matching the short SPI operation rather than reserving another MQTT task.
+Larger ordinary allocations (above 1 KiB), including MQTT receive buffers,
+prefer PSRAM in the companion build; internal RAM remains available for RTOS
+task stacks, DMA and short backup operations. The file is
+`/printsphere/printer-settings.json`, with a retained `.prev` copy and a temporary
+`.tmp` file during updates. It contains cloud email/password, region and session
+token; all printer profiles (serial, host, access code, name, model and cloud
+binding); the active printer and source mode. These credentials are readable on
+the card. Wi-Fi, artwork, display settings, and sound files are not backed up by
+this feature. Cloud sessions may still expire or require fresh verification.
+
+After a settings reset, PrintSphere restores the backup before starting its
+printer clients, then uses its usual connection/login behavior. Existing or
+partially entered printer/cloud setup takes priority: a network outage never
+causes an older backup to replace current settings. Deliberately deleting all
+profiles is retained across an ordinary reboot. Backups are restricted to the
+same device, version checked, size limited, and protected by a corruption
+checksum. A damaged or interrupted update falls back to the retained copy.
+An interrupted NVS restore is retried on the next boot.
+The authorized `/api/health` response includes `sd_backup_status`,
+`heap_internal_free`, and `heap_internal_largest` for diagnosis; `saved` confirms
+that the backup has been verified and promoted.
+
+Missing, unreadable, or unformatted cards do not prevent normal PrintSphere use.
+The firmware never formats a card. Orb firmware requires no changes.
 
 The flash theme cache shrinks from 9.625 MiB to 4.5 MiB. The installer refuses to
 truncate an existing cache. Larger future themes still use Orb's existing SD
@@ -147,6 +191,10 @@ python -m http.server 8080 --directory .pio/companion/site
 `test_orb_wifi.cpp` checks the startup credential snapshot, open networks,
 maximum-length SDK fields, read failures, and isolation from later driver changes.
 It runs in both CI workflows with the WiFi test stubs.
+`test_printer_backup.cpp` tests cloud/local round trips, excluded Wi-Fi settings,
+device/version checks, malformed and oversized files, duplicate fields,
+unchanged snapshots, retained copies, and interrupted file updates. It runs in
+the release build against ESP-IDF's cJSON library.
 `test_site.py` uses Playwright with a simulated device to exercise the browser's
 update flow, corrupt downloads, foreign layouts, and mobile layout. The simulated
 test does not flash hardware. `smoke.py` exercises real Orb configuration pages and

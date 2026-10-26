@@ -3,6 +3,7 @@ import argparse
 import shutil
 from pathlib import Path
 from adapt_dial import adapt as adapt_dial
+from adapt_sd_backup import adapt as adapt_sd_backup
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -68,6 +69,7 @@ def prepare(source, destination):
             'set_label_text_if_changed(radar_button_label_, "Orb");')
     adapt_installer_links(destination)
     adapt_dial(destination)
+    adapt_sd_backup(destination, replace)
     wifi_path = destination / "main/src/wifi_manager.cpp"
     replace(wifi_path, '#include "printsphere/wifi_manager.hpp"',
             '#include "printsphere/wifi_manager.hpp"\n#include "printsphere/orb_wifi.hpp"')
