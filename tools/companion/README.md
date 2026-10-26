@@ -13,6 +13,16 @@ The browser supports Chrome/Edge desktop with Web Serial. Its recovery backup st
 on the user's computer and is never uploaded. Keep that file until the installation
 is verified. The installer never erases the whole chip.
 
+For a fresh Wi-Fi-sharing test, connect an existing companion device in the web
+installer, open **Reset device settings**, acknowledge the deletion, and choose
+**Reset both firmwares’ settings**. This clears both settings partitions (including
+Wi-Fi, shared credentials, printer profiles, and cloud sign-ins) and restarts in
+Orb. Firmware, artwork, uploaded sounds, and SD-card files are retained. Configure
+Wi-Fi in Orb, then open PrintSphere without configuring its Wi-Fi separately.
+This action does not install a firmware update; install the PrintSphere version
+with Wi-Fi import before testing. Orb needs no Wi-Fi-sharing update. Reset is
+unavailable for standalone or unknown layouts.
+
 For the 16 MiB ESP32-S3 AMOLED 1.75 device. Orb remains the normal firmware;
 select **Printer**, then press to reboot into PrintSphere. From v2.16.27-companion,
 jig the dial to open **Return to Orb**, then press the dial
@@ -36,7 +46,12 @@ Input is routed by the existing LVGL worker, without another task stack.
 
 Orb's configuration, USB theme protocol, web theme upload, SD themes, and theme
 sync code are retained. PrintSphere uses a separate `ps_nvs` partition and imports
-Orb's saved WiFi credentials on first use. Configure the printer through
+Orb's saved WiFi credentials whenever PrintSphere has no WiFi network of its own.
+It reads Orb's normal saved station configuration from default NVS through the
+ESP-IDF WiFi driver at startup, before switching the driver to RAM-only storage.
+No shared-copy keys or Orb update are required. PrintSphere's own WiFi settings
+take priority, and PrintSphere never saves its WiFi configuration over Orb's.
+Configure the printer through
 PrintSphere's existing interface. The original PrintSphere checkout is untouched.
 
 The flash theme cache shrinks from 9.625 MiB to 4.5 MiB. The installer refuses to
@@ -129,6 +144,9 @@ python -m http.server 8080 --directory .pio/companion/site
 
 `test_layout.mjs` tests protected flash regions and rejected layouts/cache sizes.
 `test_release.py` tests public asset whitelisting and integrity checks.
+`test_orb_wifi.cpp` checks the startup credential snapshot, open networks,
+maximum-length SDK fields, read failures, and isolation from later driver changes.
+It runs in both CI workflows with the WiFi test stubs.
 `test_site.py` uses Playwright with a simulated device to exercise the browser's
 update flow, corrupt downloads, foreign layouts, and mobile layout. The simulated
 test does not flash hardware. `smoke.py` exercises real Orb configuration pages and

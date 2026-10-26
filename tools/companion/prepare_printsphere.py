@@ -34,6 +34,10 @@ def prepare(source, destination):
                     ignore=shutil.ignore_patterns(".git", "build", "release", ".github", "Case", "flash", "sdkconfig", "sdkconfig.old"))
     shutil.copy2(ROOT / "partitions_16MB_companion.csv", destination / "partitions.csv")
     config = destination / "main/src/config_store.cpp"
+    shutil.copy2(ROOT / "tools/companion/printsphere/orb_wifi.hpp",
+                 destination / "main/include/printsphere/orb_wifi.hpp")
+    replace(config, '#include "printsphere/config_store.hpp"',
+            '#include "printsphere/config_store.hpp"\n#include "printsphere/orb_wifi.hpp"')
     replace(config, 'constexpr char kNamespace[] = "printsphere";',
             'constexpr char kNamespace[] = "printsphere";\nconstexpr char kNvsPartition[] = "ps_nvs";')
     replace(config, 'std::string load_nvs_string(const char* ns, const char* key) {',
@@ -53,10 +57,10 @@ def prepare(source, destination):
     ESP_ERROR_CHECK(nvs_flash_erase_partition(kNvsPartition));
     err = nvs_flash_init_partition(kNvsPartition);
   }''')
-    replace(config, 'load_nvs_string(kSharedNamespace, "wifi_ssid")',
-            'load_nvs_string("capsuleradar", "wifiBakSsid", "nvs")')
-    replace(config, 'load_nvs_string(kSharedNamespace, "wifi_pass")',
-            'load_nvs_string("capsuleradar", "wifiBakPass", "nvs")')
+    replace(config, 'constexpr char kSharedNamespace[] = "capsule_shared";\n', '')
+    replace(config, '''    credentials.ssid = load_nvs_string(kSharedNamespace, "wifi_ssid");
+    credentials.password = load_nvs_string(kSharedNamespace, "wifi_pass");''',
+            '    credentials = orb_wifi::saved_credentials;')
     replace(config, 'Imported shared Wi-Fi credentials from Capsule Radar (ssid=%s)',
             'Imported Orb Wi-Fi credentials (ssid=%s)')
     replace(destination / "main/src/ui.cpp",
@@ -64,9 +68,20 @@ def prepare(source, destination):
             'set_label_text_if_changed(radar_button_label_, "Orb");')
     adapt_installer_links(destination)
     adapt_dial(destination)
+    wifi_path = destination / "main/src/wifi_manager.cpp"
+    replace(wifi_path, '#include "printsphere/wifi_manager.hpp"',
+            '#include "printsphere/wifi_manager.hpp"\n#include "printsphere/orb_wifi.hpp"')
+    replace(wifi_path,
+            '    ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), kTag, "esp_wifi_set_storage failed");',
+            '''    // Read Orb's normal saved station config before selecting RAM-only writes.
+    const esp_err_t import_err = orb_wifi::capture_saved_credentials();
+    if (import_err != ESP_OK) {
+      ESP_LOGW(kTag, "Orb Wi-Fi import unavailable: %s", esp_err_to_name(import_err));
+    }
+    ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), kTag, "esp_wifi_set_storage failed");''')
     # Existing PrintSphere firmware writes to ota_1 explicitly, and its WiFi driver
     # already uses RAM storage. Assert both protections survive source updates.
-    wifi = (destination / "main/src/wifi_manager.cpp").read_text(encoding="utf-8")
+    wifi = wifi_path.read_text(encoding="utf-8")
     assert "esp_wifi_set_storage(WIFI_STORAGE_RAM)" in wifi
     assert "nvs_flash_erase()" not in config.read_text(encoding="utf-8")
     print(f"Prepared isolated AMOLED PrintSphere source: {destination}")
