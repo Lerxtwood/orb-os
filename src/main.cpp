@@ -155,6 +155,7 @@ static volatile bool         g_locationSet  = false;
 // very next tick and the state under test would last about a second.
 static bool                  g_locateTried  = false;
 static int                   g_rotation = 0;                         // clockwise display rotation, 0..359° (web/NVS)
+static int                   g_flightRotation = 0;                   // clockwise offset, Flight Tracker only (web/NVS)
 static int                   g_trailLen = 2;                         // aircraft trails 0=off 1=short 2=med 3=long (web/NVS)
 static int                   g_maxAc = 12;                           // max aircraft drawn on the scope (web/NVS)
 static bool                  g_bigText = false;                      // accessibility: large fonts (web/NVS, applied at boot)
@@ -857,6 +858,17 @@ void host_update_bright(bool on) {
 // Shared with the Settings app (settings_view.cpp).
 // App-shell onEnter hooks: flip the radar screen's tileview between the radar view
 // and the original app's weather view (radar / clouds / forecast).
+static uint16_t currentDisplayRotation() {
+    const int offset = g_radarViewActive && !app_shell::browsing() ? g_flightRotation : 0;
+    return (uint16_t)((g_rotation + offset + 360) % 360);
+}
+static void applyFlightRotation() {
+    static int lastRequested = -1;
+    const uint16_t desired = currentDisplayRotation();
+    if (lastRequested == desired) return;
+    lastRequested = desired;   // don't retry/log every loop if a boot-time buffer allocation failed
+    display::setRotation(desired);
+}
 static void radar_show_home()    { ui_show_view(0); }
 // Entering and leaving the weather app. Both only ASK: the network task owns the buffers
 // and does the work, because it is the one that writes into them. See g_wxOpened above.
@@ -896,10 +908,15 @@ static void radar_show_home_custom() {
     radar_show_home();
     radar::knobEnter();   // re-attach style + land in the default view (knob released)
     g_radarViewActive = true;    // adsb_task may now poll; see g_radarViewActive above
+    applyFlightRotation();
 }
 static void radar_turn_select(int delta) { radar::knobTurn(delta); }
 static void radar_press_custom_or_theme() { radar::knobPress(); }
-static void radar_exit_release_style() { radar::knobExit(); g_radarViewActive = false; }
+static void radar_exit_release_style() {
+    radar::knobExit();
+    g_radarViewActive = false;
+    applyFlightRotation();
+}
 void host_wx_zoom_set(int tier);   // defined below, near the other weather-units hosts
 int  host_wx_zoom_tier();
 
@@ -1729,7 +1746,6 @@ static const char ROOT_HEAD[] PROGMEM =
     "<div class=card><dl>";
 
 static const char ROOT_TAIL[] PROGMEM =
-    "</dl></div>"
     "<div class=card>"
     "<a class=b href='/install'>Install a theme file</a>"
     "<a class=b href='/roads'>Road maps and cache</a>"
@@ -1761,6 +1777,18 @@ static void handleRoot() {
     // converts through an Arduino String, which is an internal-heap allocation and exactly
     // what this page is being moved off.
     g_web.sendContent(row, strlen(row));
+    g_web.sendContent("</dl></div>", 11);
+    char flight[900];
+    snprintf(flight, sizeof(flight),
+        "<div class=card><form method=POST action=/flight-rotation>"
+        "<label for=flightRotation>Flight Tracker rotation offset (degrees clockwise)</label>"
+        "<p><input id=flightRotation name=v type=number min=0 max=359 step=1 required value='%d'></p>"
+        "<button type=submit>Save rotation</button>"
+        "<small>315 degrees turns the entire Flight Tracker screen counter-clockwise by 45 degrees. "
+        "0 removes the offset. Other apps keep their normal orientation. "
+        "Multiples of 90 degrees render faster; other angles may reduce animation smoothness.</small>"
+        "</form></div>", g_flightRotation);
+    g_web.sendContent(flight, strlen(flight));
     g_web.sendContent_P(ROOT_TAIL);
     g_web.sendContent("", 0);    // the zero-length chunk that ends a chunked body
 }
@@ -2266,8 +2294,7 @@ static void handleGround() {   // hide/show on-ground aircraft (applies from the
 static void handleRotate() {   // arbitrary clockwise display rotation, applied live
     if (g_web.hasArg("v")) {
         g_rotation = constrain((int)g_web.arg("v").toInt(), 0, 359);
-        display::setRotation((uint16_t)g_rotation);
-        g_rotation = display::rotation();
+        applyFlightRotation();
         if (g_web.hasArg("save")) {
             Preferences p;
             p.begin("capsuleradar", false);
@@ -2276,6 +2303,43 @@ static void handleRotate() {   // arbitrary clockwise display rotation, applied 
         }
     }
     g_web.send(200, "text/plain", "ok");
+}
+
+static void handleFlightRotation() {
+    const String value = g_web.arg("v");
+    char *end = nullptr;
+    const long degrees = strtol(value.c_str(), &end, 10);
+    if (!g_web.hasArg("v") || end == value.c_str() || *end != '\0'
+        || degrees < 0 || degrees > 359) {
+        g_web.send(400, "text/plain", "Enter a whole number from 0 to 359 degrees.");
+        return;
+    }
+    const int previous = g_flightRotation;
+    g_flightRotation = (int)degrees;
+    applyFlightRotation();
+    if (display::rotation() != currentDisplayRotation()) {
+        g_flightRotation = previous;
+        applyFlightRotation();
+        g_web.send(503, "text/plain", "Rotation unavailable: insufficient display buffer memory.");
+        return;
+    }
+    Preferences p;
+    if (!p.begin("capsuleradar", false)) {
+        g_flightRotation = previous;
+        applyFlightRotation();
+        g_web.send(500, "text/plain", "Could not open settings storage.");
+        return;
+    }
+    const bool saved = p.putInt("flightRot", g_flightRotation) == sizeof(int32_t);
+    p.end();
+    if (!saved) {
+        g_flightRotation = previous;
+        applyFlightRotation();
+        g_web.send(500, "text/plain", "Could not save rotation. Please try again.");
+        return;
+    }
+    g_web.sendHeader("Location", "/");
+    g_web.send(303, "text/plain", "Flight Tracker rotation saved.");
 }
 
 #if ORB_OTA_ENABLED
@@ -2864,6 +2928,7 @@ void setup() {
         // installations' orientation. New firmware stores actual degrees separately.
         g_rotation = p.isKey("rotDeg") ? p.getInt("rotDeg", 0) : p.getInt("rot", 0) * 90;
         g_rotation = constrain(g_rotation, 0, 359);
+        g_flightRotation = constrain(p.getInt("flightRot", 0), 0, 359);
         p.end();
         if (!migratedV2) {
             switch (t) {                     // old numbering -> new (see comment above)
@@ -3580,6 +3645,7 @@ void setup() {
     g_web.on("/maxac", handleMaxAc);
     g_web.on("/bigtext", handleBigText);
     g_web.on("/rotate", handleRotate);
+    g_web.on("/flight-rotation", HTTP_POST, handleFlightRotation);
     g_web.on("/units", handleUnits);
 #if ORB_OTA_ENABLED
     g_web.on("/update", HTTP_GET, handleUpdatePage);
@@ -3668,6 +3734,9 @@ void loop() {
     input_router::tick();                                    // catches a jig even with zero net movement
 
     lpT[1] = micros();
+    // The switcher is an overlay, so app onExit does not run when it opens.
+    // Keep that menu at the normal orientation too; unchanged angles are a no-op.
+    applyFlightRotation();
     display::loop();                // drive LVGL (render dirty areas + run timers)
 
     // Network and sensors last: they are throughput work, not interactive. handleClient()
