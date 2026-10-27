@@ -22,6 +22,10 @@ struct Target {
     uint8_t *buf;
     int      w;
     int      h;
+    // Optional clockwise rotation of this text run about a logical screen anchor.
+    float    angleDeg = 0;
+    float    pivotX = 0;
+    float    pivotY = 0;
 };
 
 // Lay `str` along an arc of radius R about (cx, cy) in TARGET coordinates, centred on

@@ -36,15 +36,38 @@ void fill_round_rect(const curved_text::Target &dst, int x0, int y0, int x1, int
     const uint8_t lo = (uint8_t)(col.full & 0xFF), hi = (uint8_t)(col.full >> 8);
     const int cx0 = x0 + r, cx1 = x1 - 1 - r, cy0 = y0 + r, cy1 = y1 - 1 - r;
     const int rr = r * r;
-    for (int y = y0; y < y1; ++y) {
+    const float th = dst.angleDeg * (float)M_PI / 180.0f;
+    const float ct = cosf(th), st = sinf(th);
+    int left = x0, right = x1, top = y0, bottom = y1;
+    if (dst.angleDeg != 0) {
+        float minX = dst.w, maxX = -1, minY = dst.h, maxY = -1;
+        for (int i = 0; i < 4; ++i) {
+            const float x = (i & 1 ? x1 : x0) - dst.pivotX;
+            const float y = (i & 2 ? y1 : y0) - dst.pivotY;
+            const float rx = dst.pivotX + ct * x - st * y;
+            const float ry = dst.pivotY + st * x + ct * y;
+            minX = fminf(minX, rx); maxX = fmaxf(maxX, rx);
+            minY = fminf(minY, ry); maxY = fmaxf(maxY, ry);
+        }
+        left = (int)floorf(minX); right = (int)ceilf(maxX);
+        top = (int)floorf(minY); bottom = (int)ceilf(maxY);
+    }
+    for (int y = top; y < bottom; ++y) {
         if (y < 0 || y >= dst.h) continue;
-        for (int x = x0; x < x1; ++x) {
+        for (int x = left; x < right; ++x) {
             if (x < 0 || x >= dst.w) continue;
+            int sx = x, sy = y;
+            if (dst.angleDeg != 0) {
+                const float dx = x - dst.pivotX, dy = y - dst.pivotY;
+                sx = (int)lroundf(dst.pivotX + ct * dx + st * dy);
+                sy = (int)lroundf(dst.pivotY - st * dx + ct * dy);
+                if (sx < x0 || sx >= x1 || sy < y0 || sy >= y1) continue;
+            }
             if (r > 0) {
                 // Only the four corner boxes need testing; everything else is inside by
                 // construction, which is what keeps this cheap on a 466 px line.
-                const int qx = (x < cx0) ? cx0 - x : (x > cx1) ? x - cx1 : 0;
-                const int qy = (y < cy0) ? cy0 - y : (y > cy1) ? y - cy1 : 0;
+                const int qx = (sx < cx0) ? cx0 - sx : (sx > cx1) ? sx - cx1 : 0;
+                const int qy = (sy < cy0) ? cy0 - sy : (sy > cy1) ? sy - cy1 : 0;
                 if (qx && qy && qx * qx + qy * qy > rr) continue;
             }
             const int px = (y * dst.w + x) * 3;
@@ -80,6 +103,14 @@ void fill_round_rect(const curved_text::Target &dst, int x0, int y0, int x1, int
 void blit_glyph(const curved_text::Target &dst, const uint8_t *bmp, int bw, int bh,
                 float destCx, float destCy, float angleDeg, lv_color_t col, lv_opa_t maxOpa) {
     if (!bmp || bw <= 0 || bh <= 0 || !dst.buf) return;
+    if (dst.angleDeg != 0) {
+        const float th = dst.angleDeg * (float)M_PI / 180.0f;
+        const float ct = cosf(th), st = sinf(th);
+        const float dx = destCx - dst.pivotX, dy = destCy - dst.pivotY;
+        destCx = dst.pivotX + ct * dx - st * dy;
+        destCy = dst.pivotY + st * dx + ct * dy;
+        angleDeg += dst.angleDeg;
+    }
     uint8_t *buf = dst.buf;
     const float th = angleDeg * (float)M_PI / 180.0f, ct = cosf(th), st = sinf(th);
     const float pivotX = bw * 0.5f, pivotY = bh * 0.5f;

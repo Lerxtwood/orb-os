@@ -9,8 +9,12 @@ This is an additional offset on top of the existing global display orientation.
 Flight Tracker's entry/exit hooks apply/remove it. Weather shares the same LVGL
 screen, but has its own app hooks, so it keeps the global orientation. The app
 switcher also uses the global orientation. The offset rotates the completed
-display output, including the plate, text, aircraft, sweep and selection card,
-rather than changing the map's north/heading projection.
+display output, including the plate, aircraft, sweep and selection card,
+rather than changing the map's north/heading projection. Airport codes counter-rotate
+so they stay horizontal beside their map markers. The location name stays horizontal
+and horizontally centred at its original screen height, independent of the map rotation.
+Its typeface, colour, glow and background still follow the theme. A curved location
+banner becomes a straight line at its original arc height while the screen is rotated.
 
 ## Rendering cost
 
@@ -46,8 +50,10 @@ been performed for this change, so no numeric slowdown is claimed.
 
 After installing the firmware:
 
-1. Open the front page and save 315. Confirm that the whole Flight Tracker view
-   turns 45 degrees counter-clockwise, including the text and background.
+1. Open the front page and save 315. Confirm that the Flight Tracker view
+   turns 45 degrees counter-clockwise. Airport codes must stay horizontal beside
+   their markers, and the location name must stay horizontal and centred at its
+   original height rather than orbiting with the map. Check 90, 180 and 270 too.
 2. Open the switcher, then Clock, Weather and Settings. Confirm normal orientation.
    Return to Flight Tracker and confirm the offset returns.
 3. Restart and verify the saved offset. Save zero and confirm the default returns.

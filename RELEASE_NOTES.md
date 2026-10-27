@@ -22,6 +22,7 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 - Set a Flight Tracker rotation offset at theorb.local, from 0 to 359 degrees clockwise; 315 turns the screen 45 degrees counter-clockwise
 - The offset survives restarts and applies to the whole flight display, while other apps and the switcher keep their normal orientation
+- Airport codes stay horizontal beside their map markers; the location name stays horizontal and centred at its original screen height
 - Multiples of 90 degrees use faster rendering paths; other angles may reduce animation smoothness
 
 ---

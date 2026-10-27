@@ -43,6 +43,8 @@ jobs:
         run: |
           node --test tools/companion/test_layout.mjs
           python tools/companion/test_release.py
+          g++ -std=c++17 -O2 -UNDEBUG -Itests/curved_text_stubs -Isrc tests/rotated_text_test.cpp src/curved_text.cpp -o /tmp/test_rotated_text
+          /tmp/test_rotated_text
           g++ -std=c++17 -O2 -UNDEBUG -Itools/companion/wifi_test_stubs -Itools/companion tools/companion/test_orb_wifi.cpp -o /tmp/test_orb_wifi
           /tmp/test_orb_wifi
           g++ -std=c++17 -O2 -Itools/companion tools/companion/test_dial.cpp -o /tmp/test_dial

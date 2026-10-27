@@ -146,6 +146,7 @@ void debugHideLayer(int kind, bool hide);
 void setSweepEnabled(bool on);                   // show/hide the rotating sweep line
 bool sweepEnabled();
 void setAirportsEnabled(bool on);                // show/hide airport markers on the scope
+void setLabelRotation(uint16_t displayDegrees);  // keep location/airport text horizontal on the panel
 bool airportsEnabled();
 void setTrailLength(int level);                  // 0=off 1=short 2=medium 3=long (aircraft trails + flow)
 void setMaxOnScreen(int n);                       // how many (nearest) aircraft to draw on the scope

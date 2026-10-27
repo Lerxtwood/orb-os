@@ -26,6 +26,7 @@
 // Where the Orb is, by name, for the location banner (THEME_CAPS 54). Defined in main.cpp
 // on the device and in sim_main.cpp for the simulator, like every other host_ hook here.
 extern bool host_location_name(char *out, size_t n);
+static uint16_t s_labelRotation = 0;
 #include "theme_font.h"   // per-theme fonts, with the compiled font as fallback     // per-theme sweep/blip/selection/off-range/center/RTEXT values — see theme_style.h for what's covered vs. stays compile-time
 #include <lvgl.h>
 #include <math.h>
@@ -656,7 +657,7 @@ static void grid_draw_cb(lv_event_t *e) {
         //
         // Airports still answer to the device's own setting as well: it is a preference
         // about what the owner wants to see, not only about how a theme looks.
-        if (s_airportsEnabled && rs.mapAirportsOn) airports_draw(d, lv_color_hex(rs.mapAirportColor), 150);
+        if (s_airportsEnabled && rs.mapAirportsOn) airports_draw(d, lv_color_hex(rs.mapAirportColor), 150, s_labelRotation);
         return;
     }
 
@@ -689,7 +690,7 @@ static void grid_draw_cb(lv_event_t *e) {
         if(theme_style::radar().mapRoadsOn) roads_sd::draw(d,lv_color_hex(theme_style::radar().mapRoadColor),
             (lv_opa_t)theme_style::radar().mapRoadOpacity,std::max(1,std::min(8,theme_style::radar().mapRoadWidth)));
         coastline_draw(d, coast_color(), 170, 2);    // landmass outline under the triangle
-        if (s_airportsEnabled) airports_draw(d, airport_color(), 150);
+        if (s_airportsEnabled) airports_draw(d, airport_color(), 150, s_labelRotation);
         lv_draw_polygon(d, &td, tri, 3);
         return;
     }
@@ -701,7 +702,7 @@ static void grid_draw_cb(lv_event_t *e) {
     if(theme_style::radar().mapRoadsOn) roads_sd::draw(d,lv_color_hex(theme_style::radar().mapRoadColor),
         (lv_opa_t)theme_style::radar().mapRoadOpacity,std::max(1,std::min(8,theme_style::radar().mapRoadWidth)));
     coastline_draw(d, coast_color(), 165, 2);
-    if (s_airportsEnabled) airports_draw(d, airport_color(), 150);
+    if (s_airportsEnabled) airports_draw(d, airport_color(), 150, s_labelRotation);
 
     // phosphor: concentric rings + crosshair
     lv_draw_arc_dsc_t ad;
@@ -1981,6 +1982,19 @@ void setAirportsEnabled(bool on) {
 }
 bool airportsEnabled() { return s_airportsEnabled; }
 
+void setLabelRotation(uint16_t displayDegrees) {
+    displayDegrees %= 360;
+    if (s_labelRotation == displayDegrees) return;
+    s_labelRotation = displayDegrees;
+    if (s_gridLayer) lv_obj_invalidate(s_gridLayer);
+    if (customStyled()) {
+        take_map_snapshot();
+        rebuild_flat_background();
+        apply_grid_visibility();
+    }
+    refresh_custom_text();
+}
+
 // 0 = off, 1 = short, 2 = medium (default), 3 = long. Controls both the per-aircraft
 // trail and the persistent flow layer (the long-lived "where everything has been" tracks).
 void setTrailLength(int level) {
@@ -3168,7 +3182,26 @@ static void refresh_custom_text() {
       char buf[80];
       if (radar_loc_fmt(buf, sizeof(buf), t.fmt)) {
         if (t.upper) orb_upper(buf);   // THEME_CAPS 53, same as every other line
-        if (t.curved) rtext_draw_curved(theme_font::radar_loc(), buf, (float)t.curveR, t.arcDeg, lv_color_hex(t.color), t.glow, lv_color_hex(t.glowColor), (lv_opa_t)t.opa);
+        if (s_labelRotation) {
+            float y = t.y;
+            if (t.curved) {
+                const float a = t.arcDeg * (float)M_PI / 180.0f;
+                y = s_cy - cosf(a) * t.curveR;
+            }
+            // Fix the banner to the physical screen, horizontally centred at its
+            // original height. Inverse-map that anchor before counter-rotating text.
+            const float cx = (SCREEN_W - 1) * 0.5f, cy = (SCREEN_H - 1) * 0.5f;
+            const float a = s_labelRotation * (float)M_PI / 180.0f;
+            const float dy = y - cy;
+            const float x = cx + sinf(a) * dy;
+            y = cy + cosf(a) * dy;
+            const curved_text::Target dst = {(uint8_t *)s_textBuf, SCREEN_W, SCREEN_H,
+                                            -(float)s_labelRotation, x, y};
+            curved_text::draw_straight(dst, theme_font::radar_loc(), buf, x, y,
+                lv_color_hex(t.color), t.glow, lv_color_hex(t.glowColor), 1,
+                (lv_opa_t)t.opa, curved_text::pill_of(t));
+        }
+        else if (t.curved) rtext_draw_curved(theme_font::radar_loc(), buf, (float)t.curveR, t.arcDeg, lv_color_hex(t.color), t.glow, lv_color_hex(t.glowColor), (lv_opa_t)t.opa);
         else rtext_draw_straight(theme_font::radar_loc(), buf, (float)t.x, (float)t.y, lv_color_hex(t.color), t.glow, lv_color_hex(t.glowColor), t.align, (lv_opa_t)t.opa, curved_text::pill_of(t));
       }
     }

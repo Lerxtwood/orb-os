@@ -1,6 +1,7 @@
 #include "airports.h"
 #include "airports_data.h"
 #include "geo.h"
+#include "curved_text.h"
 #include <vector>
 #include <math.h>
 #include <string.h>
@@ -38,7 +39,7 @@ void airports_project(double homeLat, double homeLon, double rangeKm,
     }
 }
 
-void airports_draw(lv_draw_ctx_t *ctx, lv_color_t color, lv_opa_t opa) {
+void airports_draw(lv_draw_ctx_t *ctx, lv_color_t color, lv_opa_t opa, uint16_t displayDegrees) {
     if (s_apts.empty()) return;
 
     lv_draw_arc_dsc_t ring;
@@ -66,7 +67,29 @@ void airports_draw(lv_draw_ctx_t *ctx, lv_color_t color, lv_opa_t opa) {
         if (ap.iata[0]) {
             lv_area_t la = { (lv_coord_t)(ap.pos.x + 16), (lv_coord_t)(ap.pos.y - 7),
                              (lv_coord_t)(ap.pos.x + 55), (lv_coord_t)(ap.pos.y + 7) };
-            lv_draw_label(ctx, &lbl, &la, ap.iata, NULL);
+            if (displayDegrees % 360 == 0) {
+                lv_draw_label(ctx, &lbl, &la, ap.iata, NULL);
+            } else {
+                // Small reusable raster, not another full-screen buffer. Its centre
+                // stays to the physical right of the airport after the display rotates.
+                constexpr int W = 40, H = 18;
+                static uint8_t pixels[W * H * 3];
+                memset(pixels, 0, sizeof(pixels));
+                curved_text::draw_straight({pixels, W, H}, lbl.font, ap.iata,
+                    W * 0.5f, H * 0.5f, color, 0, color, 1);
+                const float a = displayDegrees * (float)M_PI / 180.0f;
+                const int cx = (int)lroundf(ap.pos.x + (16 + W / 2) * cosf(a));
+                const int cy = (int)lroundf(ap.pos.y - (16 + W / 2) * sinf(a));
+                la = {(lv_coord_t)(cx - W / 2), (lv_coord_t)(cy - H / 2),
+                      (lv_coord_t)(cx + W / 2 - 1), (lv_coord_t)(cy + H / 2 - 1)};
+                lv_draw_img_dsc_t img;
+                lv_draw_img_dsc_init(&img);
+                img.angle = (360 - displayDegrees % 360) * 10;
+                img.pivot = {W / 2, H / 2};
+                img.opa = opa;
+                img.antialias = 1;
+                lv_draw_img_decoded(ctx, &img, &la, pixels, LV_IMG_CF_TRUE_COLOR_ALPHA);
+            }
         }
     }
 }

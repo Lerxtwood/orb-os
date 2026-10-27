@@ -865,9 +865,12 @@ static uint16_t currentDisplayRotation() {
 static void applyFlightRotation() {
     static int lastRequested = -1;
     const uint16_t desired = currentDisplayRotation();
-    if (lastRequested == desired) return;
-    lastRequested = desired;   // don't retry/log every loop if a boot-time buffer allocation failed
-    display::setRotation(desired);
+    if (lastRequested != desired) {
+        lastRequested = desired;   // don't retry/log every loop if a boot-time buffer allocation failed
+        display::setRotation(desired);
+    }
+    if (g_radarViewActive && !app_shell::browsing())
+        radar::setLabelRotation(display::rotation());
 }
 static void radar_show_home()    { ui_show_view(0); }
 // Entering and leaving the weather app. Both only ASK: the network task owns the buffers
