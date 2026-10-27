@@ -18,6 +18,14 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.18.04
+
+- Flight-loading messages and road-download progress stay upright in their original screen positions when a rotation offset is set
+- Selected-flight cards and aircraft-photo popups, including their text, backgrounds and credits, also stay upright in their original positions
+- Flight info cards now remain visible for ten seconds of inactivity instead of five; dial controls work as before
+
+---
+
 ## 2.18.03
 
 - Set a Flight Tracker rotation offset at theorb.local, from 0 to 359 degrees clockwise; 315 turns the screen 45 degrees counter-clockwise

@@ -6,6 +6,7 @@
 #include "radar_view.h"
 #include "display.h"   // display_lvgl_us(): see the frame profiler below
 #include "curved_text.h"
+#include "fixed_screen_overlay.h"
 #include "app_theme.h"
 #include "app_shell.h"       // knob capture: default view releases it, selection mode grabs it
 #include "config.h"
@@ -273,7 +274,7 @@ static char        s_selectionRouteCall[12] = "";
 // time out before its own text arrived. That is now much likelier to succeed at all (the
 // lookup used TLS this board cannot do, see route_client.cpp), but it is still a network
 // round trip, and five seconds was a window you had to race.
-static constexpr uint32_t SELECT_IDLE_MS = 5000;
+static constexpr uint32_t SELECT_IDLE_MS = 10000;
 static void radar_exit_select();             // -> default view (deselect + release knob); defined below
 // Called when late-arriving detail (the route) reaches a card that is already up. Restarts
 // the idle countdown, because the thing worth reading only just appeared: without this the
@@ -297,6 +298,12 @@ static lv_color_t *s_photoPixels = nullptr;
 static char s_photoHex[10] = "";
 static bool s_photoShown = false;
 static uint32_t s_photoStarted = 0;
+
+static void refresh_fixed_overlays() {
+    for (lv_obj_t *obj : {s_loading, s_loadTicker, s_roadStatus, s_feedWarn,
+                         s_cardObj, s_cardImg, s_photoPanel})
+        fixed_screen_overlay(obj, s_labelRotation);
+}
 
 static void close_photo() {
     if (s_photoPanel) lv_obj_del(s_photoPanel); // detach image before freeing its pixels
@@ -1053,7 +1060,7 @@ static void interp_step(void) {
 
 static void sweep_timer_cb(lv_timer_t *t) {
     (void)t;
-    // Selection mode auto-times-out: 5s with no knob input drops back to the
+    // Selection mode auto-times-out: 10s with no knob input drops back to the
     // populated default view (deselect + release the knob) so the scope doesn't
     // stay pinned on one aircraft. Runs before the early returns below.
     refresh_photo();
@@ -1128,6 +1135,7 @@ static void sweep_timer_cb(lv_timer_t *t) {
                 snprintf(t, sizeof(t), "%ds", sec);
                 lv_label_set_text(s_loadTicker, t);
                 show(s_loadTicker, true);
+                fixed_screen_overlay(s_loadTicker, s_labelRotation);
             }
         }
         return;
@@ -1950,6 +1958,7 @@ void setThemeChangedCb(void (*cb)(int)) { s_themeCb = cb; }
 void setFeedNote(const char *note) {
     if (!s_loading || !s_loadingPending) return;
     lv_label_set_text(s_loading, note ? note : "Loading aircraft\nand location data");
+    fixed_screen_overlay(s_loading, s_labelRotation);
 }
 
 
@@ -1984,7 +1993,9 @@ bool airportsEnabled() { return s_airportsEnabled; }
 
 void setLabelRotation(uint16_t displayDegrees) {
     displayDegrees %= 360;
-    if (s_labelRotation == displayDegrees) return;
+    // Text can resize/re-align even when the rotation hasn't changed. Refresh the
+    // global pivots after layout, without invalidating unchanged overlay styles.
+    if (s_labelRotation == displayDegrees) { refresh_fixed_overlays(); return; }
     s_labelRotation = displayDegrees;
     if (s_gridLayer) lv_obj_invalidate(s_gridLayer);
     if (customStyled()) {
@@ -1993,6 +2004,7 @@ void setLabelRotation(uint16_t displayDegrees) {
         apply_grid_visibility();
     }
     refresh_custom_text();
+    refresh_fixed_overlays();
 }
 
 // 0 = off, 1 = short, 2 = medium (default), 3 = long. Controls both the per-aircraft
@@ -2624,6 +2636,7 @@ void setRoadStatus(const char *message) {
     if(strcmp(lv_label_get_text(s_roadStatus),message))lv_label_set_text(s_roadStatus,message);
     show(s_roadStatus,*message!=0);
     if(*message)lv_obj_move_foreground(s_roadStatus);
+    fixed_screen_overlay(s_roadStatus, s_labelRotation);
 }
 
 void refreshMap(const RadarSettings &s) {
@@ -3064,15 +3077,18 @@ static bool radar_loc_fmt(char *out, size_t outSz, const char *fmt) {
 // call site rather than a third implementation. The arithmetic there is byte for byte what
 // was here: these banners are tuned against designs that already exist.
 static void rtext_draw_curved(const lv_font_t *font, const char *str, float R, float arcDeg,
-                              lv_color_t col, int glow, lv_color_t glowCol, lv_opa_t opa) {
-    const curved_text::Target dst = { (uint8_t *)s_textBuf, SCREEN_W, SCREEN_H };
+                              lv_color_t col, int glow, lv_color_t glowCol, lv_opa_t opa,
+                              bool fixed = false) {
+    const curved_text::Target dst = { (uint8_t *)s_textBuf, SCREEN_W, SCREEN_H,
+        fixed ? -(float)s_labelRotation : 0, (SCREEN_W - 1) * 0.5f, (SCREEN_H - 1) * 0.5f };
     curved_text::draw_arc(dst, font, str, (float)s_cx, (float)s_cy, R, arcDeg, col, glow, glowCol, opa);
 }
 
 static void rtext_draw_straight(const lv_font_t *font, const char *str, float bx, float by,
                                 lv_color_t col, int glow, lv_color_t glowCol, int align, lv_opa_t opa,
-                                const curved_text::Pill &pill = curved_text::Pill()) {
-    const curved_text::Target dst = { (uint8_t *)s_textBuf, SCREEN_W, SCREEN_H };
+                                const curved_text::Pill &pill = curved_text::Pill(), bool fixed = false) {
+    const curved_text::Target dst = { (uint8_t *)s_textBuf, SCREEN_W, SCREEN_H,
+        fixed ? -(float)s_labelRotation : 0, (SCREEN_W - 1) * 0.5f, (SCREEN_H - 1) * 0.5f };
     curved_text::draw_straight(dst, font, str, bx, by, col, glow, glowCol, align, opa, pill);
 }
 
@@ -3154,14 +3170,14 @@ static void refresh_custom_text() {
             if (!radar_fmt(buf, sizeof(buf), t.fmt, in)) continue;
             // After the tokens, not before: {callsign} is UAL328 by now. THEME_CAPS 53.
             if (t.upper) orb_upper(buf);
-            if (t.curved) { rtext_draw_curved(theme_font::radar_text(i), buf, (float)t.curveR, t.arcDeg, lv_color_hex(t.color), t.glow, lv_color_hex(t.glowColor), (lv_opa_t)t.opa); continue; }
+            if (t.curved) { rtext_draw_curved(theme_font::radar_text(i), buf, (float)t.curveR, t.arcDeg, lv_color_hex(t.color), t.glow, lv_color_hex(t.glowColor), (lv_opa_t)t.opa, true); continue; }
             // A line riding the card reads x/y as an offset from the card's own centre, so
             // it travels with it. Only when a card is actually showing: a line pinned to a
             // card that is switched off would otherwise land at an offset from the middle
             // of the scope, which is not where anyone put it.
             const float lx = (t.onCard && cardOn) ? cardCx + (float)(t.x - SCREEN_W / 2) : (float)t.x;
             const float ly = (t.onCard && cardOn) ? cardCy + (float)(t.y - SCREEN_H / 2) : (float)t.y;
-            rtext_draw_straight(theme_font::radar_text(i), buf, lx, ly, lv_color_hex(t.color), t.glow, lv_color_hex(t.glowColor), t.align, (lv_opa_t)t.opa, curved_text::pill_of(t));
+            rtext_draw_straight(theme_font::radar_text(i), buf, lx, ly, lv_color_hex(t.color), t.glow, lv_color_hex(t.glowColor), t.align, (lv_opa_t)t.opa, curved_text::pill_of(t), true);
         }
     }
     // The range banner describes the scope itself (its configured radius), not a
@@ -3206,6 +3222,7 @@ static void refresh_custom_text() {
       }
     }
     lv_obj_invalidate(s_textCanvas);
+    refresh_fixed_overlays();
 }
 #else
 static void refresh_custom_text() {}
@@ -3279,7 +3296,7 @@ void knobEnter() {
 // Push: toggle selection. From the default view it grabs the knob and selects the
 // first in-range aircraft (nothing to select -> stays in the default view). From
 // selection mode it drops straight back to the default view (the manual version of
-// the 5s idle timeout). Aircraft selection doesn't depend on a custom design being
+// the 10s idle timeout). Aircraft selection doesn't depend on a custom design being
 // active — it used to be stock-only-vs-cycle-the-scope-skin here, but that legacy
 // theme-cycle gesture was a hidden, undiscoverable knob-press with no Settings entry
 // at all, confusingly named the same as actual Launch Kit themes. Retired in favor of
@@ -3323,6 +3340,7 @@ void knobPress() {
     s_photoShown = !s_photoPixels;
     s_photoStarted = lv_tick_get();
     if (s_photoPixels) photo_request(in.hex, in.type);
+    fixed_screen_overlay(s_photoPanel, s_labelRotation);
 }
 
 // A turn selects. Straight in, with no press to arm it first.
@@ -3492,6 +3510,7 @@ void setFeedStatus(bool wifiUp, uint32_t staleSec, bool locationKnown) {
     lv_label_set_text(s_feedWarn, msg);
     show(s_feedWarn, true);
     lv_obj_move_foreground(s_feedWarn);
+    fixed_screen_overlay(s_feedWarn, s_labelRotation);
 }
 
 void setSweepFrameMs(uint32_t ms) {

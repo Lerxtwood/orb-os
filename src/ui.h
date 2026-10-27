@@ -1,4 +1,5 @@
 #pragma once
+#include <stdint.h>
 // The Flight Tracker scope + aircraft detail card + the Weather Radar view.
 // Pure LVGL, portable (device + SDL simulator). Builds on top of radar_view.
 //
@@ -9,6 +10,7 @@
 void ui_create(void);            // build the whole UI on the active screen
 void ui_on_data_updated(void);   // refresh the detail card + weather after radar::update()
 void ui_show_view(int idx);      // 0 = Flight Tracker, 1 = Weather Radar
+void ui_set_flight_overlay_rotation(uint16_t displayDegrees);
 
 // The weather map's background picture. UI THREAD ONLY: it decodes from the SD card, and
 // the driver cannot be called from two tasks at once.

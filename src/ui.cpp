@@ -27,12 +27,14 @@ static inline void  heap_caps_free(void *p) { free(p); }
 #include "splash_lines.h"     // the three standing lines, and the glass over them
 #include "text_tokens.h"       // {token} expansion, the same parser the Flight Tracker uses
 #include "curved_text.h"       // the one glyph blitter; there is not a second
+#include "fixed_screen_overlay.h"
 #include "theme_font.h"        // font_weather1..4.bin, when a theme ships them
 #include <lvgl.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
 #include <time.h>
+#include <initializer_list>
 
 // Runtime-retintable HUD chrome — plain variables (not #define) so ui_apply_theme()
 // can repaint every existing UI_* call site below without touching each one.
@@ -246,6 +248,13 @@ static void fold_ascii(char *s) {
 }
 
 // ----------------------------------------------------------------- detail card
+static uint16_t s_flightOverlayRotation = 0;
+void ui_set_flight_overlay_rotation(uint16_t displayDegrees) {
+    s_flightOverlayRotation = displayDegrees % 360;
+    for (lv_obj_t *obj : {s_card, s_photo, s_photoCredit})
+        fixed_screen_overlay(obj, s_flightOverlayRotation);
+}
+
 static void refresh_card(void) {
 #if CUSTOM_HAS_RADAR_STYLE
     // A pushed design's own selection banners (callsign/stats/route, styled and
@@ -335,6 +344,7 @@ static void refresh_card(void) {
             lv_obj_clear_flag(s_photoCredit, LV_OBJ_FLAG_HIDDEN);
         }
     }
+    ui_set_flight_overlay_rotation(s_flightOverlayRotation);
 }
 
 // --------------------------------------------------------------------- input

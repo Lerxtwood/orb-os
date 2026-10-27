@@ -74,7 +74,7 @@ void selectNext(int dir);
 // Flight Tracker knob state machine, wired identically by the device (main.cpp)
 // and the simulator (sim_main.cpp) so they can't drift. Default view = nothing
 // selected, knob released (a turn opens the app switcher); a push enters selection
-// mode (knob captured, a turn cycles aircraft); a second push or 5s of no input
+// mode (knob captured, a turn cycles aircraft); a second push or 10s of no input
 // drops back to the default view. Hosts call knobEnter() at the tail of the app's
 // onEnter (after showing the scope), and wire knobPress/knobTurn/knobExit as the
 // app's onPress/onTurn/onExit.

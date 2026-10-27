@@ -16,6 +16,13 @@ and horizontally centred at its original screen height, independent of the map r
 Its typeface, colour, glow and background still follow the theme. A curved location
 banner becomes a straight line at its original arc height while the screen is rotated.
 
+Loading-flight messages and elapsed time, road-download progress, the selected-flight
+card (background and text), and the aircraft-photo popup (image, loading state and
+credits) also counter-rotate about the screen centre. They retain their original
+screen positions instead of moving around with the map. These overlays use LVGL
+object transforms; selection text uses the existing text canvas. Airport labels
+continue to follow their map markers.
+
 ## Rendering cost
 
 The existing implementation is in `src/display.cpp`; this feature reuses it and
@@ -64,3 +71,9 @@ After installing the firmware:
    currently count the arbitrary-angle path and should not be used to compare it.
 5. Check that blank, fractional and out-of-range POST values receive HTTP 400;
    valid values redirect to the front page only after the NVS write succeeds.
+6. With 315 set, enter Flight Tracker before its first snapshot and download a
+   missing road map. Check loading messages, elapsed time and changing download
+   progress remain upright in their usual positions. Select an aircraft and check
+   both card backgrounds and all three readout lines, then press for its photo:
+   the popup, image, credits and loading/unavailable messages must remain upright.
+   Change the offset while a card/photo is open, then return to zero and repeat.

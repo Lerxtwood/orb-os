@@ -869,8 +869,10 @@ static void applyFlightRotation() {
         lastRequested = desired;   // don't retry/log every loop if a boot-time buffer allocation failed
         display::setRotation(desired);
     }
-    if (g_radarViewActive && !app_shell::browsing())
+    if (g_radarViewActive && !app_shell::browsing()) {
         radar::setLabelRotation(display::rotation());
+        ui_set_flight_overlay_rotation(display::rotation());
+    }
 }
 static void radar_show_home()    { ui_show_view(0); }
 // Entering and leaving the weather app. Both only ASK: the network task owns the buffers
@@ -904,7 +906,7 @@ static void radar_hide_weather() {
 // Flight Tracker knob wiring now lives in radar_view (knobEnter/knobPress/
 // knobTurn/knobExit) so the device and simulator run one identical state machine:
 // land in the default view (knob released, a turn opens the switcher), push to
-// enter selection mode (turn cycles aircraft), push again or wait 5s to drop back.
+// enter selection mode (turn cycles aircraft), push again or wait 10s to drop back.
 // Flight Tracker's baked plate/overlay (~1.3MB of decoded PSRAM) is freed on exit
 // via knobExit(), same discipline as clockview::onExit.
 static void radar_show_home_custom() {
