@@ -6,6 +6,8 @@
 #include "radar_view.h"
 #include "flight_auto_photo.h"
 #include "flight_close_pass.h"
+#include "flight_card_lifetime.h"
+#include "ui.h"
 #include "display.h"   // display_lvgl_us(): see the frame profiler below
 #include "curved_text.h"
 #include "fixed_screen_overlay.h"
@@ -262,26 +264,19 @@ static std::string s_selHex;
 // Flight Tracker knob state machine (shared by device + simulator so they can't
 // drift). Two modes: DEFAULT VIEW — nothing selected, knob released, a turn opens
 // the app switcher and a push enters selection. SELECTION MODE — an aircraft
-// selected, knob captured, a turn cycles aircraft; a push, or SELECT_IDLE_MS of no
-// input, drops back to the default view. See knobPress()/knobTurn()/knobEnter().
+// selected, and a turn cycles aircraft. Card lifetime also waits for the route
+// result; see knobPress()/knobTurn()/knobEnter().
 static bool        s_selectMode    = false;
-static uint32_t    s_selActivityMs = 0;      // lv_tick_get() of the last knob input in selection mode
+static bool        s_automaticSelection = false;
+static FlightCardLifetime s_cardLifetime;
 static bool        s_selectionRoutePending = false;
 static char        s_selectionRouteCall[12] = "";
-// How long a selected aircraft stays selected without input.
-//
-// Was 5000, which was never long enough to read the card even when it worked. The route
-// line ("PHX -> SFO") is fetched on demand from a second service, and that lookup queues
-// behind the ADS-B poll and the weather pumps on the same task — so the card could easily
-// time out before its own text arrived. That is now much likelier to succeed at all (the
-// lookup used TLS this board cannot do, see route_client.cpp), but it is still a network
-// round trip, and five seconds was a window you had to race.
-static constexpr uint32_t SELECT_IDLE_MS = 10000;
+// Card lifetime is shared by automatic and manual selections: at least ten
+// visible seconds, wait for route completion, then at least three reading seconds.
 static void radar_exit_select();             // -> default view (deselect + release knob); defined below
 // Called when late-arriving detail (the route) reaches a card that is already up. Restarts
 // the idle countdown, because the thing worth reading only just appeared: without this the
 // route could land with a second left on the clock and vanish as you registered it.
-void noteSelectionDetailArrived();
 static float       s_lastRangeKm = 0.0f;     // current scope range, for the range banner (radar_range_fmt)
 static lv_obj_t   *s_feedWarn   = nullptr;   // "the feed is down, not your Orb" banner
 static lv_obj_t   *s_loadTicker = nullptr;   // live elapsed-seconds line under the loading message
@@ -301,6 +296,7 @@ static char s_photoHex[10] = "";
 static bool s_photoShown = false;
 static uint32_t s_photoStarted = 0;
 static bool s_autoPhotoEnabled = false;
+static bool s_autoArrivalCardEnabled = false;
 static FlightAutoPhoto s_autoPhoto;
 static FlightAutoPhoto s_visibleArrivals;
 static std::set<std::string> s_closePassNotified;
@@ -308,6 +304,7 @@ static double s_closePassMiles = flight_close_pass::DefaultMiles;
 static double s_autoHomeLat = 0, s_autoHomeLon = 0;
 static void auto_photo_tick();
 static void refresh_visible_arrivals();
+static void arrival_card_tick();
 static void (*s_visibleArrivalCb)(const AcInfo&) = nullptr;
 static void (*s_closePassCb)(const AcInfo&) = nullptr;
 namespace radar { static void open_photo(); }
@@ -324,7 +321,7 @@ static void close_photo() {
     if (s_photoPixels) heap_caps_free(s_photoPixels);
     s_photoPixels = nullptr;
     s_photoHex[0] = 0;
-    s_selActivityMs = lv_tick_get();
+    s_cardLifetime.resume(lv_tick_get());
 }
 
 static void refresh_photo() {
@@ -1077,34 +1074,45 @@ static void interp_step(void) {
 
 static void sweep_timer_cb(lv_timer_t *t) {
     (void)t;
-    // Selection mode auto-times-out: 10s with no knob input drops back to the
-    // populated default view (deselect + release the knob) so the scope doesn't
-    // stay pinned on one aircraft. Runs before the early returns below.
+    // Refresh photo and route state before checking the card's reading window.
     refresh_photo();
     auto_photo_tick();
-    if (s_selectMode && !s_photoPanel && !s_autoPhoto.active()) {
+    if (s_selectMode) {
         AcInfo selected;
-        if (radar::selected(selected) && selected.call[0]) {
+        const bool haveSelection = radar::selected(selected);
+        if (haveSelection && selected.call[0]) {
             if (strcmp(s_selectionRouteCall, selected.call) != 0) {
+                s_cardLifetime.begin(lv_tick_get(), true);
                 snprintf(s_selectionRouteCall, sizeof(s_selectionRouteCall), "%s", selected.call);
                 s_selectionRoutePending = true;
                 route_request(selected.call);
             }
-            if (s_selectionRoutePending) {
+            {
                 char from[40], to[40];
                 // An empty stored result is a completed, unsuccessful lookup too.
-                if (route_get(selected.call, from, sizeof(from), to, sizeof(to))) {
+                const bool finished = route_get(selected.call, from, sizeof(from), to, sizeof(to));
+                if (!finished && !s_selectionRoutePending) {
+                    // A cached miss can expire while the card is still being read.
+                    s_selectionRoutePending = true;
+                    s_cardLifetime.routeStarted();
+                    route_request(selected.call);
+                } else if (finished && s_selectionRoutePending) {
                     s_selectionRoutePending = false;
-                    s_selActivityMs = lv_tick_get();
+                    radar::noteSelectionDetailArrived();
+                    ui_on_data_updated();
                     Serial.printf("[route-card] %s complete; reading timer started\n", selected.call);
                 }
             }
         } else {
             s_selectionRoutePending = false;
+            s_cardLifetime.routeFinished(lv_tick_get());
+            if (!haveSelection) radar_exit_select();
         }
-        if (!s_selectionRoutePending && (uint32_t)(lv_tick_get() - s_selActivityMs) >= SELECT_IDLE_MS)
+        if (!s_photoPanel && !s_autoPhoto.active() && !s_selectionRoutePending && s_cardLifetime.expired(lv_tick_get()))
             radar_exit_select();
     }
+    if (!s_selectMode) auto_photo_tick(); // close-pass previews precede queued arrival cards
+    arrival_card_tick();
     {   // aircraft glyph motion, throttled: see AC_INTERP_MS for why this is slow on purpose
         static uint32_t s_lastInterpMs = 0;
         const uint32_t nowIms = lv_tick_get();
@@ -1796,6 +1804,7 @@ static void radar_exit_select() {
     Serial.println("[route-card] selection dismissed");
     radar::select(-1);
     s_selectMode = false;
+    s_automaticSelection = false;
     app_shell::setCaptured(false);
 }
 
@@ -1824,12 +1833,11 @@ static void refresh_visible_arrivals() {
     // Shared transition detection: a hidden contact cannot sound an ordinary
     // arrival alert. Observe motion too, so leaving a keep-out area is detected
     // when the icon actually appears, rather than waiting for another feed poll.
-    const auto arrivals = s_visibleArrivals.observe(visible, false);
-    s_autoPhoto.observe(closePasses, s_autoPhotoEnabled &&
-                        (!s_selectMode || s_autoPhoto.active()), true);
-    if (s_visibleArrivalCb) {
+    const auto arrivals = s_visibleArrivals.observe(visible, s_autoArrivalCardEnabled &&
+                                                  (!s_selectMode || s_automaticSelection));
+    if (!s_autoArrivalCardEnabled && s_visibleArrivalCb) {
         for (const auto& hex : arrivals) {
-            // A predicted close pass gets its own tone when the preview starts.
+            // A qualifying close pass has its own tone and preview setting.
             if (s_autoPhotoEnabled && std::find(closePasses.begin(), closePasses.end(), hex) != closePasses.end()) continue;
             for (int i = 0; i < (int)s_acs.size(); ++i) {
                 if (hex != s_acs[i].hex) continue;
@@ -1839,6 +1847,8 @@ static void refresh_visible_arrivals() {
             }
         }
     }
+    s_autoPhoto.observe(closePasses, s_autoPhotoEnabled &&
+                        (!s_selectMode || s_automaticSelection || s_autoPhoto.active()), true);
 }
 
 static void auto_photo_tick() {
@@ -1857,8 +1867,9 @@ static void auto_photo_tick() {
         for (int i = 0; i < (int)s_acs.size(); ++i) {
             if (s_autoPhoto.aircraft() == s_acs[i].hex) {
                 s_selectMode = true;
+                s_automaticSelection = true;
                 radar::select(i);
-                s_selActivityMs = now;
+                s_visibleArrivals.discard(s_acs[i].hex);
                 // Start the lookup while the aircraft is highlighted.
                 photo_request(s_acs[i].hex, s_acs[i].type);
                 break;
@@ -1868,9 +1879,15 @@ static void auto_photo_tick() {
     const auto it = std::find_if(s_acs.begin(), s_acs.end(), [](const AcDraw& a) {
         return s_autoPhoto.aircraft() == a.hex && a.inRange && !a.onGround && !ac_masked(a);
     });
-    if (it == s_acs.end() || !s_autoPhoto.stillVisible() || s_autoPhoto.expired(now)) {
+    if (it == s_acs.end() || !s_autoPhoto.stillVisible()) {
         radar_exit_select();
         s_autoPhoto.finish();
+        return;
+    }
+    if (s_autoPhoto.expired(now)) {
+        close_photo(); // keep the highlight/card; give the returned card its full minimum
+        s_autoPhoto.finish();
+        ui_on_data_updated();
         return;
     }
     if (starting) {
@@ -1881,6 +1898,27 @@ static void auto_photo_tick() {
     if (s_autoPhoto.highlightDone(now)) {
         s_autoPhoto.loading(now);
         radar::open_photo();
+    }
+}
+
+static void arrival_card_tick() {
+    if (!s_autoArrivalCardEnabled || !s_canvasActive || app_shell::browsing() || !s_acLayer || !lv_obj_is_visible(s_acLayer) ||
+        s_selectMode || s_photoPanel || s_autoPhoto.active()) return;
+    // Existing cards finish before the next arrival takes the screen. Queued
+    // aircraft that become hidden are pruned by the shared visibility observer.
+    while (s_visibleArrivals.start(lv_tick_get())) {
+        const std::string hex = s_visibleArrivals.aircraft();
+        s_visibleArrivals.finish();
+        for (int i = 0; i < (int)s_acs.size(); ++i) {
+            const auto &a = s_acs[i];
+            if (hex != a.hex || !a.inRange || a.onGround || ac_masked(a)) continue;
+            s_selectMode = true;
+            s_automaticSelection = true;
+            radar::select(i);
+            AcInfo in;
+            if (s_visibleArrivalCb && radar::selected(in)) s_visibleArrivalCb(in);
+            return;
+        }
     }
 }
 
@@ -3127,10 +3165,7 @@ using RadarTok = text_tokens::Tok;
 static inline void radar_fmt_toks(char *out, size_t outSz, const char *fmt, const RadarTok *toks, size_t nToks) {
     text_tokens::expand(out, outSz, fmt, toks, nToks);
 }
-// Returns false (leaves `out` empty) when the format needs {from}/{to} and the
-// route lookup hasn't produced both yet — the caller skips drawing that banner
-// entirely rather than showing a "?" placeholder while it's still resolving (or
-// blank/half-blank if this particular callsign genuinely has no route on file).
+// Route-dependent banners show their lookup state in the theme's route slot.
 static bool radar_fmt(char *out, size_t outSz, const char *fmt, const AcInfo &in) {
     char altS[16], spdS[16], distS[16], hdgS[8], sqkS[8];
     snprintf(altS, sizeof(altS), "%.0f", (double)in.altFt);
@@ -3141,21 +3176,15 @@ static bool radar_fmt(char *out, size_t outSz, const char *fmt, const AcInfo &in
     else                snprintf(sqkS, sizeof(sqkS), "%04d", in.squawk);
     const bool needsRoute = strstr(fmt, "{from}") || strstr(fmt, "{to}");
     char rfrom[40] = "", rto[40] = "";
+    bool routeComplete = !in.call[0];
     if (needsRoute && in.call[0]) {
         route_request(in.call);
-        route_get(in.call, rfrom, sizeof(rfrom), rto, sizeof(rto));
-        // The moment a route first completes for the aircraft on screen, restart the idle
-        // countdown. This runs on the LVGL task (route_store does not), so the timer is
-        // touched from the same task that reads it. Without this the route could arrive
-        // with a second left on the clock and vanish as it registered — the card looking
-        // "too fast" when really the text had only just turned up.
-        static char s_routeShownFor[12] = "";
-        if (rfrom[0] && rto[0] && strncmp(s_routeShownFor, in.call, sizeof(s_routeShownFor) - 1) != 0) {
-            snprintf(s_routeShownFor, sizeof(s_routeShownFor), "%s", in.call);
-            noteSelectionDetailArrived();
-        }
+        routeComplete = route_get(in.call, rfrom, sizeof(rfrom), rto, sizeof(rto));
     }
-    if (needsRoute && (!rfrom[0] || !rto[0])) { if (outSz) out[0] = 0; return false; }
+    if (needsRoute && (!rfrom[0] || !rto[0])) {
+        snprintf(out, outSz, "%s", routeComplete ? "No route" : "Loading route");
+        return true;
+    }
     RadarTok toks[] = {
         { "callsign", in.call[0] ? in.call : "-" }, { "type", in.type },
         { "alt", altS }, { "spd", spdS }, { "dist", distS }, { "hdg", hdgS }, { "sqk", sqkS },
@@ -3357,8 +3386,16 @@ void select(int idx) {
     s_selectionRouteCall[0] = 0;
     if (idx < 0 || idx >= (int)s_acs.size()) s_selHex.clear();
     else s_selHex = s_acs[idx].hex;
+    const char *call = s_selHex.empty() ? "" : s_acs[idx].call;
+    s_cardLifetime.begin(lv_tick_get(), call[0] != 0);
+    if (call[0]) {
+        snprintf(s_selectionRouteCall, sizeof(s_selectionRouteCall), "%s", call);
+        s_selectionRoutePending = true;
+        route_request(call);
+    }
     if (s_acLayer) lv_obj_invalidate(s_acLayer);
     refresh_custom_text();
+    ui_on_data_updated();
 }
 
 // Cycle through in-range aircraft, with an explicit "none selected" stop at
@@ -3397,6 +3434,7 @@ void knobEnter() {
     s_canvasActive = true;
     refreshCustomStyle();
     s_selectMode = false;
+    s_automaticSelection = false;
     select(-1);
     flow_redraw_all(); // restore trails after the previous exit released their canvas
     app_shell::setCaptured(false);
@@ -3429,6 +3467,8 @@ void knobEnter() {
 // the real Settings "Design" picker (theme_select) — see its header for why.
 // Press a selected flight to view its photo; press again to return to its card.
 void knobPress() {
+    s_automaticSelection = false;
+    s_visibleArrivals.cancel();
     // A manual press takes ownership of an automatic preview.
     s_autoPhoto.cancel();
     if (s_photoPanel) { close_photo(); return; }
@@ -3487,6 +3527,14 @@ void setAutoPhoto(bool enabled) {
 
 bool autoPhoto() { return s_autoPhotoEnabled; }
 
+void setAutoArrivalCard(bool enabled) {
+    if (s_autoArrivalCardEnabled == enabled) return;
+    s_visibleArrivals.cancel(); // changing this option must not replay queued arrivals
+    s_autoArrivalCardEnabled = enabled;
+}
+
+bool autoArrivalCard() { return s_autoArrivalCardEnabled; }
+
 void setClosePassMiles(double miles) {
     if (!std::isfinite(miles) || miles < flight_close_pass::MinMiles || miles > flight_close_pass::MaxMiles ||
         miles == s_closePassMiles) return;
@@ -3510,9 +3558,11 @@ void setVisibleArrivalCb(void (*cb)(const AcInfo&)) { s_visibleArrivalCb = cb; }
 // on a dial — do nothing at all until it had been asked permission.
 //
 // The first turn from nothing selected picks the nearest contact rather than stepping from
-// an arbitrary index, so the box lands somewhere sensible. After SELECT_IDLE_MS of stillness
-// it clears itself; the Rock gesture leaves the app entirely and clears it on the way out.
+// an arbitrary index, so the box lands somewhere sensible. The route-aware reading
+// window clears it; the Rock gesture leaves the app and clears it on the way out.
 void knobTurn(int dir) {
+    s_automaticSelection = false;
+    s_visibleArrivals.cancel();
     s_autoPhoto.cancel();
     if (s_photoPanel) close_photo();
     if (!s_selectMode) {
@@ -3522,12 +3572,13 @@ void knobTurn(int dir) {
     } else {
         selectNext(dir > 0 ? 1 : -1);
     }
-    s_selActivityMs = lv_tick_get();
+    s_cardLifetime.resume(lv_tick_get());
 }
 
 // onExit: free the decoded plate/overlay PSRAM and drop selection mode so the idle
 // timer can't fire against a scope that's no longer on screen.
 void knobExit() {
+    s_automaticSelection = false;
     s_autoPhoto.reset();
     s_visibleArrivals.reset();
     s_closePassNotified.clear();
@@ -3731,7 +3782,8 @@ void setGlide(int mode) {
 }
 
 void noteSelectionDetailArrived() {
-    if (s_selectMode) s_selActivityMs = lv_tick_get();
+    if (s_selectMode) s_cardLifetime.routeFinished(lv_tick_get());
+    refresh_custom_text();
 }
 
 // The SAME sweep, on another tile. See the header for why this is not a second one.

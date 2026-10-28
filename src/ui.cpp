@@ -302,48 +302,21 @@ static void refresh_card(void) {
     }
     char rfrom[40], rto[40];
     if (!in.call[0]) {
-        lv_label_set_text(s_cardRoute, "Route -");                 // no callsign -> nothing to look up
+        lv_label_set_text(s_cardRoute, "No route");                // no callsign -> nothing to look up
     } else if (route_get(in.call, rfrom, sizeof(rfrom), rto, sizeof(rto))) {
         char rt[96];
         if (rfrom[0] || rto[0]) snprintf(rt, sizeof(rt), "%s -> %s", rfrom[0] ? rfrom : "?", rto[0] ? rto : "?");
-        else                    snprintf(rt, sizeof(rt), "Route unavailable");
+        else                    snprintf(rt, sizeof(rt), "No route");
         fold_ascii(rt);
         lv_label_set_text(s_cardRoute, rt);
     } else {
-        lv_label_set_text(s_cardRoute, "Looking up route...");     // pending: lookup in flight
+        lv_label_set_text(s_cardRoute, "Loading route");           // pending: lookup in flight
     }
 
-    // aircraft photo (planespotters), shown above the card when one is available
-    if (in.hex[0]) photo_request(in.hex, in.type);
-    // LVGL owns a stable display copy, never the network decoder's scratch buffer.
-    static lv_color_t *displayPixels = nullptr;
-    if (s_photo && !displayPixels) displayPixels = (lv_color_t *)lv_mem_alloc(232 * 156 * sizeof(lv_color_t));
-    int pw = 0, ph = 0; char pcred[192];
-    if (s_photo && in.hex[0] && photo_copy(in.hex, displayPixels, 232 * 156, &pw, &ph, pcred, sizeof(pcred)) && pw > 0 && ph > 0) {
-        lv_canvas_set_buffer(s_photo, displayPixels, pw, ph, LV_IMG_CF_TRUE_COLOR);
-        lv_obj_set_size(s_photo, pw, ph);
-        lv_obj_align(s_photo, LV_ALIGN_CENTER, 0, -28 - ph / 2);   // sit lower: fill the band down to the card
-        lv_obj_clear_flag(s_photo, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_invalidate(s_photo);
-        if (s_photoCredit) {
-            char c[52];
-            snprintf(c, sizeof(c), "Photo: %s", pcred[0] ? pcred : "planespotters.net");
-            lv_label_set_text(s_photoCredit, c);
-            lv_obj_align_to(s_photoCredit, s_photo, LV_ALIGN_OUT_BOTTOM_MID, 0, 1);
-            lv_obj_clear_flag(s_photoCredit, LV_OBJ_FLAG_HIDDEN);
-        }
-    } else if (s_photo) {
-        // No image to show yet: hide the canvas, but use the caption line to tell the
-        // user what's happening — "Loading..." while the fetch is in flight, or a quiet
-        // "No photo" once it finished without one. Unobtrusive (small, dim) but informative.
-        lv_obj_add_flag(s_photo, LV_OBJ_FLAG_HIDDEN);
-        if (s_photoCredit) {
-            const bool done = in.hex[0] && photo_done(in.hex);
-            lv_label_set_text(s_photoCredit, done ? "No photo available" : "Loading photo...");
-            lv_obj_align(s_photoCredit, LV_ALIGN_CENTER, 0, -104);   // where the photo would sit
-            lv_obj_clear_flag(s_photoCredit, LV_OBJ_FLAG_HIDDEN);
-        }
-    }
+    // Photos belong to radar's explicit/timed viewer. Returning to the info
+    // card must not leave a second, untimed copy of the image above it.
+    if (s_photo) lv_obj_add_flag(s_photo, LV_OBJ_FLAG_HIDDEN);
+    if (s_photoCredit) lv_obj_add_flag(s_photoCredit, LV_OBJ_FLAG_HIDDEN);
     ui_set_flight_overlay_rotation(s_flightOverlayRotation);
 }
 

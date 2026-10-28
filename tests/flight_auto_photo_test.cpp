@@ -52,8 +52,8 @@ int main() {
     assert(!preview.expired(31099));
     assert(preview.expired(31100)); // network stalls cannot pin the screen
     preview.shown(20000);
-    assert(!preview.expired(24999));
-    assert(preview.expired(25000)); // five seconds measured from image arrival
+    assert(!preview.expired(22999));
+    assert(preview.expired(23000)); // three seconds measured from image arrival
     preview.finish();
     assert(preview.start(25001));
     assert(preview.aircraft() == "second");
@@ -88,6 +88,15 @@ int main() {
     preview.loading(UINT32_MAX - 500);
     assert(preview.expired(29499));
     preview.shown(UINT32_MAX - 500);
-    assert(!preview.expired(4498));
-    assert(preview.expired(4499));
+    assert(!preview.expired(2498));
+    assert(preview.expired(2499));
+
+    FlightAutoPhoto arrivalsQueue;
+    arrivalsQueue.observe({}, true);
+    arrivalsQueue.observe({"close-pass", "ordinary"}, true);
+    arrivalsQueue.discard("close-pass"); // photo already returns to this flight's info card
+    assert(arrivalsQueue.start(0));
+    assert(arrivalsQueue.aircraft() == "ordinary");
+    arrivalsQueue.finish();
+    assert(!arrivalsQueue.start(1));
 }

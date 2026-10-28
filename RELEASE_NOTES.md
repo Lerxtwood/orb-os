@@ -18,6 +18,23 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.18.09
+
+- Choose whether newly visible aircraft automatically open their info card under Flight Tracker Options at theorb.local
+- Automatic arrival cards default to off; the saved option survives restarts
+- Arrival sounds remain available with automatic cards off, and close-pass alerts keep their separate setting
+
+---
+
+## 2.18.08
+
+- Newly visible aircraft automatically highlight and open their flight info card alongside the arrival sound
+- Close-pass images display for three seconds after loading, then return to the highlighted flight and info card
+- Flight cards stay visible for at least ten seconds, wait for the route request, and allow three seconds to read its result
+- Route areas show Loading route during lookup and No route when no route is available
+
+---
+
 ## 2.18.07
 
 - Set a close-pass distance in miles under Flight Tracker Options

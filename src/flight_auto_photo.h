@@ -12,7 +12,7 @@
 class FlightAutoPhoto {
 public:
     static constexpr uint32_t HighlightMs = 1000;
-    static constexpr uint32_t DisplayMs = 5000;
+    static constexpr uint32_t DisplayMs = 3000;
     static constexpr uint32_t LookupTimeoutMs = 30000;
     enum class Phase { Idle, Highlight, Loading, Showing };
 
@@ -58,6 +58,9 @@ public:
                (phase == Phase::Loading && uint32_t(now - since) >= LookupTimeoutMs);
     }
     void finish() { hex.clear(); phase = Phase::Idle; }
+    void discard(const std::string& id) {
+        pending.erase(std::remove(pending.begin(), pending.end(), id), pending.end());
+    }
     bool active() const { return phase != Phase::Idle; }
     bool stillVisible() const { return previous.count(hex) != 0; }
     const std::string& aircraft() const { return hex; }

@@ -10,7 +10,7 @@
 // "1.4.2", said "up to date", and left an Orb missing everything in that list. THEME_CAPS
 // exists because this stopped moving; it covers theme settings and nothing else, so a new
 // command or a deleted screen is invisible to it. Move this too.
-#define FW_VERSION "2.18.07"   // Predicted close-pass photos, distance option and distinct tone
+#define FW_VERSION "2.18.09"   // Optional automatic arrival cards, saved in Flight Tracker Options
 #ifndef ROAD_VECTOR_URL
 #define ROAD_VECTOR_URL "https://tiles.openfreemap.org/planet/latest/{z}/{x}/{y}.pbf"
 #endif

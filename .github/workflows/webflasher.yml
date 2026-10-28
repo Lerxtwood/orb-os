@@ -42,6 +42,8 @@ jobs:
           /tmp/test_flight_close_pass
           g++ -std=c++17 -O2 -UNDEBUG -Isrc tests/flight_auto_photo_test.cpp -o /tmp/test_flight_auto_photo
           /tmp/test_flight_auto_photo
+          g++ -std=c++17 -O2 -UNDEBUG -Isrc tests/flight_card_lifetime_test.cpp -o /tmp/test_flight_card_lifetime
+          /tmp/test_flight_card_lifetime
       - name: Install PlatformIO
         run: pip install platformio
       - uses: actions/cache@v4

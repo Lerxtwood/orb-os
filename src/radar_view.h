@@ -83,14 +83,17 @@ void knobPress();
 void knobTurn(int dir);
 void knobExit();
 
-// Highlight predicted close passes, then show their photo for five seconds.
+// Highlight predicted close passes, show their photo for three seconds after
+// loading, then return to the highlighted flight's route-aware info card.
 void setAutoPhoto(bool enabled);
 bool autoPhoto();
+void setAutoArrivalCard(bool enabled);
+bool autoArrivalCard();
 void setClosePassMiles(double miles);
 double closePassMiles();
 void setClosePassCb(void (*cb)(const AcInfo&));
-// Normal arrival alerts use the same drawable contacts as automatic photos.
-// Called on the UI thread, including when automatic photos are disabled.
+// Normal arrival sound accompanies the newly visible flight's automatic card.
+// Called on the UI thread, including when close-pass photos are disabled.
 void setVisibleArrivalCb(void (*cb)(const AcInfo&));
 
 // Snapshot access for the list / stats views.
@@ -110,8 +113,8 @@ void flashThemeName();                           // briefly show the current the
 void setThemeChangedCb(void (*cb)(int theme));   // called when the theme changes (for persistence)
 void setRangeLabelVisible(bool v);               // hide the built-in range label (UI shows its own)
 
-// Late-arriving detail (the route line) reached a card that is already on screen. Restarts
-// the selection idle countdown so the newly-arrived text gets a full reading window.
+// Route lookup completed (including an unavailable result). Allow at least
+// three reading seconds after completion, while retaining the ten-second minimum.
 void noteSelectionDetailArrived();
 
 // Retune the sweep timer at runtime. Frame pacing is a measured tradeoff between rate and
