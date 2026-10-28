@@ -38,6 +38,10 @@ jobs:
           /tmp/test_route_memory
           g++ -std=c++17 -O2 -UNDEBUG -DORB_PHOTO_CACHE_TEST -Itools/companion/photo_test_stubs -Isrc tools/companion/test_photo_cache.cpp src/photo.cpp -o /tmp/test_photo_cache
           /tmp/test_photo_cache
+          g++ -std=c++17 -O2 -UNDEBUG -Isrc tests/flight_close_pass_test.cpp -o /tmp/test_flight_close_pass
+          /tmp/test_flight_close_pass
+          g++ -std=c++17 -O2 -UNDEBUG -Isrc tests/flight_auto_photo_test.cpp -o /tmp/test_flight_auto_photo
+          /tmp/test_flight_auto_photo
       - name: Install PlatformIO
         run: pip install platformio
       - uses: actions/cache@v4

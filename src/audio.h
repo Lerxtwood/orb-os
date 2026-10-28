@@ -11,6 +11,7 @@ enum AudioCue {
     AUDIO_ALERT = 1,   // emergency / military contact (urgent double beep)
     AUDIO_CHIME = 3,   // top-of-hour clock chime (gentle descending phrase)
     AUDIO_WIND  = 5,   // one detent of winding the clock's mainspring (a short dry tick)
+    AUDIO_CLOSE_PASS = 10, // predicted nearby flyby (lower single beep)
 };
 
 bool audio_begin();                 // init ES8311 + I2S + PA + playback task (call on core 1)

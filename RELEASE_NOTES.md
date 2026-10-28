@@ -18,6 +18,31 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.18.07
+
+- Set a close-pass distance in miles under Flight Tracker Options
+- Flights predicted to pass that close within 15 minutes trigger a lower tone and a five-second airplane image
+- Predictions use current ground track and speed; hidden aircraft stay excluded and dial controls take priority
+
+---
+
+## 2.18.06
+
+- New-flight sounds now follow visible aircraft, respecting theme Keep-out Areas and the aircraft display limit
+- Flights gliding out of Keep-out Areas can trigger their image preview as soon as they become visible
+- With automatic images enabled, the arrival sound accompanies the queued highlight instead of interrupting another preview
+- Emergency and proximity alerts keep their separate safety triggers
+
+---
+
+## 2.18.05
+
+- Flight Tracker rotation now lives behind the Flight Tracker Options button at theorb.local
+- Enable Auto-display airplane image to highlight newly arriving flights and show their airplane image for five seconds
+- Automatic previews yield to dial controls and skip flights already in range when Flight Tracker opens
+
+---
+
 ## 2.18.04
 
 - Flight-loading messages and road-download progress stay upright in their original screen positions when a rotation offset is set

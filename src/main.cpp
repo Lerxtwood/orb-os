@@ -16,6 +16,7 @@
 #include "route.h"
 #include "route_client.h"
 #include "photo.h"
+#include "flight_close_pass.h"
 #include "photo_client.h"
 #include "weather.h"
 #include "weather_client.h"
@@ -720,13 +721,30 @@ static void loadSettings() {
     radar::setLargeText(g_bigText);
 }
 
-// Audio alerts. g_alertMode: 0 = off, 1 = emergencies only, 2 = new aircraft + emergencies.
+// Normal arrivals come from the renderer's visibility transitions, shared with
+// automatic photos. Keep-out areas, aircraft limits and ground traffic therefore
+// cannot produce an ordinary arrival sound without a visible aircraft.
+static void audibleVisibleArrival(const AcInfo& in) {
+    if (!audio_present() || !g_soundRadar || g_alertMode < 2) return;
+    if (in.emergency) return; // safety alerts retain their independent feed path
+    for (const auto& ac : g_snap)
+        if (ac.hex == in.hex && ac.military) return;
+    static uint32_t lastNew = 0;
+    if ((uint32_t)(millis() - lastNew) <= 3000) return;
+    audio_play(AUDIO_NEW);
+    lastNew = millis();
+}
+
+static void audibleClosePass(const AcInfo&) {
+    if (audio_present() && g_soundRadar) audio_play(AUDIO_CLOSE_PASS);
+}
+
+// Feed-based safety alerts. g_alertMode: 0 = off, 1 = emergencies only, 2 = new + emergencies.
 // g_proximityKm > 0 also pings (once) when any aircraft crosses into that radius.
 static void checkAudioEvents() {
     if (!audio_present() || !g_soundRadar) return;
     static std::set<std::string> seen, seenProx;
     static bool first = true;
-    static uint32_t lastNew = 0;
     std::set<std::string> now, nowProx;
     for (const Aircraft &ac : g_snap) {
         const double d = geo::haversineKm(g_settings.homeLat, g_settings.homeLon, ac.lat, ac.lon);
@@ -742,13 +760,9 @@ static void checkAudioEvents() {
             if (!first && !seenProx.count(hex)) audio_play(AUDIO_ALERT);
         }
 
-        // new-in-range pings (on entry), gated by the alert mode
+        // Emergency/military entry alerts stay independent of theme visibility.
         if (isNew) {
             if (emergency) { if (g_alertMode >= 1) audio_play(AUDIO_ALERT); }   // emergencies only / +new
-            else if (g_alertMode >= 2 && millis() - lastNew > 3000) {
-                audio_play(AUDIO_NEW);                                          // new contact (rate-limited)
-                lastNew = millis();
-            }
         }
     }
     seen.swap(now);
@@ -1746,12 +1760,14 @@ static const char ROOT_HEAD[] PROGMEM =
     "dl{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;margin:0;font-size:15px}dt{color:#7a7570}dd{margin:0}"
     "a.b{display:block;padding:12px 14px;border:1px solid #e0e0df;border-radius:10px;color:#2a2622;text-decoration:none;margin-top:8px;font-weight:500}"
     "a.b:hover{border-color:#a65e3f;color:#a65e3f}small{color:#7a7570;display:block;margin-top:14px;line-height:1.5}"
-    "</style></head><body>"
-    "<h1>The Orb</h1><p class=sub>This Orb, over your WiFi</p>"
-    "<div class=card><dl>";
+    "</style></head><body>";
+
+static const char ROOT_STATUS_HEAD[] PROGMEM =
+    "<h1>The Orb</h1><p class=sub>This Orb, over your WiFi</p><div class=card><dl>";
 
 static const char ROOT_TAIL[] PROGMEM =
     "<div class=card>"
+    "<a class=b href='/flight-tracker-options'>Flight Tracker Options</a>"
     "<a class=b href='/install'>Install a theme file</a>"
     "<a class=b href='/roads'>Road maps and cache</a>"
     // Upstream 2.16.64 guarded this link: with no OTA partition the page it points at
@@ -1775,6 +1791,7 @@ static void handleRoot() {
     g_web.setContentLength(CONTENT_LENGTH_UNKNOWN);
     g_web.send(200, "text/html", "");
     g_web.sendContent_P(ROOT_HEAD);
+    g_web.sendContent_P(ROOT_STATUS_HEAD);
     char row[200];
     snprintf(row, sizeof(row), "<dt>Firmware</dt><dd>%s</dd><dt>Wearing</dt><dd>%s</dd><dt>Address</dt><dd>%s</dd>",
              FW_VERSION, theme_style::themeLabel(), WiFi.localIP().toString().c_str());
@@ -1783,6 +1800,15 @@ static void handleRoot() {
     // what this page is being moved off.
     g_web.sendContent(row, strlen(row));
     g_web.sendContent("</dl></div>", 11);
+    g_web.sendContent_P(ROOT_TAIL);
+    g_web.sendContent("", 0);    // the zero-length chunk that ends a chunked body
+}
+
+static void handleFlightOptions() {
+    g_web.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    g_web.send(200, "text/html", "");
+    g_web.sendContent_P(ROOT_HEAD);
+    g_web.sendContent_P(PSTR("<h1>Flight Tracker Options</h1><p class=sub><a href='/'>Back to The Orb</a></p>"));
     char flight[900];
     snprintf(flight, sizeof(flight),
         "<div class=card><form method=POST action=/flight-rotation>"
@@ -1794,8 +1820,23 @@ static void handleRoot() {
         "Multiples of 90 degrees render faster; other angles may reduce animation smoothness.</small>"
         "</form></div>", g_flightRotation);
     g_web.sendContent(flight, strlen(flight));
-    g_web.sendContent_P(ROOT_TAIL);
-    g_web.sendContent("", 0);    // the zero-length chunk that ends a chunked body
+    g_web.sendContent_P(PSTR("<div class=card><form method=POST action=/flight-close-pass>"
+        "<label><input type=checkbox name=enabled value=1 aria-describedby=autoPhotoDescription "));
+    if (radar::autoPhoto()) g_web.sendContent_P(PSTR("checked "));
+    g_web.sendContent_P(PSTR("> Alert and show image for predicted close passes</label>"
+        "<small id=autoPhotoDescription>For visible flights predicted to pass within the distance below "
+        "in the next 15 minutes, play a lower-pitched tone, highlight the flight, and show its airplane "
+        "image for 5 seconds. Estimates assume its current ground track and speed stay the same. "
+        "Sound follows the Orb's flight-sound and mute settings.</small>"));
+    char closePass[320];
+    snprintf(closePass, sizeof(closePass),
+        "<p><label for=closePassMiles>Close-pass distance (miles)</label></p>"
+        "<input id=closePassMiles name=miles type=number min=0.1 max=100 step=0.1 required value='%.1f'>"
+        "<small>Distance from your current location, in ordinary miles (not nautical miles).</small>",
+        radar::closePassMiles());
+    g_web.sendContent(closePass, strlen(closePass));
+    g_web.sendContent_P(PSTR("<p><button type=submit>Save close-pass options</button></p></form></div></body></html>"));
+    g_web.sendContent("", 0);
 }
 
 static void handleLegacyConfig() {
@@ -2343,8 +2384,39 @@ static void handleFlightRotation() {
         g_web.send(500, "text/plain", "Could not save rotation. Please try again.");
         return;
     }
-    g_web.sendHeader("Location", "/");
+    g_web.sendHeader("Location", "/flight-tracker-options");
     g_web.send(303, "text/plain", "Flight Tracker rotation saved.");
+}
+
+static void handleFlightClosePass() {
+    if (g_web.hasArg("enabled") && g_web.arg("enabled") != "1") {
+        g_web.send(400, "text/plain", "Invalid close-pass option.");
+        return;
+    }
+    const bool enabled = g_web.hasArg("enabled");
+    const String distance = g_web.arg("miles");
+    char *end = nullptr;
+    const double miles = strtod(distance.c_str(), &end);
+    if (!g_web.hasArg("miles") || end == distance.c_str() || *end != '\0' ||
+        !flight_close_pass::validMiles(miles)) {
+        g_web.send(400, "text/plain", "Enter a distance from 0.1 to 100 miles in steps of 0.1.");
+        return;
+    }
+    Preferences p;
+    if (!p.begin("capsuleradar", false)) {
+        g_web.send(500, "text/plain", "Could not open settings storage.");
+        return;
+    }
+    const bool saved = p.putUInt("flightClose", flight_close_pass::packOptions(miles, enabled)) == sizeof(uint32_t);
+    p.end();
+    if (!saved) {
+        g_web.send(500, "text/plain", "Could not save close-pass options. Please try again.");
+        return;
+    }
+    radar::setAutoPhoto(enabled);
+    radar::setClosePassMiles(miles);
+    g_web.sendHeader("Location", "/flight-tracker-options");
+    g_web.send(303, "text/plain", "Flight Tracker close-pass options saved.");
 }
 
 #if ORB_OTA_ENABLED
@@ -2934,6 +3006,10 @@ void setup() {
         g_rotation = p.isKey("rotDeg") ? p.getInt("rotDeg", 0) : p.getInt("rot", 0) * 90;
         g_rotation = constrain(g_rotation, 0, 359);
         g_flightRotation = constrain(p.getInt("flightRot", 0), 0, 359);
+        const uint32_t closePass = p.getUInt("flightClose", flight_close_pass::packOptions(
+            flight_close_pass::DefaultMiles, p.getBool("flightPhoto", false)));
+        radar::setClosePassMiles(flight_close_pass::unpackMiles(closePass));
+        radar::setAutoPhoto(flight_close_pass::unpackEnabled(closePass));
         p.end();
         if (!migratedV2) {
             switch (t) {                     // old numbering -> new (see comment above)
@@ -2962,6 +3038,8 @@ void setup() {
         g_rotation = display::rotation();
     }
     radar::setThemeChangedCb(saveTheme);
+    radar::setVisibleArrivalCb(audibleVisibleArrival);
+    radar::setClosePassCb(audibleClosePass);
     ui_set_units(g_units);                       // apply saved unit preset
     ui_set_wx_units(host_wx_is_imperial());      // apply saved (or auto-resolved) weather units
     ui_set_wx_zoom(g_wxZoomTier);                 // apply saved weather map zoom tier
@@ -3651,6 +3729,8 @@ void setup() {
     g_web.on("/bigtext", handleBigText);
     g_web.on("/rotate", handleRotate);
     g_web.on("/flight-rotation", HTTP_POST, handleFlightRotation);
+    g_web.on("/flight-tracker-options", HTTP_GET, handleFlightOptions);
+    g_web.on("/flight-close-pass", HTTP_POST, handleFlightClosePass);
     g_web.on("/units", handleUnits);
 #if ORB_OTA_ENABLED
     g_web.on("/update", HTTP_GET, handleUpdatePage);

@@ -1,6 +1,7 @@
 # Flight Tracker rotation offset
 
-The front page at `http://theorb.local/` has a Flight Tracker rotation offset
+The **Flight Tracker Options** button at `http://theorb.local/` opens
+`/flight-tracker-options`, which contains the Flight Tracker rotation offset
 control. It accepts whole degrees from 0 to 359 clockwise, saves immediately, and
 survives restarts. For example, 315 turns the screen 45 degrees counter-clockwise
 when the existing global rotation is zero. Zero removes the flight offset.
@@ -57,7 +58,7 @@ been performed for this change, so no numeric slowdown is claimed.
 
 After installing the firmware:
 
-1. Open the front page and save 315. Confirm that the Flight Tracker view
+1. Open Flight Tracker Options from the front page and save 315. Confirm that the Flight Tracker view
    turns 45 degrees counter-clockwise. Airport codes must stay horizontal beside
    their markers, and the location name must stay horizontal and centred at its
    original height rather than orbiting with the map. Check 90, 180 and 270 too.
@@ -70,7 +71,7 @@ After installing the firmware:
    `/health` flush timings can supplement this; `pushed_per_s` does not
    currently count the arbitrary-angle path and should not be used to compare it.
 5. Check that blank, fractional and out-of-range POST values receive HTTP 400;
-   valid values redirect to the front page only after the NVS write succeeds.
+   valid values redirect to Flight Tracker Options only after the NVS write succeeds.
 6. With 315 set, enter Flight Tracker before its first snapshot and download a
    missing road map. Check loading messages, elapsed time and changing download
    progress remain upright in their usual positions. Select an aircraft and check

@@ -83,6 +83,16 @@ void knobPress();
 void knobTurn(int dir);
 void knobExit();
 
+// Highlight predicted close passes, then show their photo for five seconds.
+void setAutoPhoto(bool enabled);
+bool autoPhoto();
+void setClosePassMiles(double miles);
+double closePassMiles();
+void setClosePassCb(void (*cb)(const AcInfo&));
+// Normal arrival alerts use the same drawable contacts as automatic photos.
+// Called on the UI thread, including when automatic photos are disabled.
+void setVisibleArrivalCb(void (*cb)(const AcInfo&));
+
 // Snapshot access for the list / stats views.
 int  count();
 int  countInRange();                        // aircraft within the display range (for the HUD)

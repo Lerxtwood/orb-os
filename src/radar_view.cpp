@@ -4,6 +4,8 @@
 //   THEME_ORB   : Orb scope: green gradient, square grid, the 7 nearest
 //                    aircraft as yellow balls (emitting waves) + off-range arrows.
 #include "radar_view.h"
+#include "flight_auto_photo.h"
+#include "flight_close_pass.h"
 #include "display.h"   // display_lvgl_us(): see the frame profiler below
 #include "curved_text.h"
 #include "fixed_screen_overlay.h"
@@ -298,6 +300,17 @@ static lv_color_t *s_photoPixels = nullptr;
 static char s_photoHex[10] = "";
 static bool s_photoShown = false;
 static uint32_t s_photoStarted = 0;
+static bool s_autoPhotoEnabled = false;
+static FlightAutoPhoto s_autoPhoto;
+static FlightAutoPhoto s_visibleArrivals;
+static std::set<std::string> s_closePassNotified;
+static double s_closePassMiles = flight_close_pass::DefaultMiles;
+static double s_autoHomeLat = 0, s_autoHomeLon = 0;
+static void auto_photo_tick();
+static void refresh_visible_arrivals();
+static void (*s_visibleArrivalCb)(const AcInfo&) = nullptr;
+static void (*s_closePassCb)(const AcInfo&) = nullptr;
+namespace radar { static void open_photo(); }
 
 static void refresh_fixed_overlays() {
     for (lv_obj_t *obj : {s_loading, s_loadTicker, s_roadStatus, s_feedWarn,
@@ -328,10 +341,12 @@ static void refresh_photo() {
         if (strncmp(credit, "Generic ", 8) == 0) lv_label_set_text(s_photoStatus, credit);
         else lv_label_set_text_fmt(s_photoStatus, "Photo: %s / planespotters.net", credit[0] ? credit : "Unknown");
         s_photoShown = true;
+        if (s_autoPhoto.active()) s_autoPhoto.shown(lv_tick_get());
         Serial.printf("[radar-photo] %s displayed %dx%d\n", s_photoHex, w, h);
     } else if (photo_done(s_photoHex)) {
         lv_label_set_text(s_photoStatus, "Photo unavailable");
         s_photoShown = true;
+        if (s_autoPhoto.active()) s_autoPhoto.shown(lv_tick_get());
     } else if ((uint32_t)(lv_tick_get() - s_photoStarted) > 20000 &&
                strcmp(lv_label_get_text(s_photoStatus), "Still looking for a photo...") != 0) {
         lv_label_set_text(s_photoStatus, "Still looking for a photo...");
@@ -365,6 +380,7 @@ struct AcDraw {
     float      vsFpm, gsKt, distKm, bearingDeg;
     int        squawk;
     float      freshness;      // 1.0 = seen this poll, fading to a floor as it ages, see ac_freshness()
+    flight_close_pass::Prediction closePass;
     std::vector<lv_point_t> trail;
 };
 static std::vector<AcDraw> s_acs;
@@ -1041,6 +1057,7 @@ static void interp_step(void) {
         ac.pos = np;
         lv_obj_invalidate_area(s_acLayer, &inv);
     }
+    if (seen && moved) refresh_visible_arrivals();
 #ifdef ARDUINO
     // What the glyphs ACTUALLY did, so the question "does it look smooth" can be answered
     // from here instead of by asking. Many small moves is a glide; one large move every ten
@@ -1064,7 +1081,8 @@ static void sweep_timer_cb(lv_timer_t *t) {
     // populated default view (deselect + release the knob) so the scope doesn't
     // stay pinned on one aircraft. Runs before the early returns below.
     refresh_photo();
-    if (s_selectMode && !s_photoPanel) {
+    auto_photo_tick();
+    if (s_selectMode && !s_photoPanel && !s_autoPhoto.active()) {
         AcInfo selected;
         if (radar::selected(selected) && selected.call[0]) {
             if (strcmp(s_selectionRouteCall, selected.call) != 0) {
@@ -1779,6 +1797,91 @@ static void radar_exit_select() {
     radar::select(-1);
     s_selectMode = false;
     app_shell::setCaptured(false);
+}
+
+static void refresh_visible_arrivals() {
+    if (!s_canvasActive || app_shell::browsing() || !s_acLayer || !lv_obj_is_visible(s_acLayer)) {
+        if (s_autoPhoto.active()) radar_exit_select();
+        s_autoPhoto.reset();
+        s_visibleArrivals.reset();
+        return;
+    }
+    static std::vector<std::string> visible;
+    visible.clear();
+    static std::vector<std::string> closePasses;
+    closePasses.clear();
+    int visibleBlips = 0;
+    for (const auto &a : s_acs) {
+        if (!a.inRange || ac_masked(a)) continue;
+        if (orb() && !customStyled() && visibleBlips++ >= ORB_BLIPS) continue;
+        if (!a.onGround && a.hex[0]) {
+            visible.emplace_back(a.hex);
+            if (s_autoPhoto.aircraft() == a.hex ||
+                (a.freshness >= 1 && a.closePass.within(s_closePassMiles) && !s_closePassNotified.count(a.hex)))
+                closePasses.emplace_back(a.hex);
+        }
+    }
+    // Shared transition detection: a hidden contact cannot sound an ordinary
+    // arrival alert. Observe motion too, so leaving a keep-out area is detected
+    // when the icon actually appears, rather than waiting for another feed poll.
+    const auto arrivals = s_visibleArrivals.observe(visible, false);
+    s_autoPhoto.observe(closePasses, s_autoPhotoEnabled &&
+                        (!s_selectMode || s_autoPhoto.active()), true);
+    if (s_visibleArrivalCb) {
+        for (const auto& hex : arrivals) {
+            // A predicted close pass gets its own tone when the preview starts.
+            if (s_autoPhotoEnabled && std::find(closePasses.begin(), closePasses.end(), hex) != closePasses.end()) continue;
+            for (int i = 0; i < (int)s_acs.size(); ++i) {
+                if (hex != s_acs[i].hex) continue;
+                AcInfo in;
+                if (radar::info(i, in)) s_visibleArrivalCb(in);
+                break;
+            }
+        }
+    }
+}
+
+static void auto_photo_tick() {
+    if (!s_canvasActive || app_shell::browsing() ||
+        !s_acLayer || !lv_obj_is_visible(s_acLayer)) {
+        if (s_autoPhoto.active()) radar_exit_select();
+        s_autoPhoto.reset();
+        s_visibleArrivals.reset();
+        return;
+    }
+    if (!s_autoPhotoEnabled) return;
+    const uint32_t now = lv_tick_get();
+    const bool starting = !s_autoPhoto.active();
+    if (starting) {
+        if (s_selectMode || s_photoPanel || !s_autoPhoto.start(now)) return;
+        for (int i = 0; i < (int)s_acs.size(); ++i) {
+            if (s_autoPhoto.aircraft() == s_acs[i].hex) {
+                s_selectMode = true;
+                radar::select(i);
+                s_selActivityMs = now;
+                // Start the lookup while the aircraft is highlighted.
+                photo_request(s_acs[i].hex, s_acs[i].type);
+                break;
+            }
+        }
+    }
+    const auto it = std::find_if(s_acs.begin(), s_acs.end(), [](const AcDraw& a) {
+        return s_autoPhoto.aircraft() == a.hex && a.inRange && !a.onGround && !ac_masked(a);
+    });
+    if (it == s_acs.end() || !s_autoPhoto.stillVisible() || s_autoPhoto.expired(now)) {
+        radar_exit_select();
+        s_autoPhoto.finish();
+        return;
+    }
+    if (starting) {
+        s_closePassNotified.insert(s_autoPhoto.aircraft());
+        AcInfo in;
+        if (s_closePassCb && radar::selected(in)) s_closePassCb(in);
+    }
+    if (s_autoPhoto.highlightDone(now)) {
+        s_autoPhoto.loading(now);
+        radar::open_photo();
+    }
 }
 
 // A pushed design can reorder its six movable layers — sweep, aircraft
@@ -2681,6 +2784,14 @@ void refreshMap(const RadarSettings &s) {
 }
 
 void update(const std::vector<Aircraft> &aircraft, const RadarSettings &s) {
+    if (s_lastRangeKm != s.rangeKm || s_autoHomeLat != s.homeLat || s_autoHomeLon != s.homeLon) {
+        if (s_autoPhoto.active()) radar_exit_select();
+        s_autoPhoto.reset();
+        s_visibleArrivals.reset();
+        s_closePassNotified.clear();
+        s_autoHomeLat = s.homeLat;
+        s_autoHomeLon = s.homeLon;
+    }
     std::vector<AcDraw> out;
     out.reserve(aircraft.size());
     std::set<std::string> present;
@@ -2755,6 +2866,8 @@ void update(const std::vector<Aircraft> &aircraft, const RadarSettings &s) {
         d.vsFpm = ac.baroRate;
         d.gsKt = ac.gs;
         d.distKm = (float)distKm;
+        d.closePass = flight_close_pass::predict(distKm,
+            geo::bearingDeg(ac.lat, ac.lon, s.homeLat, s.homeLon), ac.track, ac.gs);
         d.bearingDeg = (float)brg;
         d.squawk = ac.squawk;
         // millis() and lv_tick_get() are the same clock on-device (lv_conf.h wires LVGL's
@@ -2947,6 +3060,16 @@ void update(const std::vector<Aircraft> &aircraft, const RadarSettings &s) {
     s_animStartMs  = now;
 
     s_acs = std::move(out);
+    // Retain the latch while a tracked flight remains in range, including while
+    // masked or after its predicted pass drifts across the configured threshold.
+    for (auto it = s_closePassNotified.begin(); it != s_closePassNotified.end();) {
+        const bool present = std::any_of(s_acs.begin(), s_acs.end(), [&](const AcDraw& a) {
+            return a.inRange && !a.onGround && *it == a.hex;
+        });
+        if (!present) it = s_closePassNotified.erase(it);
+        else ++it;
+    }
+    refresh_visible_arrivals();
     // The scope has real content now: the projection and etch above are done and this
     // snapshot is live. Dismissing here rather than on a timer means the notice lasts
     // exactly as long as the wait actually lasts.
@@ -3268,6 +3391,9 @@ void selectNext(int dir) {
 // any more) — this reset has to run every entry regardless, or stale selection state
 // from a prior visit could leak through in a stock (no custom design) build.
 void knobEnter() {
+    s_autoPhoto.reset();
+    s_visibleArrivals.reset();
+    s_closePassNotified.clear();
     s_canvasActive = true;
     refreshCustomStyle();
     s_selectMode = false;
@@ -3303,7 +3429,13 @@ void knobEnter() {
 // the real Settings "Design" picker (theme_select) — see its header for why.
 // Press a selected flight to view its photo; press again to return to its card.
 void knobPress() {
+    // A manual press takes ownership of an automatic preview.
+    s_autoPhoto.cancel();
     if (s_photoPanel) { close_photo(); return; }
+    open_photo();
+}
+
+static void open_photo() {
     AcInfo in;
     if (!s_selectMode || !selected(in) || !in.hex[0]) return;
     s_photoPixels = (lv_color_t *)heap_caps_malloc(232 * 156 * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
@@ -3339,9 +3471,36 @@ void knobPress() {
     snprintf(s_photoHex, sizeof(s_photoHex), "%s", in.hex);
     s_photoShown = !s_photoPixels;
     s_photoStarted = lv_tick_get();
+    if (s_autoPhoto.active() && s_photoShown) s_autoPhoto.shown(s_photoStarted);
     if (s_photoPixels) photo_request(in.hex, in.type);
     fixed_screen_overlay(s_photoPanel, s_labelRotation);
 }
+
+void setAutoPhoto(bool enabled) {
+    if (s_autoPhotoEnabled == enabled) return;
+    if (s_autoPhoto.active()) radar_exit_select();
+    s_autoPhoto.reset();
+    s_closePassNotified.clear();
+    s_autoPhotoEnabled = enabled;
+    refresh_visible_arrivals();
+}
+
+bool autoPhoto() { return s_autoPhotoEnabled; }
+
+void setClosePassMiles(double miles) {
+    if (!std::isfinite(miles) || miles < flight_close_pass::MinMiles || miles > flight_close_pass::MaxMiles ||
+        miles == s_closePassMiles) return;
+    if (s_autoPhoto.active()) radar_exit_select();
+    s_autoPhoto.reset();
+    s_closePassNotified.clear();
+    s_closePassMiles = miles;
+    refresh_visible_arrivals();
+}
+
+double closePassMiles() { return s_closePassMiles; }
+void setClosePassCb(void (*cb)(const AcInfo&)) { s_closePassCb = cb; }
+
+void setVisibleArrivalCb(void (*cb)(const AcInfo&)) { s_visibleArrivalCb = cb; }
 
 // A turn selects. Straight in, with no press to arm it first.
 //
@@ -3354,6 +3513,7 @@ void knobPress() {
 // an arbitrary index, so the box lands somewhere sensible. After SELECT_IDLE_MS of stillness
 // it clears itself; the Rock gesture leaves the app entirely and clears it on the way out.
 void knobTurn(int dir) {
+    s_autoPhoto.cancel();
     if (s_photoPanel) close_photo();
     if (!s_selectMode) {
         if (countInRange() <= 0) return;   // an empty sky has nothing to select
@@ -3368,6 +3528,9 @@ void knobTurn(int dir) {
 // onExit: free the decoded plate/overlay PSRAM and drop selection mode so the idle
 // timer can't fire against a scope that's no longer on screen.
 void knobExit() {
+    s_autoPhoto.reset();
+    s_visibleArrivals.reset();
+    s_closePassNotified.clear();
     close_photo();
     s_canvasActive = false; // background updates must not reacquire either canvas
     s_selHex.clear();

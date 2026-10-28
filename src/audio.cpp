@@ -285,6 +285,9 @@ static void play_cue(int cue) {
             i2s_write(I2S_PORT, buf, ns * 2, &bw, portMAX_DELAY);
             delay(40);
         }
+    } else if (cue == AUDIO_CLOSE_PASS) {
+        size_t ns = gen_beep(buf, S_BUF_LEN, 660.0f, 200, amp);
+        i2s_write(I2S_PORT, buf, ns * 2, &bw, portMAX_DELAY);
     } else if (cue == AUDIO_CHIME) {                // real recorded chime, whichever is selected
         const int idx = constrain(s_chimeIdx, 0, CHIME_COUNT - 1);
         // Sustained, like a chime off the card. This was missed: the flash chimes went
