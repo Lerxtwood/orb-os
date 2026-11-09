@@ -7,8 +7,8 @@
 #include <vector>
 
 // Transition detection and preview queue for drawable flights. Ordinary arrivals
-// establish a silent initial baseline; predicted close passes opt into initial
-// qualification so an already-visible inbound flight can trigger a preview.
+// establish a silent initial baseline; close passes opt into initial
+// qualification so an already-visible nearby flight can trigger a preview.
 class FlightAutoPhoto {
 public:
     static constexpr uint32_t HighlightMs = 1000;

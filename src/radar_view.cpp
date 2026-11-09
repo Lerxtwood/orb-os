@@ -7,6 +7,7 @@
 #include "flight_auto_photo.h"
 #include "flight_close_pass.h"
 #include "flight_card_lifetime.h"
+#include "flight_distance.h"
 #include "ui.h"
 #include "display.h"   // display_lvgl_us(): see the frame profiler below
 #include "curved_text.h"
@@ -31,6 +32,7 @@
 // Where the Orb is, by name, for the location banner (THEME_CAPS 54). Defined in main.cpp
 // on the device and in sim_main.cpp for the simulator, like every other host_ hook here.
 extern bool host_location_name(char *out, size_t n);
+extern bool host_wx_is_imperial(); // Settings > Units, including Auto's location resolution
 static uint16_t s_labelRotation = 0;
 #include "theme_font.h"   // per-theme fonts, with the compiled font as fallback     // per-theme sweep/blip/selection/off-range/center/RTEXT values — see theme_style.h for what's covered vs. stays compile-time
 #include <lvgl.h>
@@ -271,8 +273,7 @@ static bool        s_automaticSelection = false;
 static FlightCardLifetime s_cardLifetime;
 static bool        s_selectionRoutePending = false;
 static char        s_selectionRouteCall[12] = "";
-// Card lifetime is shared by automatic and manual selections: at least ten
-// visible seconds, wait for route completion, then at least three reading seconds.
+// Card lifetime is shared by automatic and manual selections.
 static void radar_exit_select();             // -> default view (deselect + release knob); defined below
 // Called when late-arriving detail (the route) reaches a card that is already up. Restarts
 // the idle countdown, because the thing worth reading only just appeared: without this the
@@ -377,7 +378,6 @@ struct AcDraw {
     float      vsFpm, gsKt, distKm, bearingDeg;
     int        squawk;
     float      freshness;      // 1.0 = seen this poll, fading to a floor as it ages, see ac_freshness()
-    flight_close_pass::Prediction closePass;
     std::vector<lv_point_t> trail;
 };
 static std::vector<AcDraw> s_acs;
@@ -1826,19 +1826,21 @@ static void refresh_visible_arrivals() {
         if (!a.onGround && a.hex[0]) {
             visible.emplace_back(a.hex);
             if (s_autoPhoto.aircraft() == a.hex ||
-                (a.freshness >= 1 && a.closePass.within(s_closePassMiles) && !s_closePassNotified.count(a.hex)))
+                (a.freshness >= 1 && flight_close_pass::withinDistance(a.distKm, s_closePassMiles) &&
+                 !s_closePassNotified.count(a.hex)))
                 closePasses.emplace_back(a.hex);
         }
     }
     // Shared transition detection: a hidden contact cannot sound an ordinary
     // arrival alert. Observe motion too, so leaving a keep-out area is detected
     // when the icon actually appears, rather than waiting for another feed poll.
-    const auto arrivals = s_visibleArrivals.observe(visible, s_autoArrivalCardEnabled &&
+    const bool automaticDisplays = s_cardLifetime.automaticDisplaysAllowed();
+    const auto arrivals = s_visibleArrivals.observe(visible, automaticDisplays && s_autoArrivalCardEnabled &&
                                                   (!s_selectMode || s_automaticSelection));
-    if (!s_autoArrivalCardEnabled && s_visibleArrivalCb) {
+    if ((!automaticDisplays || !s_autoArrivalCardEnabled) && s_visibleArrivalCb) {
         for (const auto& hex : arrivals) {
             // A qualifying close pass has its own tone and preview setting.
-            if (s_autoPhotoEnabled && std::find(closePasses.begin(), closePasses.end(), hex) != closePasses.end()) continue;
+            if (automaticDisplays && s_autoPhotoEnabled && std::find(closePasses.begin(), closePasses.end(), hex) != closePasses.end()) continue;
             for (int i = 0; i < (int)s_acs.size(); ++i) {
                 if (hex != s_acs[i].hex) continue;
                 AcInfo in;
@@ -1847,7 +1849,7 @@ static void refresh_visible_arrivals() {
             }
         }
     }
-    s_autoPhoto.observe(closePasses, s_autoPhotoEnabled &&
+    s_autoPhoto.observe(closePasses, automaticDisplays && s_autoPhotoEnabled &&
                         (!s_selectMode || s_automaticSelection || s_autoPhoto.active()), true);
 }
 
@@ -1859,7 +1861,7 @@ static void auto_photo_tick() {
         s_visibleArrivals.reset();
         return;
     }
-    if (!s_autoPhotoEnabled) return;
+    if (!s_cardLifetime.automaticDisplaysAllowed() || !s_autoPhotoEnabled) return;
     const uint32_t now = lv_tick_get();
     const bool starting = !s_autoPhoto.active();
     if (starting) {
@@ -1885,7 +1887,7 @@ static void auto_photo_tick() {
         return;
     }
     if (s_autoPhoto.expired(now)) {
-        close_photo(); // keep the highlight/card; give the returned card its full minimum
+        close_photo(); // keep the highlight/card; give it the configured reading window
         s_autoPhoto.finish();
         ui_on_data_updated();
         return;
@@ -1902,7 +1904,7 @@ static void auto_photo_tick() {
 }
 
 static void arrival_card_tick() {
-    if (!s_autoArrivalCardEnabled || !s_canvasActive || app_shell::browsing() || !s_acLayer || !lv_obj_is_visible(s_acLayer) ||
+    if (!s_cardLifetime.automaticDisplaysAllowed() || !s_autoArrivalCardEnabled || !s_canvasActive || app_shell::browsing() || !s_acLayer || !lv_obj_is_visible(s_acLayer) ||
         s_selectMode || s_photoPanel || s_autoPhoto.active()) return;
     // Existing cards finish before the next arrival takes the screen. Queued
     // aircraft that become hidden are pruned by the shared visibility observer.
@@ -2904,8 +2906,6 @@ void update(const std::vector<Aircraft> &aircraft, const RadarSettings &s) {
         d.vsFpm = ac.baroRate;
         d.gsKt = ac.gs;
         d.distKm = (float)distKm;
-        d.closePass = flight_close_pass::predict(distKm,
-            geo::bearingDeg(ac.lat, ac.lon, s.homeLat, s.homeLon), ac.track, ac.gs);
         d.bearingDeg = (float)brg;
         d.squawk = ac.squawk;
         // millis() and lv_tick_get() are the same clock on-device (lv_conf.h wires LVGL's
@@ -3099,7 +3099,7 @@ void update(const std::vector<Aircraft> &aircraft, const RadarSettings &s) {
 
     s_acs = std::move(out);
     // Retain the latch while a tracked flight remains in range, including while
-    // masked or after its predicted pass drifts across the configured threshold.
+    // masked or after its distance drifts across the configured threshold.
     for (auto it = s_closePassNotified.begin(); it != s_closePassNotified.end();) {
         const bool present = std::any_of(s_acs.begin(), s_acs.end(), [&](const AcDraw& a) {
             return a.inRange && !a.onGround && *it == a.hex;
@@ -3170,7 +3170,8 @@ static bool radar_fmt(char *out, size_t outSz, const char *fmt, const AcInfo &in
     char altS[16], spdS[16], distS[16], hdgS[8], sqkS[8];
     snprintf(altS, sizeof(altS), "%.0f", (double)in.altFt);
     snprintf(spdS, sizeof(spdS), "%.0f", (double)(isnan(in.gsKt) ? 0.0f : in.gsKt));
-    snprintf(distS, sizeof(distS), "%.1f", (double)in.distKm);
+    const bool imperial = host_wx_is_imperial();
+    snprintf(distS, sizeof(distS), "%.1f", (double)flight_distance::value(in.distKm, imperial));
     snprintf(hdgS, sizeof(hdgS), "%.0f", (double)in.bearingDeg);
     if (in.squawk < 0) snprintf(sqkS, sizeof(sqkS), "-");
     else                snprintf(sqkS, sizeof(sqkS), "%04d", in.squawk);
@@ -3189,8 +3190,10 @@ static bool radar_fmt(char *out, size_t outSz, const char *fmt, const AcInfo &in
         { "callsign", in.call[0] ? in.call : "-" }, { "type", in.type },
         { "alt", altS }, { "spd", spdS }, { "dist", distS }, { "hdg", hdgS }, { "sqk", sqkS },
         { "from", rfrom }, { "to", rto },
+        { "distUnit", flight_distance::unit(imperial) },
     };
-    radar_fmt_toks(out, outSz, fmt, toks, sizeof(toks) / sizeof(toks[0]));
+    const std::string distanceFmt = flight_distance::format(fmt);
+    radar_fmt_toks(out, outSz, distanceFmt.c_str(), toks, sizeof(toks) / sizeof(toks[0]));
     return true;
 }
 // The scope-range banner: describes the radar's own configured radius (the
@@ -3535,6 +3538,28 @@ void setAutoArrivalCard(bool enabled) {
 
 bool autoArrivalCard() { return s_autoArrivalCardEnabled; }
 
+flight_display::Options flightDisplayOptions() {
+    return {s_cardLifetime.seconds(), s_cardLifetime.stayVisible(),
+            s_autoArrivalCardEnabled, s_autoPhotoEnabled, s_closePassMiles};
+}
+
+void setFlightDisplayOptions(const flight_display::Options &options) {
+    if (!flight_display::valid(options)) return;
+    // Stop queued/active automatic previews before applying the override. Preserve
+    // the current card when switching to Stay visible, including an automatic card.
+    const bool wasPreview = s_autoPhoto.active();
+    s_autoPhoto.reset();
+    s_visibleArrivals.reset();
+    if (wasPreview && s_photoPanel) close_photo();
+    s_cardLifetime.configure(options.seconds, options.stayVisible, lv_tick_get());
+    s_autoArrivalCardEnabled = options.arrivals;
+    s_autoPhotoEnabled = options.closePasses;
+    s_closePassMiles = options.miles;
+    s_closePassNotified.clear();
+    refresh_visible_arrivals();
+    refresh_custom_text();
+}
+
 void setClosePassMiles(double miles) {
     if (!std::isfinite(miles) || miles < flight_close_pass::MinMiles || miles > flight_close_pass::MaxMiles ||
         miles == s_closePassMiles) return;
@@ -3601,8 +3626,17 @@ void knobExit() {
 
 bool selected(AcInfo &out) {
     if (s_selHex.empty()) return false;
-    for (const AcDraw &a : s_acs)
-        if (s_selHex == a.hex) { fill_info(a, out); return true; }
+    int visibleBlips = 0;
+    for (const AcDraw &a : s_acs) {
+        // A card, including Stay visible, belongs only to a currently visible
+        // flight. Match the view's range, Keep-out Areas and stock Orb blip cap.
+        if (!a.inRange || ac_masked(a)) continue;
+        if (orb() && !customStyled() && visibleBlips++ >= ORB_BLIPS) continue;
+        if (s_selHex == a.hex) {
+            fill_info(a, out);
+            return true;
+        }
+    }
     return false;
 }
 

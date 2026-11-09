@@ -4,6 +4,7 @@
 // phosphor skin only. Everything a theme controls is in theme_style.h.
 #include <vector>
 #include "aircraft.h"
+#include "flight_display_options.h"
 
 struct RadarSettings {
     double homeLat, homeLon;
@@ -83,12 +84,14 @@ void knobPress();
 void knobTurn(int dir);
 void knobExit();
 
-// Highlight predicted close passes, show their photo for three seconds after
+// Highlight flights inside the close-pass radius, show their photo for three seconds after
 // loading, then return to the highlighted flight's route-aware info card.
 void setAutoPhoto(bool enabled);
 bool autoPhoto();
 void setAutoArrivalCard(bool enabled);
 bool autoArrivalCard();
+void setFlightDisplayOptions(const flight_display::Options &options);
+flight_display::Options flightDisplayOptions();
 void setClosePassMiles(double miles);
 double closePassMiles();
 void setClosePassCb(void (*cb)(const AcInfo&));
@@ -113,8 +116,8 @@ void flashThemeName();                           // briefly show the current the
 void setThemeChangedCb(void (*cb)(int theme));   // called when the theme changes (for persistence)
 void setRangeLabelVisible(bool v);               // hide the built-in range label (UI shows its own)
 
-// Route lookup completed (including an unavailable result). Allow at least
-// three reading seconds after completion, while retaining the ten-second minimum.
+// Route lookup completed (including an unavailable result). Start the configured
+// reading window; Stay visible keeps the card until manual selection or app exit.
 void noteSelectionDetailArrived();
 
 // Retune the sweep timer at runtime. Frame pacing is a measured tradeoff between rate and

@@ -16,6 +16,7 @@ static inline void  heap_caps_free(void *p) { free(p); }
 #include "app_theme.h"
 #include "radar_view.h"
 #include "custom_radar.h"     // CUSTOM_HAS_RADAR_STYLE — a pushed design's own banners replace this card
+#include "flight_distance.h"
 #include "route.h"
 #include "photo.h"
 #include "weather.h"
@@ -151,7 +152,7 @@ static lv_obj_t *s_fcDayTemp[3] = { nullptr, nullptr, nullptr };
 static lv_obj_t *s_fcDayRain[3] = { nullptr, nullptr, nullptr };
 
 // --------------------------------------------------------------------- units
-// 0 = Aviation (ft, kt, km) · 1 = Metric (m, km/h, km) · 2 = Imperial (ft, mph, mi).
+// Legacy web preset: 0 = Aviation (ft, kt, nm), 1 = Metric, 2 = Imperial.
 // The feed gives altitude in ft, speed in kt, vertical speed in fpm, distance in km.
 static int s_units = 0;
 void ui_set_units(int u) { s_units = (u < 0 || u > 2) ? 0 : u; }
@@ -188,9 +189,8 @@ static float dist_val(float km) {
 }
 static const char *dist_unit(void) { return s_units == 0 ? "nm" : (s_units == 2 ? "mi" : "km"); }
 
-// Weather units are independent of s_units above: that preset also drives the aircraft
-// ALT/SPD/DIST readout (and includes an Aviation nm/kt mode that makes no sense for a
-// weather forecast), so weather gets its own metric/imperial flag instead of sharing it.
+// Settings > Units drives weather and flight card distance. The legacy web preset
+// above still controls aircraft altitude/speed and the nearest-airport readout.
 // Resolved on the host side (main.cpp) from either the saved manual choice or, in
 // Automatic mode, the home location — see host_wx_units_set()/is_imperial_region().
 static bool s_wxImperial = false;
@@ -290,7 +290,8 @@ static void refresh_card(void) {
     else                        snprintf(sqS, sizeof(sqS), "%04d", in.squawk);
 
     char left[96], right[96];
-    snprintf(left,  sizeof(left),  "ALT  %s\nSPD  %s\nDIST %.1f %s", altS, spdS, dist_val(in.distKm), dist_unit());
+    snprintf(left,  sizeof(left),  "ALT  %s\nSPD  %s\nDIST %.1f %s", altS, spdS,
+             flight_distance::value(in.distKm, s_wxImperial), flight_distance::unit(s_wxImperial));
     snprintf(right, sizeof(right), "V/S  %s\nHDG  %03.0f\nSQK  %s", vsS, in.bearingDeg, sqS);
     lv_label_set_text(s_cardL, left);
     lv_label_set_text(s_cardR, right);

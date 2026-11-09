@@ -18,6 +18,15 @@ Rules for a section, all of them learned from what reads badly on that card:
 
 ---
 
+## 2.18.10
+
+- Flight card distance and Settings > Range follow your selected units, including Auto mode
+- Set card duration after route lookup completes, with a five-second default and grouped flight display options at theorb.local
+- Stay visible pauses automatic displays until you choose another flight, the aircraft leaves the current view/range, or you leave Flight Tracker
+- Close-pass alerts wait until aircraft actually enter your configured radius
+
+---
+
 ## 2.18.09
 
 - Choose whether newly visible aircraft automatically open their info card under Flight Tracker Options at theorb.local

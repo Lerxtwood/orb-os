@@ -43,6 +43,7 @@ jobs:
         run: |
           node --test tools/companion/test_layout.mjs
           python tools/companion/test_release.py
+          python tools/test_flight_options.py
           g++ -std=c++17 -O2 -UNDEBUG -Itests/curved_text_stubs -Isrc tests/rotated_text_test.cpp src/curved_text.cpp -o /tmp/test_rotated_text
           /tmp/test_rotated_text
           g++ -std=c++17 -O2 -UNDEBUG -Itools/companion/wifi_test_stubs -Itools/companion tools/companion/test_orb_wifi.cpp -o /tmp/test_orb_wifi
@@ -61,6 +62,8 @@ jobs:
           /tmp/test_flight_auto_photo
           g++ -std=c++17 -O2 -UNDEBUG -Isrc tests/flight_card_lifetime_test.cpp -o /tmp/test_flight_card_lifetime
           /tmp/test_flight_card_lifetime
+          g++ -std=c++17 -O2 -UNDEBUG -Isrc tests/flight_distance_test.cpp src/text_tokens.cpp -o /tmp/test_flight_distance
+          /tmp/test_flight_distance
       - name: Validate and stamp release version
         id: version
         env:

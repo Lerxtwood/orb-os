@@ -1820,21 +1820,52 @@ static void handleFlightOptions() {
         "Multiples of 90 degrees render faster; other angles may reduce animation smoothness.</small>"
         "</form></div>", g_flightRotation);
     g_web.sendContent(flight, strlen(flight));
-    g_web.sendContent_P(PSTR("<div class=card><form method=POST action=/flight-arrival-card>"
-        "<label><input type=checkbox name=enabled value=1 aria-describedby=arrivalCardDescription "));
+    const auto displayOptions = radar::flightDisplayOptions();
+    g_web.sendContent_P(PSTR(
+        "<style>.flight-display h2{font-size:20px;margin:0 0 18px}"
+        ".flight-display fieldset{border:0;border-top:1px solid #e0e0df;padding:18px 0 0;margin:18px 0 0;min-width:0}"
+        ".flight-display legend{font-weight:600;padding-right:10px}"
+        ".flight-display label{display:block;margin:12px 0;line-height:1.5}"
+        ".flight-display small{margin:6px 0 14px}"
+        ".flight-display input[type=number]{width:90px;padding:6px;font:inherit}"
+        ".flight-display button{padding:10px 14px;font:inherit}"
+        ".flight-display .override{padding:12px;border-radius:8px;background:#f5f5f4}"
+        "</style><section class='card flight-display' aria-labelledby=flightDisplayTitle>"
+        "<h2 id=flightDisplayTitle>Flight cards &amp; automatic displays</h2>"
+        "<form method=POST action=/flight-display-options>"
+        "<fieldset><legend>How long cards stay visible</legend>"
+        "<label><input type=radio name=cardMode value=timed "));
+    if (!displayOptions.stayVisible) g_web.sendContent_P(PSTR("checked "));
+    g_web.sendContent_P(PSTR("> Hide after the route lookup finishes</label>"
+        "<label for=cardSeconds>Seconds to keep the card visible</label>"));
+    char duration[180];
+    snprintf(duration, sizeof(duration),
+        "<input id=cardSeconds name=seconds type=number min=1 max=3600 step=1 required value='%lu' aria-describedby=cardTimingHelp>",
+        (unsigned long)displayOptions.seconds);
+    g_web.sendContent(duration, strlen(duration));
+    g_web.sendContent_P(PSTR(
+        "<small id=cardTimingHelp>1&ndash;3600 seconds. The countdown starts when the route is found or the lookup finishes without a route. "
+        "For a flight without a callsign, it starts when the card opens.</small>"
+        "<label><input type=radio name=cardMode value=stay "));
+    if (displayOptions.stayVisible) g_web.sendContent_P(PSTR("checked "));
+    g_web.sendContent_P(PSTR("> Stay visible until I choose another flight or the aircraft leaves the current view / selected range</label>"
+        "<small class=override>Stay visible pauses automatic cards for new aircraft and close-pass photos and alerts. "
+        "Your choices below are saved and resume in timed mode. Ordinary arrival sounds still follow your sound settings. "
+        "Leaving Flight Tracker clears the card.</small></fieldset>"
+        "<fieldset><legend>New aircraft</legend>"
+        "<label><input type=checkbox name=arrivals value=1 aria-describedby=arrivalCardDescription "));
     if (radar::autoArrivalCard()) g_web.sendContent_P(PSTR("checked "));
     g_web.sendContent_P(PSTR("> Automatically show flight info for new aircraft</label>"
         "<small id=arrivalCardDescription>Highlight newly visible aircraft and open their flight info card automatically. "
-        "Turn off to keep arrival sounds without opening a card. Close-pass alerts have their own setting below.</small>"
-        "<p><button type=submit>Save arrival option</button></p></form></div>"));
-    g_web.sendContent_P(PSTR("<div class=card><form method=POST action=/flight-close-pass>"
-        "<label><input type=checkbox name=enabled value=1 aria-describedby=autoPhotoDescription "));
+        "Turn off to keep arrival sounds without opening a card.</small></fieldset>"
+        "<fieldset><legend>Close passes</legend>"
+        "<label><input type=checkbox name=closePasses value=1 aria-describedby=autoPhotoDescription "));
     if (radar::autoPhoto()) g_web.sendContent_P(PSTR("checked "));
-    g_web.sendContent_P(PSTR("> Alert and show image for predicted close passes</label>"
-        "<small id=autoPhotoDescription>For visible flights predicted to pass within the distance below "
-        "in the next 15 minutes, play a lower-pitched tone, highlight the flight, and show its airplane "
+    g_web.sendContent_P(PSTR("> Alert and show image when a flight enters the close-pass radius</label>"
+        "<small id=autoPhotoDescription>When a visible airborne flight actually enters the distance below, "
+        "play a lower-pitched tone, highlight the flight, and show its airplane "
         "image for 3 seconds after loading, then return to its highlighted flight info card. "
-        "Estimates assume its current ground track and speed stay the same. "
+        "Flights already inside the radius can qualify when you open Flight Tracker or enable this option. "
         "Sound follows the Orb's flight-sound and mute settings.</small>"));
     char closePass[320];
     snprintf(closePass, sizeof(closePass),
@@ -1843,7 +1874,8 @@ static void handleFlightOptions() {
         "<small>Distance from your current location, in ordinary miles (not nautical miles).</small>",
         radar::closePassMiles());
     g_web.sendContent(closePass, strlen(closePass));
-    g_web.sendContent_P(PSTR("<p><button type=submit>Save close-pass options</button></p></form></div></body></html>"));
+    g_web.sendContent_P(PSTR("</fieldset><p><button type=submit>Save flight display options</button></p>"
+        "</form></section></body></html>"));
     g_web.sendContent("", 0);
 }
 
@@ -2396,26 +2428,61 @@ static void handleFlightRotation() {
     g_web.send(303, "text/plain", "Flight Tracker rotation saved.");
 }
 
+static bool saveFlightDisplayOptions(const flight_display::Options &options) {
+    Preferences p;
+    if (!p.begin("capsuleradar", false)) {
+        g_web.send(500, "text/plain", "Could not open settings storage.");
+        return false;
+    }
+    const bool saved = p.putUInt("flightDisplay", flight_display::pack(options)) == sizeof(uint32_t);
+    p.end();
+    if (!saved) {
+        g_web.send(500, "text/plain", "Could not save flight display options. Please try again.");
+        return false;
+    }
+    radar::setFlightDisplayOptions(options);
+    g_web.sendHeader("Location", "/flight-tracker-options");
+    g_web.send(303, "text/plain", "Flight display options saved.");
+    return true;
+}
+
+static void handleFlightDisplayOptions() {
+    auto options = radar::flightDisplayOptions();
+    const String mode = g_web.arg("cardMode");
+    if (mode != "timed" && mode != "stay") {
+        g_web.send(400, "text/plain", "Choose a card display mode.");
+        return;
+    }
+    if (!flight_display::parseSeconds(g_web.arg("seconds").c_str(), options.seconds)) {
+        g_web.send(400, "text/plain", "Enter a whole number of seconds from 1 to 3600.");
+        return;
+    }
+    if ((g_web.hasArg("arrivals") && g_web.arg("arrivals") != "1") ||
+        (g_web.hasArg("closePasses") && g_web.arg("closePasses") != "1")) {
+        g_web.send(400, "text/plain", "Invalid automatic display option.");
+        return;
+    }
+    const String distance = g_web.arg("miles");
+    char *end = nullptr;
+    options.miles = strtod(distance.c_str(), &end);
+    if (end == distance.c_str() || *end != '\0' || !flight_close_pass::validMiles(options.miles)) {
+        g_web.send(400, "text/plain", "Enter a distance from 0.1 to 100 miles in steps of 0.1.");
+        return;
+    }
+    options.stayVisible = mode == "stay";
+    options.arrivals = g_web.hasArg("arrivals");
+    options.closePasses = g_web.hasArg("closePasses");
+    saveFlightDisplayOptions(options);
+}
+
 static void handleFlightArrivalCard() {
     if (g_web.hasArg("enabled") && g_web.arg("enabled") != "1") {
         g_web.send(400, "text/plain", "Invalid arrival card option.");
         return;
     }
-    const bool enabled = g_web.hasArg("enabled");
-    Preferences p;
-    if (!p.begin("capsuleradar", false)) {
-        g_web.send(500, "text/plain", "Could not open settings storage.");
-        return;
-    }
-    const bool saved = p.putBool("flightCards", enabled) == sizeof(uint8_t);
-    p.end();
-    if (!saved) {
-        g_web.send(500, "text/plain", "Could not save arrival card option. Please try again.");
-        return;
-    }
-    radar::setAutoArrivalCard(enabled);
-    g_web.sendHeader("Location", "/flight-tracker-options");
-    g_web.send(303, "text/plain", "Flight Tracker arrival card option saved.");
+    auto options = radar::flightDisplayOptions();
+    options.arrivals = g_web.hasArg("enabled");
+    saveFlightDisplayOptions(options);
 }
 
 static void handleFlightClosePass() {
@@ -2432,21 +2499,10 @@ static void handleFlightClosePass() {
         g_web.send(400, "text/plain", "Enter a distance from 0.1 to 100 miles in steps of 0.1.");
         return;
     }
-    Preferences p;
-    if (!p.begin("capsuleradar", false)) {
-        g_web.send(500, "text/plain", "Could not open settings storage.");
-        return;
-    }
-    const bool saved = p.putUInt("flightClose", flight_close_pass::packOptions(miles, enabled)) == sizeof(uint32_t);
-    p.end();
-    if (!saved) {
-        g_web.send(500, "text/plain", "Could not save close-pass options. Please try again.");
-        return;
-    }
-    radar::setAutoPhoto(enabled);
-    radar::setClosePassMiles(miles);
-    g_web.sendHeader("Location", "/flight-tracker-options");
-    g_web.send(303, "text/plain", "Flight Tracker close-pass options saved.");
+    auto options = radar::flightDisplayOptions();
+    options.closePasses = enabled;
+    options.miles = miles;
+    saveFlightDisplayOptions(options);
 }
 
 #if ORB_OTA_ENABLED
@@ -3038,9 +3094,12 @@ void setup() {
         g_flightRotation = constrain(p.getInt("flightRot", 0), 0, 359);
         const uint32_t closePass = p.getUInt("flightClose", flight_close_pass::packOptions(
             flight_close_pass::DefaultMiles, p.getBool("flightPhoto", false)));
-        radar::setClosePassMiles(flight_close_pass::unpackMiles(closePass));
-        radar::setAutoPhoto(flight_close_pass::unpackEnabled(closePass));
-        radar::setAutoArrivalCard(p.getBool("flightCards", false));
+        flight_display::Options legacyDisplay;
+        legacyDisplay.miles = flight_close_pass::unpackMiles(closePass);
+        legacyDisplay.closePasses = flight_close_pass::unpackEnabled(closePass);
+        legacyDisplay.arrivals = p.getBool("flightCards", false);
+        radar::setFlightDisplayOptions(flight_display::unpack(
+            p.getUInt("flightDisplay", flight_display::pack(legacyDisplay))));
         p.end();
         if (!migratedV2) {
             switch (t) {                     // old numbering -> new (see comment above)
@@ -3763,6 +3822,7 @@ void setup() {
     g_web.on("/flight-tracker-options", HTTP_GET, handleFlightOptions);
     g_web.on("/flight-close-pass", HTTP_POST, handleFlightClosePass);
     g_web.on("/flight-arrival-card", HTTP_POST, handleFlightArrivalCard);
+    g_web.on("/flight-display-options", HTTP_POST, handleFlightDisplayOptions);
     g_web.on("/units", handleUnits);
 #if ORB_OTA_ENABLED
     g_web.on("/update", HTTP_GET, handleUpdatePage);

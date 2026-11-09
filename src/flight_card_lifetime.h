@@ -1,14 +1,22 @@
 #pragma once
 #include <cstdint>
+#include "flight_display_options.h"
 
-// The card must satisfy both its minimum reading time and the reading time
-// after route completion. Cached routes and completed misses count as finished.
+// The countdown begins after route completion (including a completed miss).
+// Cached routes and flights without a callsign begin their countdown immediately.
 class FlightCardLifetime {
 public:
-    static constexpr uint32_t MinimumMs = 10000;
-    static constexpr uint32_t RouteReadingMs = 3000;
+    void configure(uint32_t seconds, bool stayVisible, uint32_t now) {
+        if (!flight_display::validSeconds(seconds)) return;
+        durationSeconds = seconds;
+        pinned = stayVisible;
+        resume(now);
+    }
+    uint32_t seconds() const { return durationSeconds; }
+    bool stayVisible() const { return pinned; }
+    bool automaticDisplaysAllowed() const { return !pinned; }
     void begin(uint32_t now, bool needsRoute) {
-        visibleSince = completedAt = now;
+        completedAt = now;
         complete = !needsRoute;
     }
     void routeFinished(uint32_t now) {
@@ -17,12 +25,13 @@ public:
         completedAt = now;
     }
     void routeStarted() { complete = false; }
-    void resume(uint32_t now) { visibleSince = now; }
+    void resume(uint32_t now) { if (complete) completedAt = now; }
     bool expired(uint32_t now) const {
-        return complete && uint32_t(now - visibleSince) >= MinimumMs &&
-               uint32_t(now - completedAt) >= RouteReadingMs;
+        return !pinned && complete && uint32_t(now - completedAt) >= durationSeconds * 1000u;
     }
 private:
-    uint32_t visibleSince = 0, completedAt = 0;
+    uint32_t completedAt = 0;
+    uint32_t durationSeconds = flight_display::DefaultSeconds;
+    bool pinned = false;
     bool complete = true;
 };

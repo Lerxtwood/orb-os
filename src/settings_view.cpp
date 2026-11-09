@@ -1,4 +1,5 @@
 #include "settings_view.h"
+#include "flight_distance.h"
 #include "app_shell.h"
 #include "app_theme.h"
 #include "theme_select.h"   // which Launch Kit design (of however many are installed on the SD card) is active
@@ -816,7 +817,10 @@ namespace {
 
     void refresh_range() {
         char b[36];
-        snprintf(b, sizeof(b), "Range   %.0f km", (double)host_get_range_km());
+        const bool imperial = host_wx_is_imperial();
+        snprintf(b, sizeof(b), "Range   %.0f %s",
+                 (double)flight_distance::value(host_get_range_km(), imperial),
+                 flight_distance::unit(imperial));
         lv_label_set_text(s_rangeItems[RNG_VALUE], b);
         lv_label_set_text(s_rangeItems[RNG_BACK], "Back");
         wheel_layout(s_rangeItems, RNG_COUNT, s_rangeSel, s_rangeHl);

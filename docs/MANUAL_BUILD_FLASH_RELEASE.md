@@ -5,7 +5,7 @@ Reference for **Orb OS + PrintSphere** on the 16 MB ESP32-S3 AMOLED 1.75, using 
 - Repository: https://github.com/Lerxtwood/orb-os
 - Web installer: https://lerxtwood.github.io/orb-os/
 - Working directory: `D:\git\Arduino\orb-os`
-- Example device port: `COM5`
+- Device port: `COM6`
 
 Run commands section by section. Stop on errors; do not flash an old binary after a failed build.
 
@@ -17,7 +17,7 @@ For a public release without a local device test, follow sections **1, 5, 6, 7, 
 Set-Location D:\git\Arduino\orb-os
 $ErrorActionPreference = 'Stop'
 $orbPython = Join-Path $PWD '.pio\build-venv\Scripts\python.exe'
-$devicePort = 'COM5'
+$devicePort = 'COM6'
 
 git status -sb
 git remote -v
@@ -66,7 +66,14 @@ Wait for `SUCCESS`. The output is:
 .pio\build\esp32-s3-amoled-175-companion\firmware.bin
 ```
 
-Normal incremental builds are sufficient. If you need a clean rebuild:
+Normal incremental builds are sufficient. Use the same project `$orbPython` and
+companion target for both manual and agent validation builds so they reuse each
+other's outputs. The existing project environment uses Python 3.12; switching to
+the global PlatformIO environment's Python 3.11 uses a separate dependency
+database and can cause a full rebuild even with the same target. Preserve the
+existing environment and build directory for routine builds.
+
+If you need a clean rebuild:
 
 ```powershell
 & $orbPython -m platformio run -e esp32-s3-amoled-175-companion -t clean

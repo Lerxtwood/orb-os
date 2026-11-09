@@ -6,28 +6,25 @@
 
 int main() {
     using namespace flight_close_pass;
-    const auto inbound = predict(50, 180, 180, 250);
-    assert(inbound.within(5));
-    assert(std::abs(inbound.distanceKm) < 0.000001);
-    assert(std::abs(inbound.seconds - 50 / (250 * 1.852) * 3600) < 0.001);
-    assert(!predict(50, 180, 0, 250).within(5)); // same position, flying away
-    assert(!predict(50, 180, 90, 250).within(5)); // crossing too far from home
-    assert(!predict(200, 180, 180, 250).within(5)); // closest point beyond 15 minutes
-    assert(predict(50, 180, 185, 250).within(5)); // small predicted miss still qualifies
-    const auto offset = predict(50, 180, 190, 250);
-    assert(!offset.within(5)); // about 8.68 km is outside 5 ordinary miles
-    assert(offset.within(6)); // changing n changes eligibility
-    assert(predict(1, 180, 180, 100).within(1)); // already close and approaching
-    assert(!predict(1, 180, 0, 100).within(1)); // already close but departing
-    assert(predict(50, 0, 360, 250).within(5)); // north wraparound
-    assert(predict(50, 359, 1, 250).within(5));
-    assert(!predict(50, 180, NAN, 250).within(5));
-    assert(!predict(50, 180, 180, NAN).within(5));
-    assert(!predict(50, 180, 180, 0).within(5));
-    assert(!predict(NAN, 180, 180, 250).within(5));
-    assert(!predict(-1, 180, 180, 250).within(5));
-    assert(!predict(50, 180, -1, 250).within(5));
-    assert(!inbound.within(NAN));
+    assert(!withinDistance(50, 5)); // an eventual flyover must not trigger early
+    assert(!withinDistance(5 * KmPerMile + 0.001, 5));
+    assert(withinDistance(5 * KmPerMile, 5)); // entering the radius triggers
+    assert(withinDistance(5 * KmPerMile - 0.001, 5));
+    assert(withinDistance(1, 1)); // current distance needs no heading or speed
+    assert(!withinDistance(8.68, 5));
+    assert(withinDistance(8.68, 6)); // changing the radius changes eligibility
+    assert(withinDistance(0, 0.1));
+    assert(!withinDistance(NAN, 5));
+    assert(!withinDistance(-1, 5));
+    assert(!withinDistance(std::numeric_limits<double>::infinity(), 5));
+    assert(!withinDistance(1, NAN));
+    assert(!withinDistance(1, 0));
+
+    // Feed updates: no notification while approaching outside the radius,
+    // then qualification at entry, and no qualification again after leaving.
+    for (double km : {30.0, 20.0, 10.0, 8.1}) assert(!withinDistance(km, 5));
+    for (double km : {8.0, 5.0, 1.0}) assert(withinDistance(km, 5));
+    assert(!withinDistance(8.1, 5));
 
     assert(validMiles(0.1) && validMiles(5) && validMiles(100));
     assert(!validMiles(0) && !validMiles(100.1) && !validMiles(0.15));
