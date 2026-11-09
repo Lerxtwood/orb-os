@@ -22,6 +22,11 @@
       <label for="release">Firmware release</label>
       <select id="release" disabled><option>Loading releases…</option></select>
       <p id="release-note" class="note">Both firmwares are included in each release.</p>
+      <details id="release-notes" hidden>
+        <summary id="release-notes-title">Release notes</summary>
+        <div id="release-notes-body" class="release-notes-copy" aria-live="polite"></div>
+        <p class="note"><a id="release-notes-link" target="_blank" rel="noopener noreferrer">View this release on GitHub ↗</a></p>
+      </details>
       <div class="buttons"><button id="connect" disabled>Connect device</button><button id="disconnect" class="secondary" hidden>Disconnect</button></div>
       <p id="status" role="status" aria-live="polite">Loading available GitHub releases…</p>
       <div id="ready" hidden>

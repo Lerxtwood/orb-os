@@ -16,6 +16,55 @@ const companion = table([['nvs',1,2,0x9000,0x5000],['otadata',1,0,0xE000,0x2000]
   ['ota_1',0,17,0xAD0000,0x400000],['ps_nvs',1,2,0xED0000,0x80000],
   ['sounds',1,131,0xF50000,0xA0000],['coredump',1,3,0xFF0000,0x10000]]);
 const files = Object.fromEntries(Object.entries(PARTS).map(([name, [, size]]) => [name, new Uint8Array(size)]));
+
+test('release notes follow the selection without connecting or rendering release HTML', async () => {
+  const {readFile} = await import('node:fs/promises');
+  const vm = await import('node:vm');
+  const source = (await readFile(new URL('../../web/companion/installer.mjs', import.meta.url), 'utf8'))
+    .replace(/^import .*?;\s*/, '');
+  const entries = [
+    {tag:'v2.18.10-companion', notes:'## Flight cards\n\n- Five-second default',
+      releaseUrl:'https://github.com/Lerxtwood/orb-os/releases/tag/v2.18.10-companion'},
+    {tag:'v2.18.09-companion', notes:'Earlier arrival controls'},
+    {tag:'v2.18.07-companion'},
+    {tag:'v2.18.04-companion', notes:'<img src=x onerror=alert(1)>', releaseUrl:'javascript:alert(1)'},
+  ];
+  const nodes = new Map();
+  const element = id => {
+    if (!nodes.has(id)) nodes.set(id, {value:'0', textContent:'', listeners:{}, classList:{toggle() {}},
+      replaceChildren(...children) { this.children = children; }, closest:() => element('details'),
+      addEventListener(name, callback) { this.listeners[name] = callback; }});
+    return nodes.get(id);
+  };
+  let fetches = 0;
+  await vm.runInNewContext('(async () => {' + source + '})()', {
+    document:{getElementById:element, createElement:tagName => ({tagName})},
+    navigator:{}, window:{addEventListener() {}}, ResizeObserver:class { observe() {} }, URL,
+    require:(ok, message) => { if (!ok) throw Error(message); },
+    fetch:async url => {
+      assert.equal(url, 'release-index.json'); ++fetches;
+      return {ok:true, json:async () => entries};
+    },
+  });
+  assert.equal(element('release-notes').hidden, false);
+  assert.match(element('release-notes-title').textContent, /v2\.18\.10-companion/);
+  assert.equal(element('release-notes-body').children[0].tagName, 'h3');
+  assert.equal(element('release-notes-body').children[1].textContent, '• Five-second default');
+  element('release-notes').open = true;
+  for (let index = 1; index < entries.length; ++index) {
+    element('release').value = String(index);
+    element('release').listeners.change();
+    assert.equal(element('release-notes').open, true);
+    assert.ok(element('release-notes-title').textContent.includes(entries[index].tag));
+    assert.equal(element('release-notes-link').href,
+      'https://github.com/Lerxtwood/orb-os/releases/tag/' + entries[index].tag);
+    if (index === 1) assert.equal(element('release-notes-body').children[0].textContent, 'Earlier arrival controls');
+    if (index === 2) assert.match(element('release-notes-body').children[0].textContent, /available on GitHub/);
+  }
+  assert.equal(element('release-notes-body').children[0].tagName, 'p');
+  assert.equal(element('release-notes-body').children[0].textContent, '<img src=x onerror=alert(1)>');
+  assert.equal(fetches, 1); // release selection never downloads firmware or contacts GitHub
+});
 test('identifies exact standalone, companion, blank, and foreign layouts', () => {
   assert.equal(identifyLayout(original), 'orb'); assert.equal(identifyLayout(companion), 'companion');
   assert.equal(identifyLayout(new Uint8Array(4096).fill(255)), 'blank');

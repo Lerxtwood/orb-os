@@ -349,6 +349,10 @@ Both the `release` job and `pages / deploy` job must succeed. Attach notes after
 
 Editing release notes replaces the generated body. Keep the installer link, hardware requirements, and installation instructions your users need in your notes.
 
+The installer mirrors each release's notes when it deploys. After editing notes
+on GitHub, redeploy the installer using section 10 to refresh its inline copy.
+The selected release's GitHub link always opens the current notes.
+
 ## 8. Verify the live installer
 
 Open https://lerxtwood.github.io/orb-os/ and confirm your new version appears. The public assets are:

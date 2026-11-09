@@ -6,7 +6,8 @@ import re
 from pathlib import Path
 import tempfile
 import unittest
-from build_site import mirror, validate, version_assets, ROOT
+from build_site import build, mirror, validate, version_assets, ROOT
+from unittest.mock import patch
 from release_assets import FILES
 
 
@@ -54,6 +55,29 @@ class ReleaseTests(unittest.TestCase):
     def test_rejects_modified_download(self):
         with tempfile.TemporaryDirectory() as temp, self.assertRaises(ValueError):
             mirror(Path(temp), 'v1.2.3', json.dumps(self.manifest).encode(), lambda _: b'bad')
+
+    def test_site_mirrors_notes_for_each_selected_release(self):
+        notes = '## Flight cards\n\n- Five-second default\n\n<script>untrusted text</script>'
+        assets = [{'name': name, 'url': 'https://assets.test/' + name}
+                  for name in ['companion-release.json', *FILES]]
+        releases = [{'tag_name': tag, 'body': body, 'draft': False, 'prerelease': False, 'assets': assets}
+                    for tag, body in [('v1.2.4-companion', notes), ('v1.2.3-companion', None)]]
+
+        def fetch(url, *args, **kwargs):
+            if '/releases?' in url:
+                return json.dumps(releases).encode()
+            if url.endswith('/companion-release.json'):
+                return json.dumps(self.manifest).encode()
+            return self.payload
+
+        with tempfile.TemporaryDirectory() as temp, patch('build_site.request', side_effect=fetch):
+            site = Path(temp)
+            build(site, 'Lerxtwood/orb-os')
+            index = json.loads((site / 'release-index.json').read_text())
+            self.assertEqual(index[0]['notes'], notes)
+            self.assertEqual(index[0]['releaseUrl'], 'https://github.com/Lerxtwood/orb-os/releases/tag/v1.2.4-companion')
+            self.assertEqual(index[1]['notes'], '')
+            self.assertIn('v1.2.3-companion', index[1]['releaseUrl'])
 
     def test_rejects_path_traversal(self):
         with tempfile.TemporaryDirectory() as temp, self.assertRaises(ValueError):

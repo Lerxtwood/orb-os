@@ -20,6 +20,30 @@ const log = message => {
 };
 function status(message, error = false) { $('status').textContent = message; $('status').classList.toggle('error', error); }
 function progress(value) { $('progress').hidden = false; $('progress').value = value; }
+function updateReleaseNotes() {
+  const entry = releases[Number($('release').value)];
+  $('release-notes').hidden = !entry;
+  if (!entry) return;
+  $('release-notes-title').textContent = 'Release notes · ' + entry.tag;
+  // Use text nodes for public release content; never insert release HTML.
+  const notes = typeof entry.notes === 'string' && entry.notes.trim()
+    ? entry.notes : 'Release notes are available on GitHub using the link below.';
+  const blocks = notes.replace(/\r\n/g, '\n').split(/\n\s*\n/).filter(block => block.trim());
+  $('release-notes-body').replaceChildren(...blocks.map(block => {
+    const heading = /^#{1,6}\s+/.test(block);
+    const node = document.createElement(heading ? 'h3' : 'p');
+    node.textContent = block.replace(/^#{1,6}\s+/gm, '')
+      .replace(/^[-*] /gm, '• ').replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/`([^`]+)`/g, '$1');
+    return node;
+  }));
+  const fallback = 'https://github.com/Lerxtwood/orb-os/releases/tag/' + encodeURIComponent(entry.tag);
+  let releaseUrl;
+  try { releaseUrl = new URL(entry.releaseUrl || fallback); } catch { releaseUrl = new URL(fallback); }
+  $('release-notes-link').href = releaseUrl.protocol === 'https:' && releaseUrl.hostname === 'github.com'
+    ? releaseUrl.href : fallback;
+}
+$('release').addEventListener('change', updateReleaseNotes);
 function lock(value) {
   busy = value;
   $('connect').disabled = value || !!loader || !releases.length || !('serial' in navigator);
@@ -215,6 +239,7 @@ try {
     option.textContent = release.tag + (index === 0 ? ' · Latest' : '') + (release.prerelease ? ' · Preview' : '');
     return option;
   }));
+  updateReleaseNotes();
   status('Choose a release, then connect your device.');
 } catch (error) { status(error.message, true); }
 if (!('serial' in navigator)) {

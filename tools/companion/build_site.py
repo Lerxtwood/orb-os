@@ -45,6 +45,11 @@ def mirror(site, tag, manifest_bytes, fetch):
     return {'tag': tag, 'manifest': f'releases/{tag}/companion-release.json'}
 
 
+def release_details(repository, tag, notes=None):
+    return {'notes': notes if isinstance(notes, str) else '',
+            'releaseUrl': f'https://github.com/{repository}/releases/tag/{tag}'}
+
+
 def version_assets(site):
     """Give each UI bundle immutable URLs, including its imported layout module."""
     def publish(name, data):
@@ -72,6 +77,7 @@ def build(site, repository, limit=8, local=None, tag=None):
         require(bool(tag), '--tag is required with --local')
         entries.append(mirror(site, tag, (local / 'companion-release.json').read_bytes(),
                               lambda name: (local / name).read_bytes()))
+        entries[-1].update(release_details(repository, tag))
     else:
         token = os.environ.get('GH_TOKEN') or os.environ.get('GITHUB_TOKEN')
         releases = json.loads(request(f'https://api.github.com/repos/{repository}/releases?per_page=100', token))
@@ -85,6 +91,7 @@ def build(site, repository, limit=8, local=None, tag=None):
             fetch = lambda name: request(assets[name], token, binary=True)
             entry = mirror(site, release['tag_name'], fetch('companion-release.json'), fetch)
             entry['prerelease'] = release['prerelease']
+            entry.update(release_details(repository, release['tag_name'], release.get('body')))
             entries.append(entry)
             if len(entries) >= limit:
                 break
