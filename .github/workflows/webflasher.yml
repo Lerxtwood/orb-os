@@ -45,6 +45,7 @@ jobs:
           g++ -std=c++17 -O2 -UNDEBUG -Isrc tests/flight_card_lifetime_test.cpp -o /tmp/test_flight_card_lifetime
           /tmp/test_flight_card_lifetime
           python tools/test_flight_options.py
+          python tools/test_timezone.py
           g++ -std=c++17 -O2 -UNDEBUG -Isrc tests/flight_distance_test.cpp src/text_tokens.cpp -o /tmp/test_flight_distance
           /tmp/test_flight_distance
       - name: Install PlatformIO

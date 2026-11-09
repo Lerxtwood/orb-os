@@ -37,6 +37,7 @@
 #include "theme_pull.h"      // USB serial command channel: how a browser (Orb Studio) talks to this device
 #include "custom_weld.h"   // CUSTOM_WELD_HASH — lets a push tell whether new firmware is needed
 #include "orb_time.h"      // one honest read of the wall clock; NOT Arduino's retrying getLocalTime
+#include "timezone_rules.h"
 #include "theme_style.h"   // per-theme app roster (theme_style::apps())
 #include "clock_wind.h"    // the clock's virtual mainspring, THEME_CAPS 37
 #include "wind_notice.h"   // ...and the panel that asks for it
@@ -194,6 +195,8 @@ static int g_sdUpCount = 0;
 static String                g_pendingSlug;
 static volatile uint32_t     g_applySlugAtMs = 0;                       // !=0: reboot when millis() reaches it (clean start after WiFi config)
 static String                g_tz = TZ_STR;                          // POSIX timezone (web-configurable, NVS); applied via configTzTime
+static bool                  g_tzAuto = true;
+static String                g_tzName; // automatic location's IANA timezone; POSIX rules are stored in g_tz
 // The name of wherever the Orb is, as the person who set it would say it ("Leeds, Utah").
 // Beside g_tz because it is loaded in the same block and for the same reason: both are what
 // a position MEANS rather than the position itself. Empty until something names it, which is
@@ -210,7 +213,7 @@ static volatile bool         g_tickerDirty = false;     // quotes: a fresh set i
 // handler maps it back to the POSIX string stored in NVS and used by configTzTime at boot.
 // (Index avoids putting POSIX strings with '<>' / ',' into HTML attributes.)
 // offMin = standard (winter) UTC offset in minutes; dst = 1 if the zone observes DST.
-// The web page uses these to auto-pick the visitor's zone from their browser clock.
+// Automatic mode resolves the saved coordinates; these are explicit manual presets.
 static const struct { const char *label; const char *tz; int offMin; int dst; } TZOPTS[] = {
     {"UTC",                      "UTC0",                              0, 0},
     {"London / Lisbon",          "GMT0BST,M3.5.0/1,M10.5.0",          0, 1},
@@ -701,9 +704,19 @@ static void loadSettings() {
                               // (tier 0). Zoom is gone (see weather_press_cycle), so this is
                               // pinned to 0 regardless of any old saved "wxZoom2" value.
     g_tz               = p.getString("tz", TZ_STR);
-    // Migrate off the old forked-in Spain default so a device that has it saved (from
-    // before the default changed) still lands on local time. Re-locating overwrites this.
-    if (g_tz == "CET-1CEST,M3.5.0,M10.5.0/3") g_tz = TZ_STR;
+    bool tzPreset = false;
+    for (const auto &option : TZOPTS) if (g_tz == option.tz) tzPreset = true;
+    // Old auto-location saved a numeric seasonal offset. Recover its geographic
+    // rules on the next forecast, while preserving explicit timezone selections.
+    const bool oldSpainDefault = g_tz == "CET-1CEST,M3.5.0,M10.5.0/3";
+    g_tzAuto = p.getBool("tzAuto", oldSpainDefault ||
+        timezone_rules::legacyAutomatic(g_tz.c_str(), p.isKey("tz"), tzPreset));
+    g_tzName = p.getString("tzName", "");
+    if (g_tzAuto && oldSpainDefault && !p.isKey("tzAuto")) g_tz = TZ_STR;
+    if (g_tzAuto) {
+        const char *rule = timezone_rules::lookup(g_tzName.c_str());
+        if (rule && strchr(rule, ',')) g_tz = rule; // use this firmware's current rules offline
+    }
     g_bigText          = p.getBool("bigtext", false);
     g_chimeIdx         = p.getInt("chimeIdx", 0);
     // What this place is CALLED. Every path that sets a location already learns a name:
@@ -1275,24 +1288,27 @@ void host_chime_preview(int i)     { if (audio_present()) chime_library::preview
 
 void host_recents_add(const char *name, double lat, double lon);   // defined below
 
-// Approximate current location from the public IP (city-level; no GPS on this board).
-// Reboots via host_set_location() on success and never returns; returns false quietly
-// on failure so a caller that needs a location set either way (first-boot WiFi setup)
-// can fall back to something else instead of getting stuck waiting for a reboot that
-// isn't coming.
-// Build a POSIX TZ string (fixed offset, no DST) from a UTC offset in seconds, as ip-api's
-// "offset" field reports it. Correct year-round for zones that don't observe DST (Arizona,
-// most of Asia); for DST zones it's correct as of when the device located and drifts an
-// hour after the next DST change until it re-locates. Fixed-offset because deriving proper
-// POSIX DST rules would need a full timezone database the device doesn't carry.
-static void posix_tz_from_offset(long offsetSec, char *out, size_t n) {
-    const long offMin  = offsetSec / 60;    // minutes east of UTC (Arizona: -420)
-    const long westMin = -offMin;           // POSIX offset field is positive west of UTC
-    const char sign = offMin < 0 ? '-' : '+';
-    const int aH = (int)(labs(offMin) / 60), aM = (int)(labs(offMin) % 60);
-    const int wh = (int)(westMin / 60),       wm = (int)(labs(westMin) % 60);
-    if (aM == 0) snprintf(out, n, "<%c%02d>%d", sign, aH, wh);
-    else         snprintf(out, n, "<%c%02d%02d>%d:%02d", sign, aH, aM, wh, wm);
+// UTC remains unchanged in NTP/the RTC. Only localtime()'s regional conversion
+// changes, so DST starts and ends automatically without a reboot or resync.
+static void apply_automatic_timezone(const char *name, long currentOffset, bool replaceNamed = false) {
+    if (!g_tzAuto) return;
+    if ((!name || !*name) && g_tzName.length() && !replaceNamed) return;
+    char tz[128];
+    if (!timezone_rules::resolve(name, currentOffset, tz, sizeof(tz))) return;
+    const String nextName = name ? name : "";
+    if (g_tz == tz && g_tzName == nextName) return;
+    g_tz = tz;
+    g_tzName = nextName;
+    Preferences p;
+    if (p.begin("capsuleradar", false)) {
+        p.putBool("tzAuto", true);
+        p.putString("tz", g_tz);
+        p.putString("tzName", g_tzName);
+        p.end();
+    }
+    setenv("TZ", g_tz.c_str(), 1);
+    tzset();
+    Serial.printf("[time] automatic timezone %s -> %s\n", g_tzName.c_str(), g_tz.c_str());
 }
 
 // Ask the network where it is. ONE copy of the lookup, shared by the two callers below,
@@ -1308,9 +1324,8 @@ static bool ip_lookup_location(double &lat, double &lon) {
     HTTPClient http;
     http.setConnectTimeout(4000);
     http.setTimeout(6000);
-    // Ask for `offset` (UTC offset in seconds) alongside the position so the clock's
-    // timezone follows the located region, not just the map centre.
-    if (!http.begin(client, "http://ip-api.com/json/?fields=status,message,city,region,lat,lon,offset")) return false;
+    // Request the region's name so seasonal DST rules survive the next transition.
+    if (!http.begin(client, "http://ip-api.com/json/?fields=status,message,city,region,lat,lon,timezone,offset")) return false;
     const int code = http.GET();
     if (code != 200) { http.end(); return false; }
     String body = http.getString();
@@ -1330,18 +1345,7 @@ static bool ip_lookup_location(double &lat, double &lon) {
         host_recents_add(nm, la, lo);            // remember where we landed
         persist_location_name(nm);               // and what it is called
     }
-    // Derive + persist the timezone, so the clock reads local wherever this landed.
-    const long off = doc["offset"] | 0x7FFFFFFFL;
-    if (off != 0x7FFFFFFFL && off >= -50400 && off <= 50400) {
-        char tz[24];
-        posix_tz_from_offset(off, tz, sizeof(tz));
-        g_tz = tz;
-        Preferences p;
-        p.begin("capsuleradar", false);
-        p.putString("tz", tz);
-        p.end();
-        Serial.printf("[locate] tz offset %lds -> %s\n", off, tz);
-    }
+    apply_automatic_timezone(doc["timezone"] | "", doc["offset"] | timezone_rules::UnknownOffset);
     lat = la; lon = lo;
     return true;
 }
@@ -1364,21 +1368,12 @@ static bool ip_lookup_location(double &lat, double &lon) {
 void host_set_location_from_studio(const char *name, double lat, double lon,
                                    long tzOffsetSec, bool haveTz) {
     if (name && name[0]) { host_recents_add(name, lat, lon); persist_location_name(name); }
-    // The browser's own timezone, which beats the IP lookup's guess for the same reason the
-    // position does. Stored the same way and in the same format; the clock reads local from
-    // the next second, with no restart, because tzset() is all that stands behind it.
-    if (haveTz && tzOffsetSec >= -50400 && tzOffsetSec <= 50400) {
-        char tz[24];
-        posix_tz_from_offset(tzOffsetSec, tz, sizeof(tz));
-        g_tz = tz;
-        Preferences p;
-        p.begin("capsuleradar", false);
-        p.putString("tz", tz);
-        p.end();
-        setenv("TZ", g_tz.c_str(), 1);
-        tzset();
-        Serial.printf("[studio] tz offset %lds -> %s\n", tzOffsetSec, tz);
-    }
+    // Legacy Studio sends only today's offset. It is provisional until the
+    // location's forecast identifies its zone; never replace resolved DST rules
+    // with a fixed offset when the browser sets the same location again.
+    const bool resolvedHere = g_tzName.length() && timezone_rules::sameLocation(
+        lat, lon, g_settings.homeLat, g_settings.homeLon);
+    if (haveTz && !resolvedHere) apply_automatic_timezone("", tzOffsetSec, true);
     persist_location(lat, lon);
     apply_location_live(lat, lon);
     Serial.printf("[studio] location set to %.5f,%.5f%s%s\n", lat, lon,
@@ -1963,11 +1958,11 @@ static void handleLegacyConfig() {
         snprintf(o, sizeof(o), "<option value=%.3f%s>%s</option>", pkm, sel ? " selected" : "", lbl);
         popts += o;
     }
-    String tzopts;   // time-zone dropdown (value = index into TZOPTS; mapped to POSIX TZ on save)
+    String tzopts = String("<option value=-1") + (g_tzAuto ? " selected" : "") + ">Automatic (location and DST)</option>";
     for (int i = 0; i < TZOPTS_N; ++i) {
         char o[128];
         snprintf(o, sizeof(o), "<option value=%d data-off=%d data-dst=%d%s>%s</option>",
-                 i, TZOPTS[i].offMin, TZOPTS[i].dst, g_tz == TZOPTS[i].tz ? " selected" : "", TZOPTS[i].label);
+                 i, TZOPTS[i].offMin, TZOPTS[i].dst, !g_tzAuto && g_tz == TZOPTS[i].tz ? " selected" : "", TZOPTS[i].label);
         tzopts += o;
     }
     static const size_t BUFSZ = 10240;
@@ -2095,21 +2090,14 @@ static void handleLegacyConfig() {
         "function u(v){fetch('/units?v='+v+'&save=1')}"
         "function al(v){fetch('/alerts?mode='+v+'&save=1')}"
         "function px(v){fetch('/alerts?prox='+v+'&save=1')}"
-        // auto-pick the visitor's time zone from their browser clock (only if they haven't set one)
-        "var TZSET=%d;(function(){if(TZSET)return;"
-        "var d=new Date(),j=new Date(d.getFullYear(),0,1).getTimezoneOffset(),"
-        "u=new Date(d.getFullYear(),6,1).getTimezoneOffset(),o=-Math.max(j,u),s=(j!=u)?1:0,"
-        "e=document.querySelector('select[name=tz]'),b=-1,i;"
-        "for(i=0;i<e.options.length;i++){if(+e.options[i].dataset.off===o&&+e.options[i].dataset.dst===s){b=i;break;}}"
-        "if(b<0)for(i=0;i<e.options.length;i++){if(+e.options[i].dataset.off===o){b=i;break;}}"
-        "if(b>=0)e.selectedIndex=b;})();</script></body></html>",
+        "</script></body></html>",
         g_settings.homeLat, g_settings.homeLon, ropts.c_str(), topts.c_str(),
         tzopts.c_str(),
         g_brightnessDay, iopts.c_str(), g_showSweep ? "checked" : "",
         g_showAirports ? "checked" : "", g_hideGround ? "checked" : "", maopts.c_str(), g_milOnly ? "checked" : "",
         tlopts.c_str(), mxopts.c_str(), g_bigText ? "checked" : "", g_rotation, uopts.c_str(),
         g_volume, g_muted ? "checked" : "", aopts.c_str(), popts.c_str(),
-        g_settings.homeLat, g_settings.homeLon, (g_tz == TZ_STR ? 0 : 1));
+        g_settings.homeLat, g_settings.homeLon);
     g_web.send(200, "text/html", buf);
 }
 
@@ -2153,7 +2141,14 @@ static void handleSave() {
     if (g_web.hasArg("theme")) p.putInt("theme", g_web.arg("theme").toInt());
     if (g_web.hasArg("tz")) {
         const int i = g_web.arg("tz").toInt();
-        if (i >= 0 && i < TZOPTS_N) p.putString("tz", TZOPTS[i].tz);
+        if (i == -1) {
+            p.putBool("tzAuto", true);
+            p.remove("tzName"); // resolve the saved coordinates on the next forecast
+        } else if (i >= 0 && i < TZOPTS_N) {
+            p.putString("tz", TZOPTS[i].tz);
+            p.putBool("tzAuto", false);
+            p.remove("tzName");
+        }
     }
     p.end();
     // The warning that used to be built here is gone with the thing it warned about. A
@@ -4065,6 +4060,10 @@ void loop() {
     }
     if (g_weatherDirty) {
         g_weatherDirty = false;
+        WeatherSnapshot forecast;
+        if (g_locationSet && weather_get(forecast) && forecast.valid &&
+            timezone_rules::sameLocation(g_settings.homeLat, g_settings.homeLon, forecast.latitude, forecast.longitude))
+            apply_automatic_timezone(forecast.timezone, forecast.utcOffsetSeconds);
         ui_on_data_updated();
     }
     // Headlines arrived on core 0; the labels are LVGL objects and may only be written

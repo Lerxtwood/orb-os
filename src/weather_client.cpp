@@ -66,6 +66,10 @@ bool weather_fetch(double lat, double lon, WeatherSnapshot &out) {
     }
 
     WeatherSnapshot next = {};
+    snprintf(next.timezone, sizeof(next.timezone), "%s", doc["timezone"] | "");
+    next.utcOffsetSeconds = doc["utc_offset_seconds"] | 0x7fffffffL;
+    next.latitude = lat;
+    next.longitude = lon;
     JsonObjectConst current = doc["current"].as<JsonObjectConst>();
     JsonObjectConst daily = doc["daily"].as<JsonObjectConst>();
     if (current.isNull() || daily.isNull()) {

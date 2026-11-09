@@ -40,3 +40,11 @@ as its default tile provider. Map data: (c) OpenStreetMap contributors,
 https://www.openstreetmap.org/copyright . Road classification follows the
 OpenMapTiles schema, (c) OpenMapTiles, https://openmaptiles.org/ . These data
 and schema attributions are separate from the firmware's MIT license.
+
+Timezone rules
+--------------
+
+The generated timezone name/POSIX-rule table is derived from public-domain IANA
+Time Zone Database data distributed by the official Python tzdata project:
+https://github.com/python/tzdata . The pinned source revision and regeneration
+command are recorded in src/timezone_rules_data.h and tools/generate_timezone_rules.py.

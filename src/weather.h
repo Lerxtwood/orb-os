@@ -15,6 +15,9 @@ struct WeatherDay {
 
 struct WeatherSnapshot {
     bool valid;
+    char timezone[64]; // IANA location timezone, not a seasonal offset
+    long utcOffsetSeconds;
+    double latitude, longitude; // requested coordinates, so stale location results can be rejected
     char updated[6];
     int code;
     float tempC;
