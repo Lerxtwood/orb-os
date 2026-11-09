@@ -31,7 +31,9 @@ function matches(actual, expected) {
     Object.entries(expected).every(([key, value]) => JSON.stringify(actual[key]) === JSON.stringify(value));
 }
 export function identifyLayout(bytes) {
-  const table = partitions(bytes);
+  let table;
+  try { table = partitions(bytes); }
+  catch { return 'unknown'; } // foreign flags or malformed tables require a confirmed clean install
   if (matches(table, EXPECTED)) return 'companion';
   if (matches(table, ORIGINAL)) return 'orb';
   if (bytes.every(b => b === 255)) return 'blank';
@@ -88,7 +90,14 @@ export function settingsResetPlan(layout) {
   }));
 }
 
-export function flashPlan(layout, files, rebuildCache = false) {
+export function flashPlan(layout, files, rebuildCache = false, forceClean = false) {
+  if (forceClean === true) {
+    require(['companion', 'orb', 'blank', 'unknown'].includes(layout), 'Connect and check the device before a clean install.');
+    // writeFlash must erase the entire chip for this plan. Activate the layout
+    // last; no settings or cached artwork from another firmware are retained.
+    return ['orb-bootloader.bin', 'Orb-companion.bin', 'PrintSphere-companion.bin', 'orb-partitions.bin']
+      .map(name => ({address: PARTS[name][0], data: files[name], name}));
+  }
   require(['companion', 'orb', 'blank'].includes(layout), 'Unsupported existing firmware. Nothing was changed.');
   const appNames = ['Orb-companion.bin', 'PrintSphere-companion.bin'];
   const cacheReset = {address: 0x650000, data: new Uint8Array(8192).fill(255), name: 'Rebuild theme cache'};

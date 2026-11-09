@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {identifyLayout, validateRelease, validateCache, flashPlan, settingsResetPlan, PARTS, resetToFirmware} from '../../web/companion/layout.mjs';
+import {require, identifyLayout, validateRelease, validateImage, validateCache, flashPlan, settingsResetPlan, PARTS, resetToFirmware} from '../../web/companion/layout.mjs';
 const table = entries => {
   const bytes = new Uint8Array(4096).fill(255), view = new DataView(bytes.buffer);
   entries.forEach(([name, kind, subtype, offset, size], index) => {
@@ -74,6 +74,137 @@ test('routine updates touch only the two firmware slots', () => {
   const plan = flashPlan('companion', files);
   assert.deepEqual(plan.map(p => p.address), [0x10000,0xAD0000]);
   assert.deepEqual(plan.map(p => p.data.length), [0x640000,0x400000]);
+});
+
+test('foreign or malformed layouts require an explicit clean plan with the partition table last', () => {
+  const foreign = table([['factory',0,0,0x10000,0x700000]]);
+  const flagged = foreign.slice(); flagged[28] = 1;
+  const duplicate = table([['factory',0,0,0x10000,0x10000],['factory',0,0,0x20000,0x10000]]);
+  for (const bytes of [foreign, flagged, duplicate]) assert.equal(identifyLayout(bytes), 'unknown');
+  assert.throws(() => flashPlan('unknown', files));
+  assert.throws(() => flashPlan('unknown', files, false, 'true'));
+  for (const layout of ['unknown', 'orb', 'companion', 'blank']) {
+    const plan = flashPlan(layout, files, false, true);
+    assert.deepEqual(plan.map(part => part.address), [0, 0x10000, 0xAD0000, 0x8000]);
+    assert.equal(plan.at(-1).name, 'orb-partitions.bin');
+  }
+  assert.throws(() => flashPlan(undefined, files, false, true));
+});
+
+test('force install erases only after confirmation and verified downloads, then verifies the new layout', async () => {
+  const {readFile} = await import('node:fs/promises');
+  const {createHash} = await import('node:crypto');
+  const vm = await import('node:vm');
+  const source = (await readFile(new URL('../../web/companion/installer.mjs', import.meta.url), 'utf8'))
+    .replace(/^import .*?;\s*/, '')
+    .replace("await import('https://cdn.jsdelivr.net/npm/esptool-js@0.7.0/bundle.js')", 'fakeTools');
+  const images = Object.fromEntries(Object.keys(PARTS).map(name => {
+    if (name === 'orb-partitions.bin') return [name, companion];
+    const bytes = new Uint8Array(256), view = new DataView(bytes.buffer);
+    bytes[0] = 0xE9; view.setUint16(12, 9, true); view.setUint32(32, 0xABCD5432, true);
+    bytes.set(new TextEncoder().encode('2.18.10-companion-orb'), 48);
+    bytes.set(new TextEncoder().encode('printsphere_idf'), 80);
+    if (name === 'Orb-companion.bin') bytes.set(new TextEncoder().encode('Opening PrintSphere...'), 120);
+    return [name, bytes];
+  }));
+  const manifest = {schema:1,layout:'orb-printsphere-v1',chip:'ESP32-S3',flashSize:0x1000000,
+    parts:Object.entries(images).map(([path,bytes]) => ({path,offset:PARTS[path][0],size:bytes.length,
+      sha256:createHash('sha256').update(bytes).digest('hex')}))};
+  for (const mode of ['success','unconfirmed','withdrawn','bad-download','changed-table','wrong-chip',
+                      'wrong-size','dirty-blank','foreign-flags','existing-orb','existing-companion','failed-write','failed-verification']) {
+    const nodes = new Map(), writes = [], reads = [];
+    let restarts = 0, downloads = 0;
+    const element = id => {
+      if (!nodes.has(id)) nodes.set(id, {value:'0',checked:false,hidden:true,textContent:'',
+        classList:{toggle() {}},listeners:{},replaceChildren() {},closest:() => element('connection-details'),
+        addEventListener(name, fn) { this.listeners[name] = fn; }});
+      return nodes.get(id);
+    };
+    const memory = new Uint8Array(0x1000000).fill(0x5A);
+    const foreign = table([['factory',0,0,0x10000,0x700000]]);
+    if (mode === 'foreign-flags') foreign[28] = 1;
+    memory.set(mode === 'dirty-blank' ? new Uint8Array(4096).fill(255)
+      : mode === 'existing-orb' ? original : mode === 'existing-companion' ? companion : foreign, 0x8000);
+    const before = createHash('sha256').update(memory).digest('hex');
+    class Loader {
+      chip = {CHIP_NAME:mode === 'wrong-chip' ? 'ESP32' : 'ESP32-S3'};
+      async main() {} async detectFlashSize() { return mode === 'wrong-size' ? '8MB' : '16MB'; }
+      async readFlash(address, size) { reads.push([address,size]); return memory.slice(address,address + size); }
+      async flashMd5sum(address, size) { return createHash('md5').update(memory.subarray(address,address + size)).digest('hex'); }
+      async writeFlash(options) {
+        assert.equal(element('confirm-force').checked, true);
+        assert.equal(element('confirm-force').disabled, true);
+        assert.equal(element('disconnect').disabled, true);
+        assert.equal(options.eraseAll, true);
+        writes.push(options);
+        if (mode === 'failed-write') throw Error('USB write failed');
+        memory.fill(255);
+        for (const part of options.fileArray) memory.set(part.data, part.address);
+        if (mode === 'failed-verification') memory[0x8000] = 0;
+      }
+    }
+    const sandbox = {FLASH_SIZE:0x1000000, require, identifyLayout, validateRelease, validateImage, validateCache,
+      flashPlan, settingsResetPlan, resetToFirmware:async () => { ++restarts; },
+      document:{getElementById:element,createElement:() => ({})},navigator:{serial:{requestPort:async () => ({})}},
+      window:{addEventListener() {}},location:{href:'https://installer.test/',origin:'https://installer.test'},
+      ResizeObserver:class { observe() {} },
+      SparkMD5:{ArrayBuffer:{hash:bytes => createHash('md5').update(new Uint8Array(bytes)).digest('hex')}},
+      fakeTools:{ESPLoader:Loader,Transport:class { async disconnect() {} }}, URL, Uint8Array,
+      crypto:{subtle:{digest:async (_, bytes) => new Uint8Array(createHash('sha256').update(bytes).digest()).buffer}},
+      fetch:async url => {
+        if (String(url).includes('release-index')) return {ok:true,json:async () => [{tag:'test',manifest:'manifest.json'}]};
+        if (String(url).endsWith('manifest.json')) { ++downloads; return {ok:true,json:async () => manifest}; }
+        const name = new URL(url).pathname.split('/').at(-1);
+        const bytes = images[name].slice();
+        if (mode === 'withdrawn') element('confirm-force').checked = false;
+        if (mode === 'bad-download') bytes[0] ^= 1;
+        return {ok:true,arrayBuffer:async () => bytes.buffer};
+      }};
+    await vm.runInNewContext('(async () => {' + source + '})()', sandbox);
+    await element('connect').listeners.click();
+    assert.equal(writes.length, 0); // connecting and inspecting never erase or write
+    if (['wrong-chip','wrong-size'].includes(mode)) {
+      assert.equal(element('ready').hidden, true);
+      assert.equal(element('force-install').hidden, true);
+      assert.match(element('log').textContent, /requires the 16 MB ESP32-S3/);
+      continue;
+    }
+    assert.equal(element('ready').hidden, false);
+    assert.equal(element('force-install').hidden, false);
+    assert.equal(element('confirm-force').checked, false);
+    assert.equal(restarts, 0);
+    if (!['existing-orb','existing-companion'].includes(mode)) assert.equal(element('install').disabled, true);
+    if (mode !== 'unconfirmed') {
+      element('confirm-force').checked = true;
+      element('confirm-force').listeners.change();
+      assert.equal(element('install').disabled, false);
+      assert.match(element('install').textContent, /Erase and install/);
+    }
+    if (mode === 'changed-table') memory[0x8000 + 8] ^= 1; // still foreign, but changed since connection
+    await element('install').listeners.click();
+    if (['unconfirmed','withdrawn','bad-download','changed-table'].includes(mode)) {
+      assert.equal(writes.length, 0);
+      assert.match(element('status').textContent, /Nothing was (written|changed)/);
+      assert.match(element('log').textContent, /Error:/);
+      if (mode === 'unconfirmed') {
+        assert.equal(downloads, 0);
+        assert.equal(createHash('sha256').update(memory).digest('hex'), before);
+      }
+    } else if (['failed-write','failed-verification'].includes(mode)) {
+      assert.equal(writes.length, 1);
+      assert.equal(restarts, 0); // never restart a partially installed image
+      assert.match(element('status').textContent, /Installation did not finish/);
+    } else {
+      assert.equal(writes.length, 1);
+      assert.equal(restarts, 1);
+      assert.equal(identifyLayout(memory.slice(0x8000,0x9000)), 'companion');
+      assert.deepEqual(writes[0].fileArray.map(p => p.address), [0,0x10000,0xAD0000,0x8000]);
+      assert.ok(memory.subarray(0x9000,0xE000).every(byte => byte === 255));
+      assert.ok(memory.subarray(0x650000,0xAD0000).every(byte => byte === 255));
+      assert.match(element('status').textContent, /Installation complete and verified/);
+      assert.equal(element('confirm-force').checked, false); // consent cannot carry to a new connection
+    }
+  }
 });
 test('settings reset clears both NVS partitions and selects Orb without touching firmware or artwork', () => {
   const plan = settingsResetPlan('companion');

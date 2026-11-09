@@ -118,6 +118,31 @@ Use the web installer for initial migration. It preserves settings and SD theme 
 
 After migration, use `update-orb` and `update-printer` for local updates. The helper's `install` and `restore` actions require specially prepared full-device images and are not routine update commands.
 
+### Replace third-party firmware or start with a clean installation
+
+The web installer can replace any existing firmware layout on supported 16 MB
+ESP32-S3 AMOLED 1.75 hardware. Select the desired release, connect, expand
+**Force clean install**, and confirm deletion of all internal flash. Then click
+**Erase and install both firmwares**. An unfamiliar partition table opens this
+option automatically, while leaving installation disabled until confirmation.
+
+This path erases the previous firmware, Wi-Fi credentials, saved settings, cached
+artwork, and uploaded sounds. SD-card files are untouched; PrintSphere may restore
+printer setup from an existing SD backup. Keep the card inserted to rebuild the
+theme cache. Normal updates and Orb migration continue preserving settings unless
+Force clean install is explicitly selected.
+
+The installer checks hardware and verifies all release images before erasing,
+rechecks the connected partition table, and writes the new partition table last.
+It verifies the installed layout before restarting. Connection alone never
+erases or writes flash. A failed write leaves the device in the bootloader for
+a retry. Clean-install confirmation is cleared on disconnect.
+
+Use the web installer's clean path for third-party layouts; do not bypass the
+partition checks in the local app-only update helper. Connection errors also
+appear in **Connection details**, after the reset message if a failed connection
+was closed, so include the complete log when diagnosing USB failures.
+
 ### USB troubleshooting
 
 - Close other programs using the port and check the port list again.

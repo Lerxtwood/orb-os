@@ -1,6 +1,6 @@
 import {FLASH_SIZE, require, identifyLayout, validateRelease, validateImage, validateCache, flashPlan, settingsResetPlan, resetToFirmware} from './layout.mjs';
 const $ = id => document.getElementById(id);
-let releases = [], loader, transport, layout, settingsHash, cacheError = '', busy = false;
+let releases = [], loader, transport, layout, settingsHash, partitionHash, cacheError = '', busy = false;
 const connectionLog = $('log');
 const connectionDetails = connectionLog.closest('details');
 let logScrollFrame;
@@ -18,7 +18,10 @@ const log = message => {
   connectionLog.textContent = (connectionLog.textContent + message + '\n').slice(-14000);
   followConnectionLog();
 };
-function status(message, error = false) { $('status').textContent = message; $('status').classList.toggle('error', error); }
+function status(message, error = false) {
+  $('status').textContent = message; $('status').classList.toggle('error', error);
+  if (error) log('Error: ' + message);
+}
 function progress(value) { $('progress').hidden = false; $('progress').value = value; }
 function updateReleaseNotes() {
   const entry = releases[Number($('release').value)];
@@ -46,13 +49,16 @@ function updateReleaseNotes() {
 $('release').addEventListener('change', updateReleaseNotes);
 function lock(value) {
   busy = value;
+  const force = $('confirm-force').checked;
   $('connect').disabled = value || !!loader || !releases.length || !('serial' in navigator);
   $('release').disabled = value || !!loader || !releases.length;
   $('disconnect').disabled = value;
-  $('install').disabled = value || !layout || (!!cacheError && !$('rebuild-cache').checked);
-  $('rebuild-cache').disabled = value;
-  $('confirm-reset').disabled = value;
-  $('reset').disabled = value || layout !== 'companion' || !$('confirm-reset').checked;
+  $('install').disabled = value || !layout || (layout === 'unknown' && !force) ||
+    (!force && !!cacheError && !$('rebuild-cache').checked);
+  $('confirm-force').disabled = value || !layout;
+  $('rebuild-cache').disabled = value || force;
+  $('confirm-reset').disabled = value || force;
+  $('reset').disabled = value || force || layout !== 'companion' || !$('confirm-reset').checked;
 }
 const md5 = bytes => SparkMD5.ArrayBuffer.hash(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
 async function readVerified(address, size) {
@@ -92,10 +98,13 @@ async function disconnect(reset = true) {
     } catch (error) { log('Automatic restart failed: ' + error.message); }
   }
   if (transport) { try { await transport.disconnect(); } catch (error) { log(error.message); } }
-  loader = transport = layout = settingsHash = undefined;
+  loader = transport = layout = settingsHash = partitionHash = undefined;
   cacheError = '';
   $('rebuild-cache').checked = false;
   $('confirm-reset').checked = false;
+  $('confirm-force').checked = false;
+  $('force-install').hidden = true;
+  $('force-install').open = false;
   $('reset-settings').hidden = true;
   $('reset-settings').open = false;
   $('ready').hidden = $('disconnect').hidden = true;
@@ -115,12 +124,12 @@ $('connect').addEventListener('click', async () => {
     await loader.main();
     require(loader.chip.CHIP_NAME === 'ESP32-S3' && await loader.detectFlashSize() === '16MB',
       'This installer requires the 16 MB ESP32-S3 AMOLED 1.75 device.');
-    layout = identifyLayout(await readVerified(0x8000, 4096));
-    require(layout !== 'unknown', 'This device has another firmware layout. Use its recovery tools before installing Orb Companion. Nothing was changed.');
+    const table = await readVerified(0x8000, 4096);
+    partitionHash = md5(table);
+    layout = identifyLayout(table);
     cacheError = '';
     $('rebuild-cache').checked = false;
-    $('cache-option').hidden = layout === 'blank';
-    $('reset-settings').hidden = layout !== 'companion';
+    $('confirm-force').checked = false;
     if (layout === 'orb') {
       const cache = await readVerified(0x650000, 8192);
       try { validateCache(cache); }
@@ -131,22 +140,40 @@ $('connect').addEventListener('click', async () => {
       // Check in bounded chunks without retaining or downloading a firmware backup.
       status('Checking that the device is empty...');
       for (let address = 0; address < FLASH_SIZE; address += 0x40000) {
-        require((await readVerified(address, 0x40000)).every(b => b === 255),
-          'Unrecognized data on this device. Nothing was changed.');
+        if (!(await readVerified(address, 0x40000)).every(b => b === 255)) {
+          layout = 'unknown';
+          log('Erased partition table with existing flash data: clean-install confirmation required.');
+          break;
+        }
         progress(100 * (address + 0x40000) / FLASH_SIZE);
       }
     }
-    $('install').textContent = layout === 'companion' ? 'Update both firmwares' : 'Install both firmwares';
+    $('force-install').hidden = false;
+    $('force-install').open = layout === 'unknown';
     updatePlan();
     $('ready').hidden = $('disconnect').hidden = false;
     $('progress').hidden = true;
-    status(cacheError ? cacheError : 'Device checked. Ready when you are.', !!cacheError);
+    status(layout === 'unknown' ? 'Other firmware detected. Confirm Force clean install below to replace it. Nothing has been changed.'
+      : cacheError ? cacheError : 'Device checked. Ready when you are.', !!cacheError);
   } catch (error) {
     await disconnect();
     status(error.name === 'NotFoundError' ? 'No device selected. Connect when you are ready.' : error.message, true);
   } finally { lock(false); }
 });
 function updatePlan() {
+  const force = $('confirm-force').checked;
+  $('cache-option').hidden = force || !['orb', 'companion'].includes(layout);
+  $('reset-settings').hidden = force || layout !== 'companion';
+  $('install').textContent = force ? 'Erase and install both firmwares'
+    : layout === 'companion' ? 'Update both firmwares' : 'Install both firmwares';
+  if (force) {
+    $('plan').textContent = 'Ready to erase all internal flash and install Orb + PrintSphere. You will need to set up Wi-Fi again. SD-card files are kept.';
+    return;
+  }
+  if (layout === 'unknown') {
+    $('plan').textContent = 'This device has another firmware layout. Force clean install can replace it after you confirm deletion of its internal flash.';
+    return;
+  }
   const rebuild = $('rebuild-cache').checked;
   $('plan').textContent = layout === 'blank'
     ? 'Ready for a first installation of Orb and PrintSphere.'
@@ -154,6 +181,14 @@ function updatePlan() {
       (rebuild ? 'Your settings and SD themes will be kept. Cached artwork will be rebuilt on the next boot.'
                : 'Your settings, SD themes and cached artwork will be kept.');
 }
+$('confirm-force').addEventListener('change', () => {
+  if (busy) return;
+  $('confirm-reset').checked = false;
+  updatePlan(); lock(false);
+  status($('confirm-force').checked ? 'Clean install selected. Click Erase and install both firmwares to continue.'
+    : layout === 'unknown' ? 'Confirm Force clean install to replace the existing firmware.'
+    : cacheError || 'Device checked. Ready when you are.', !$('confirm-force').checked && !!cacheError);
+});
 $('rebuild-cache').addEventListener('change', () => {
   updatePlan(); lock(false);
   status(cacheError && !$('rebuild-cache').checked ? cacheError : 'Device checked. Ready when you are.',
@@ -200,24 +235,35 @@ $('reset').addEventListener('click', async () => {
   } finally { lock(false); }
 });
 $('install').addEventListener('click', async () => {
+  if (busy) return;
   lock(true);
   let wrote = false;
   try {
+    const force = $('confirm-force').checked;
+    require(layout && (layout !== 'unknown' || force), 'Confirm Force clean install before replacing other firmware. Nothing was changed.');
     const files = await downloadRelease();
-    require(identifyLayout(await readVerified(0x8000, 4096)) === layout, 'Device layout changed. Reconnect before installing.');
+    const currentTable = await readVerified(0x8000, 4096);
+    // A blank table with leftover data is treated as unknown during connection.
+    require(md5(currentTable) === partitionHash &&
+      (identifyLayout(currentTable) === layout || (layout === 'unknown' && identifyLayout(currentTable) === 'blank')),
+      'Device layout changed. Reconnect before installing.');
+    require(!force || $('confirm-force').checked, 'Clean-install confirmation was cleared. Nothing was changed.');
     const rebuild = $('rebuild-cache').checked;
-    if (layout === 'orb' && !rebuild) validateCache(await readVerified(0x650000, 8192));
-    if (layout !== 'blank') settingsHash = md5(await readVerified(0x9000, 0x5000));
-    const plan = flashPlan(layout, files, rebuild);
-    status('Installing both firmwares. Keep this page open and the cable connected…');
+    if (!force && layout === 'orb' && !rebuild) validateCache(await readVerified(0x650000, 8192));
+    if (!force && layout !== 'blank') settingsHash = md5(await readVerified(0x9000, 0x5000));
+    const plan = flashPlan(layout, files, rebuild, force);
+    status(force ? 'Erasing internal flash and installing both firmwares. Keep this page open and the cable connected…'
+      : 'Installing both firmwares. Keep this page open and the cable connected…');
     wrote = true;
     await loader.writeFlash({fileArray: plan, flashSize: 'keep', flashMode: 'keep', flashFreq: 'keep',
-      eraseAll: false, compress: true, calculateMD5Hash: md5,
+      eraseAll: force, compress: true, calculateMD5Hash: md5,
       reportProgress: (file, done, total) => progress(100 * (file + done / total) / plan.length)});
     // Check private storage survived an in-place migration before rebooting.
-    if (layout !== 'blank') {
+    if (!force && layout !== 'blank') {
       require(md5(await readVerified(0x9000, 0x5000)) === settingsHash, 'Orb settings verification failed.');
     }
+    if (force) require(identifyLayout(await readVerified(0x8000, 4096)) === 'companion',
+      'Clean-install partition verification failed. Reconnect and retry before restarting.');
     const restarted = await disconnect();
     progress(100);
     status(restarted ? 'Installation complete and verified. Restart requested.'
