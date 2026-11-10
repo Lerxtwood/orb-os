@@ -1,4 +1,8 @@
-"""Send Orb USB commands without toggling the device's reset lines."""
+"""Send Orb USB commands without intentionally toggling reset lines.
+
+Opening native USB serial can still reset this ESP32-S3 on some hosts. To preserve
+a failed boot, use the read-only HTTP /time, /diag and /health routes first.
+"""
 import argparse
 import json
 import time

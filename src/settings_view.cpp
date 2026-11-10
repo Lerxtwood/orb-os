@@ -1,5 +1,6 @@
 #include "settings_view.h"
 #include "flight_distance.h"
+#include "lv_memory_scope.h"
 #include "app_shell.h"
 #include "app_theme.h"
 #include "theme_select.h"   // which Launch Kit design (of however many are installed on the SD card) is active
@@ -1682,6 +1683,7 @@ void settingsview::onPress() {
 }
 
 void settingsview::init() {
+    OrbLvExternalScope widgetMemory;
     if (app_theme::get() == APP_THEME_OFFICE) {
         const AppPalette &p = app_theme::palette();
         C_WHITE = p.ink; C_GREY = p.soft; C_DIM = p.dim; C_ACCENT = p.accent;

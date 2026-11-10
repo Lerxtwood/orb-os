@@ -26,5 +26,9 @@ was needed. A successful build does not authorize flashing the device.
 
 The current device serial port is **COM6**. Use that port for device commands
 unless the user specifies another port or enumeration shows it has changed.
+When preserving a failed boot, read `http://theorb.local/diag` and `/health`
+first; updated firmware also has a read-only `/time` snapshot. Opening
+native USB serial on this device has triggered a USB reset even with DTR/RTS
+held inactive, so do not promise that attaching a serial probe preserves state.
 Follow [the manual build, flash, and release procedure](docs/MANUAL_BUILD_FLASH_RELEASE.md)
 when performing those tasks.

@@ -45,6 +45,9 @@ jobs:
           python tools/companion/test_release.py
           python tools/test_flight_options.py
           python tools/test_timezone.py
+          python tools/test_wifi_setup.py
+          g++ -std=c++17 -O2 -UNDEBUG -Isrc tests/clock_sync_state_test.cpp -o /tmp/test_clock_sync
+          /tmp/test_clock_sync
           g++ -std=c++17 -O2 -UNDEBUG -Itests/curved_text_stubs -Isrc tests/rotated_text_test.cpp src/curved_text.cpp -o /tmp/test_rotated_text
           /tmp/test_rotated_text
           g++ -std=c++17 -O2 -UNDEBUG -Itools/companion/wifi_test_stubs -Itools/companion tools/companion/test_orb_wifi.cpp -o /tmp/test_orb_wifi
@@ -82,10 +85,10 @@ jobs:
           source_text = source.read_text()
           version = re.search(r'#define FW_VERSION "([^"]+)"', source_text)
           if not version:
-              raise SystemExit('Could not read merged upstream firmware version')
+              raise SystemExit('Could not read firmware source version')
           expected = 'v' + version[1].removesuffix('-companion') + '-companion'
           if tag != expected:
-              raise SystemExit(f'Release tag must match merged upstream version: {expected}')
+              raise SystemExit(f'Release tag must match firmware source version: {expected}')
           text, count = re.subn(r'#define FW_VERSION "[^"]+"', '#define FW_VERSION "' + tag[1:] + '"', source_text)
           if count != 1:
               raise SystemExit('Could not stamp Orb firmware version')

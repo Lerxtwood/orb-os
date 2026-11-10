@@ -5,6 +5,29 @@ connects, and the RTC seeds the clock before NTP is available. Clock faces use
 `orb_local_time()` / `localtime_r()` to convert UTC using the saved POSIX timezone.
 DST must be applied in this conversion, not added to NTP or the RTC.
 
+NTP starts immediately after the boot Wi-Fi connection succeeds (or when the
+background network task later connects). The first network-task iteration keeps
+that request running. Servers are `time.cloudflare.com`, `pool.ntp.org`, and
+`time.nist.gov`, with the SDK's normal retry/backoff and periodic synchronization.
+No network-time wait blocks the UI. If the RTC has lost its time, the clock must
+wait for a successful network reply; DNS/server/network failures can delay this.
+
+Only the SNTP synchronization callback marks a network fix. A recent-looking
+RTC seed does not count. The main core writes confirmed UTC fixes to the RTC,
+retries failed writes, and saves later NTP corrections as well. This fixes an
+earlier check that mistook RTC-seeded time for NTP and skipped saving the actual
+network correction. The callback only records atomic state; it never uses I2C.
+
+Read-only serial command `?orb time` reports UTC epoch, formatted local time,
+timezone rule/name, RTC presence and whether it seeded this boot, NTP start and
+last-sync boot milliseconds, sync count, and the sync last saved to the RTC.
+Prefer `http://theorb.local/time` for the same snapshot over Wi-Fi, especially
+when preserving a failed boot. Opening native USB serial can trigger a reset
+even when the probe does not intentionally toggle DTR/RTS. Compare
+`ntpStartedMs` with `lastNtpMs` to measure
+network sync delay. `rtcSeeded: false` means the RTC could not supply valid time;
+it does not by itself distinguish an empty backup battery from an I2C failure.
+
 Previously, automatic IP location and Studio's location command saved only the
 offset at setup time (for example UTC-6 in summer). That offset had no transition
 rules and stayed an hour wrong after DST ended.

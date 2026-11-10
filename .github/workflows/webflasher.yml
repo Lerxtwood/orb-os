@@ -46,6 +46,9 @@ jobs:
           /tmp/test_flight_card_lifetime
           python tools/test_flight_options.py
           python tools/test_timezone.py
+          python tools/test_wifi_setup.py
+          g++ -std=c++17 -O2 -UNDEBUG -Isrc tests/clock_sync_state_test.cpp -o /tmp/test_clock_sync
+          /tmp/test_clock_sync
           g++ -std=c++17 -O2 -UNDEBUG -Isrc tests/flight_distance_test.cpp src/text_tokens.cpp -o /tmp/test_flight_distance
           /tmp/test_flight_distance
       - name: Install PlatformIO

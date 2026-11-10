@@ -18,6 +18,10 @@
 #include <stdint.h>
 #include "lv_psram_alloc.h"   // the bucket count, so the two cannot drift apart
 
+#ifdef ESP_PLATFORM
+unsigned orb_lv_external_scope_depth;
+#endif
+
 #if ORB_LV_STATS
 // Live allocations, by requested size. Bucket 0 is everything under 64 bytes and each
 // bucket after it covers twice the span of the one before, so the eight read:

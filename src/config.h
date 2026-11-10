@@ -10,7 +10,7 @@
 // "1.4.2", said "up to date", and left an Orb missing everything in that list. THEME_CAPS
 // exists because this stopped moving; it covers theme settings and nothing else, so a new
 // command or a deleted screen is invisible to it. Move this too.
-#define FW_VERSION "2.18.10"   // Configurable card duration, actual-distance close passes and distance units
+#define FW_VERSION "2.18.11"   // DST/RTC synchronization and Wi-Fi setup memory fixes
 #ifndef ROAD_VECTOR_URL
 #define ROAD_VECTOR_URL "https://tiles.openfreemap.org/planet/latest/{z}/{x}/{y}.pbf"
 #endif

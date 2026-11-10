@@ -5,6 +5,8 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <esp_sntp.h>
+#include "clock_sync_state.h"
 #include <vector>
 #include <map>
 #include "config.h"
@@ -108,6 +110,11 @@ static volatile bool         g_acDirty = false; // set when a new snapshot is re
 static AdsbClient            g_adsb;
 static RadarSettings         g_settings;
 static WiFiManager           g_wm;
+static std::atomic<bool>     g_configPortalActive{false}; // main-core snapshot for the network task
+static bool                  g_webStarted = false;
+
+
+bool host_wifi_portal_active() { return g_wm.getConfigPortalActive(); }
 static int                   g_brightnessDay = BRIGHTNESS_DEFAULT;   // user brightness (web/NVS)
 static int                   g_volume = 60;                          // alert volume 0..100 (web/NVS)
 // The clock's tick and the hourly chime, each 0..100 against g_volume, 0 being off.
@@ -162,7 +169,10 @@ static int                   g_trailLen = 2;                         // aircraft
 static int                   g_maxAc = 12;                           // max aircraft drawn on the scope (web/NVS)
 static bool                  g_bigText = false;                      // accessibility: large fonts (web/NVS, applied at boot)
 static volatile bool         g_onBattery = false;                    // discharging (set on core 1, read on core 0)
-static bool                  g_rtcSynced = false;                    // RTC written from NTP this session?
+static ClockSyncState        g_clockSync;
+static bool                  g_rtcSeeded = false;
+static std::atomic<bool>     g_ntpStarted{false};
+static std::atomic<uint32_t> g_ntpStartedMs{0};
 static std::vector<Aircraft> g_snap;                                 // last snapshot (instant re-render on zoom)
 static volatile bool         g_requery = false;                      // range changed -> adsb_task re-begins
 // Diagnostic override for the ADS-B poll interval (0 = use the compiled default). Exists
@@ -197,6 +207,46 @@ static volatile uint32_t     g_applySlugAtMs = 0;                       // !=0: 
 static String                g_tz = TZ_STR;                          // POSIX timezone (web-configurable, NVS); applied via configTzTime
 static bool                  g_tzAuto = true;
 static String                g_tzName; // automatic location's IANA timezone; POSIX rules are stored in g_tz
+
+static void start_network_clock() {
+    // setup() starts this as soon as Wi-Fi connects; the network task must not
+    // restart an in-flight request on its first connected iteration.
+    if (g_ntpStarted.exchange(true)) return;
+    g_ntpStartedMs.store(millis());
+    sntp_set_time_sync_notification_cb([](struct timeval *) {
+        // lwIP task: no I2C, logging, or UI work here.
+        g_clockSync.notified(millis());
+    });
+    configTzTime(g_tz.c_str(), "time.cloudflare.com", "pool.ntp.org", "time.nist.gov");
+    Serial.println("[time] NTP started");
+}
+
+// Read-only serial diagnostics; called on the main core by ?orb time.
+String host_clock_status() {
+    JsonDocument doc;
+    const time_t now = time(nullptr);
+    struct tm local;
+    char formatted[48] = "";
+    if (localtime_r(&now, &local))
+        strftime(formatted, sizeof(formatted), "%Y-%m-%d %H:%M:%S %Z", &local);
+    doc["ok"] = true;
+    doc["epoch"] = (int64_t)now;
+    doc["local"] = formatted;
+    doc["timezone"] = g_tz;
+    doc["timezoneName"] = g_tzName;
+    doc["automaticTimezone"] = g_tzAuto;
+    doc["rtcPresent"] = rtc_present();
+    doc["rtcSeeded"] = g_rtcSeeded;
+    doc["ntpStarted"] = g_ntpStarted.load();
+    doc["ntpStartedMs"] = g_ntpStartedMs.load();
+    doc["ntpSyncs"] = g_clockSync.generation();
+    doc["lastNtpMs"] = g_clockSync.lastMs();
+    doc["rtcSavedSync"] = g_clockSync.savedGeneration();
+    doc["uptimeMs"] = millis();
+    String result;
+    serializeJson(doc, result);
+    return result;
+}
 // The name of wherever the Orb is, as the person who set it would say it ("Leeds, Utah").
 // Beside g_tz because it is loaded in the same block and for the same reason: both are what
 // a position MEANS rather than the position itself. Empty until something names it, which is
@@ -303,10 +353,11 @@ static void adsb_task(void*) {
         // long), then retry on a slow cadence. 20 s is unhurried enough not to thrash the
         // radio and quick enough that a blip costs one missed poll rather than a whole night.
         if (!conn && wasConnected) {
+            g_ntpStarted.store(false);
             Serial.println("[wifi] connection LOST");
             diag::log("wifi lost");
         }
-        if (!conn) {
+        if (!conn && !g_configPortalActive.load()) {
             static uint32_t s_wifiRetryAt = 0;
             if (millis() - s_wifiRetryAt > 20000UL) {
                 s_wifiRetryAt = millis();
@@ -320,7 +371,7 @@ static void adsb_task(void*) {
             WiFi.setSleep(false);
             Serial.printf("[adsb] WiFi up, IP %s\n", WiFi.localIP().toString().c_str());
             diag::log("wifi up %s", WiFi.localIP().toString().c_str());
-            configTzTime(g_tz.c_str(), "pool.ntp.org", "time.nist.gov");  // local time (web-configurable TZ)
+            start_network_clock();
             Serial.println("[web] config: http://" ORB_MDNS_ADDR "/  (or the IP above)");
             nextWeatherAt = millis() + 5000UL; // let the first ADS-B poll complete before weather TLS
             nextWxRadarAt = millis() + 12000UL;
@@ -854,6 +905,7 @@ static void rtc_seed_clock() {
     const time_t t = utc_to_time(&utc);
     struct timeval tv = { t, 0 };
     settimeofday(&tv, nullptr);
+    g_rtcSeeded = true;
     Serial.println("[rtc] system clock seeded from RTC");
 }
 
@@ -1713,6 +1765,23 @@ static void serial_wifi_join_tick() {
 
 // ----------------------------- configuration web --------------------------------
 static WebServer g_web(80);
+
+static void service_config_servers() {
+    // WiFiManager owns port 80 throughout setup. Only one server may listen.
+    const bool portal = g_wm.getConfigPortalActive();
+    g_configPortalActive.store(portal);
+    if (portal && g_webStarted) {
+        g_web.stop();
+        g_webStarted = false;
+    } else if (!portal && !g_webStarted) {
+        g_web.begin();
+        g_webStarted = true;
+    }
+    g_wm.process();
+    g_configPortalActive.store(g_wm.getConfigPortalActive());
+    if (g_webStarted) g_web.handleClient();
+}
+
 
 // The Orb's own front page at http://theorb.local/. What a person should find here: what
 // this Orb is running and wearing, and the two things the browser can do for it that the
@@ -3368,7 +3437,8 @@ void setup() {
     // costly (see above), so it is not worth stretching for a slow router.
     g_wm.setConnectTimeout(12);
     const bool wifiUp = g_wm.autoConnect("The Orb Setup");
-    if (wifiUp)                          Serial.println("[wifi] connected");
+    g_configPortalActive.store(g_wm.getConfigPortalActive());
+    if (wifiUp) { Serial.println("[wifi] connected"); start_network_clock(); }
     else if (g_wm.getConfigPortalActive()) Serial.println("[wifi] config portal open - join 'The Orb Setup' to set WiFi; UI stays live");
     else                                 Serial.printf("[wifi] '%s' did not come up in time; the station side stays on and keeps trying\n", storedSsid);
 
@@ -3429,6 +3499,8 @@ void setup() {
 
     // configuration web page (http://theorb.local/)
     g_web.on("/diag", []{ g_web.send(200, "text/plain", diag::text()); });
+    // Read-only clock snapshot.
+    g_web.on("/time", HTTP_GET, []{ g_web.send(200, "application/json", host_clock_status()); });
     // Does the hand-layer cache draw the same picture as a full compose? In pixels.
     //
     // Over HTTP because the answer takes two full composes (about a second on a heavy
@@ -3830,7 +3902,8 @@ void setup() {
         },
         handleUpdateUpload);
 #endif
-    g_web.begin();
+    // Start the normal server only after the setup portal releases port 80.
+    if (!g_configPortalActive.load()) { g_web.begin(); g_webStarted = true; }
 
     // Everything is up. Noted for the log only: the "Ready, turn the knob" card that used
     // to gate a first boot after a firmware update is gone. It answered "is it finished?"
@@ -3915,8 +3988,7 @@ void loop() {
     // in particular can spend real time on an /sdput chunk, and nothing about it should
     // sit between a knob turn and the frame that answers it.
     lpT[2] = micros();
-    g_wm.process();                 // service the WiFi config portal (non-blocking)
-    g_web.handleClient();           // serve the configuration web page
+    service_config_servers();      // setup portal OR normal configuration server
     orb_link::poll();               // answer Orb Studio over the USB cable (bounded, non-blocking)
     lpT[3] = micros();
     // Mid-install, lean into the port instead of the screen. Every chunk needs a round
@@ -4264,12 +4336,22 @@ void loop() {
         const bool bpresent = battery_present();
         ui_set_battery(battery_percent(), battery_charging(), bpresent);
         g_onBattery = bpresent && !battery_charging();
-        // once NTP has a real fix, persist it to the RTC (core 1 only)
-        if (!g_rtcSynced && time(nullptr) > 1700000000L) {
+        // Persist actual SNTP replies, including later corrections, on core 1.
+        // RTC-seeded time is not evidence that a network reply has arrived.
+        const uint32_t sync = g_clockSync.generation();
+        if (g_clockSync.pending(sync) && time(nullptr) > 1700000000L) {
             time_t now = time(nullptr);
             struct tm utc;
             gmtime_r(&now, &utc);
-            if (rtc_write(&utc)) { g_rtcSynced = true; Serial.println("[rtc] saved NTP time"); }
+            if (rtc_write(&utc)) {
+                g_clockSync.saved(sync);
+                Serial.printf("[time] NTP sync %lu at boot +%lu ms; saved UTC to RTC\n",
+                              (unsigned long)sync, (unsigned long)g_clockSync.lastMs());
+                diag::log("ntp sync %lu at %lu ms; rtc saved", (unsigned long)sync,
+                          (unsigned long)g_clockSync.lastMs());
+            } else {
+                Serial.println("[time] NTP synced; RTC write failed (will retry)");
+            }
         }
         // GPS used to re-centre the radar from here whenever a fix moved more than a
         // kilometre. It is gone. UX-025 gives the device two location inputs — the network

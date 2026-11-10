@@ -302,8 +302,11 @@ if ($LASTEXITCODE -ne 0) { throw 'CI checks did not pass.' }
 Match the firmware version from the most recently merged upstream revision and
 append `-companion`. For example, upstream `2.17.00` releases as
 `v2.17.00-companion`; retain the upstream spelling, including leading zeroes.
-Keep upstream's `FW_VERSION` in source. The release workflow checks the tag
-against that version and stamps the suffix into the published firmware.
+Keep upstream's `FW_VERSION` in source for an upstream merge. For an explicitly
+requested maintenance release between upstream merges, increment the source
+patch version (for example `2.18.10` to `2.18.11`) and keep the `-companion`
+release suffix. The release workflow checks the tag against the source version
+and stamps the suffix into the published firmware.
 
 ```powershell
 gh release list -R Lerxtwood/orb-os --limit 10
@@ -322,7 +325,7 @@ if (git status --porcelain) { throw 'Commit or preserve working-tree changes bef
 git ls-remote --tags origin "refs/tags/$releaseTag"
 ```
 
-If the last command lists an existing tag, stop; also check `git tag --list $releaseTag` for a local tag. Do not advance a separate companion version counter or overwrite a published tag. If another release is needed before the next upstream merge, explicitly resolve the naming exception and workflow validation first. Release the tested commit, with a clean working tree and `main` pushed. Local binaries are not uploaded: CI stamps Orb with the tag without `v`, and PrintSphere with the full tag plus `-orb`.
+If the last command lists an existing tag, stop; also check `git tag --list $releaseTag` for a local tag. Do not overwrite a published tag. Maintenance releases use the source patch-version rule above; keep workflow validation aligned with that source version. Release the tested commit, with a clean working tree and `main` pushed. Local binaries are not uploaded: CI stamps Orb with the tag without `v`, and PrintSphere with the full tag plus `-orb`.
 
 ### Write release notes
 

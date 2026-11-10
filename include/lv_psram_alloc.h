@@ -17,6 +17,7 @@
 // unaffected by this.
 #include <stdlib.h>
 #include <stdint.h>     // uint32_t / uintptr_t for the allocator counters below
+#include "lv_memory_scope.h"
 #ifdef ESP_PLATFORM
 #include <esp_heap_caps.h>
 
@@ -165,7 +166,7 @@ static const uint32_t orb_lv_zero_bucket[ORB_LV_NBUCKETS] = { 0 };
 #define ORB_LV_INTERNAL_RESERVE (16u * 1024u)
 static inline int orb_lv_prefer_external(size_t size) {
     const size_t available = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    return size >= ORB_LV_BIG_ALLOC || available < ORB_LV_INTERNAL_RESERVE ||
+    return orb_lv_external_scope_depth || size >= ORB_LV_BIG_ALLOC || available < ORB_LV_INTERNAL_RESERVE ||
            size > available - ORB_LV_INTERNAL_RESERVE;
 }
 static inline void *orb_lv_malloc(size_t size) {

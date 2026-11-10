@@ -26,6 +26,27 @@ Anything else that wants a big buffer must say `MALLOC_CAP_SPIRAM` explicitly or
 ordinary allocation threshold (currently 512 bytes in setup). Capability-specific allocations
 for DMA, WiFi and task stacks remain internal.
 
+## Settings and Wi-Fi setup
+
+Settings construction uses `OrbLvExternalScope` to prefer PSRAM for all its
+LVGL widgets, including small ones. The usual hybrid policy resumes after
+construction; PSRAM allocation failure retains the existing internal fallback.
+The shared scope counter has C linkage because LVGL's allocator is C, and all
+scope/allocator use remains on the main LVGL core.
+
+This fixes a measured first-boot setup failure on 2026-11-09: the AP advertised,
+but neither a phone nor PC could join with 6112 bytes of internal RAM free
+(4596-byte largest block). Evicting cached Settings via News and returning to
+Clock raised free RAM to 48448 bytes without a reboot; the same phone immediately
+joined the AP. Merely leaving Settings was insufficient because the shell kept
+its widget tree cached. Settings' long-lived widgets must therefore leave RAM
+available for Wi-Fi association, DHCP, and the setup portal while still visible.
+
+`tools/test_wifi_setup.py` checks allocation placement, nested scope restoration,
+PSRAM failure fallback, and the actual firmware helper that gives the setup
+portal sole ownership of port 80. The background reconnect loop also pauses
+while setup is active, using an atomic snapshot from the main core.
+
 ## The unit costs
 
 Everything below is one of these. Learn the four numbers and you can size a screen in your

@@ -28,6 +28,8 @@
 #include "radar_view.h"  // debugHideLayer for the "layer" command
 void host_set_poll_override(uint32_t ms);   // main.cpp
 void host_location_reset();                 // main.cpp
+String host_clock_status();                 // main.cpp, read-only time diagnostics
+bool host_wifi_portal_active();             // main.cpp, main-core query
 void host_set_location_from_studio(const char *name, double lat, double lon,
                                    long tzOffsetSec, bool haveTz);   // main.cpp
 void host_wifi_saved_ssid(char *out, size_t n);   // main.cpp — NAME only, never the password
@@ -171,6 +173,14 @@ void cmd_wifi() {
 #ifdef ARDUINO
     const bool up = (WiFi.status() == WL_CONNECTED);
     out_fmt("{\"ok\":true,\"up\":%s", up ? "true" : "false");
+    const bool ap = (WiFi.getMode() & WIFI_MODE_AP) != 0;
+    out_fmt(",\"portalActive\":%s,\"apActive\":%s,\"apClients\":%u",
+            host_wifi_portal_active() ? "true" : "false", ap ? "true" : "false",
+            ap ? (unsigned)WiFi.softAPgetStationNum() : 0u);
+    if (ap) {
+        out_str(",\"apIP\":");
+        out_json_string(WiFi.softAPIP().toString().c_str());
+    }
     if (up) {
         out_str(",\"ssid\":");
         out_json_string(WiFi.SSID().c_str());
@@ -189,6 +199,13 @@ void cmd_wifi() {
 
 // Both the slug (folder id, stable) and the label (display name, themeable) go out. Sending
 // only the slug is what once made "Modern" and "the-office" look like unrelated things.
+void cmd_time() {
+    const String status = host_clock_status();
+    out_reset();
+    out_str(status.c_str());
+    out_send();
+}
+
 void cmd_themes() {
     static char slugs[theme_select::MAX_THEMES][theme_select::MAX_SLUG_LEN];
     const int n = theme_select::listInstalled(slugs);
@@ -933,6 +950,7 @@ void dispatch(char *line) {
 
     if      (!strcmp(line, "hello"))     cmd_hello();
     else if (!strcmp(line, "themes"))    cmd_themes();
+    else if (!strcmp(line, "time"))      cmd_time();
     else if (!strcmp(line, "wifi"))      cmd_wifi();
     else if (!strcmp(line, "theme"))     cmd_theme(arg);
     else if (!strcmp(line, "delete"))    cmd_delete(arg);
