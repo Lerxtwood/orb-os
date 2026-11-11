@@ -191,6 +191,11 @@ python -m http.server 8080 --directory .pio/companion/site
 `test_orb_wifi.cpp` checks the startup credential snapshot, open networks,
 maximum-length SDK fields, read failures, and isolation from later driver changes.
 It runs in both CI workflows with the WiFi test stubs.
+`test_cloud_identity.py` exercises the prepared PrintSphere identity lookup with
+simulated profile responses, token retention on HTTP 403, and bounded cloud
+error summaries. Run after source preparation with the project Python; it uses
+the local `python-zig.exe`, or accepts `--compiler` for another host compiler.
+The release workflow also runs these checks against the prepared source.
 `test_printer_backup.cpp` tests cloud/local round trips, excluded Wi-Fi settings,
 device/version checks, malformed and oversized files, duplicate fields,
 unchanged snapshots, retained copies, and interrupted file updates. It runs in

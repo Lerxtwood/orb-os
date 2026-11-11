@@ -118,6 +118,7 @@ jobs:
             gcc -I"$IDF_PATH/components/json/cJSON" -c "$IDF_PATH/components/json/cJSON/cJSON.c" -o /tmp/backup-cJSON.o
             g++ -std=c++17 -O2 -UNDEBUG -Imain/include -I"$IDF_PATH/components/json/cJSON" tests/test_printer_backup.cpp /tmp/backup-cJSON.o -o /tmp/test_printer_backup
             /tmp/test_printer_backup /tmp/printsphere-backup-test
+            python ../../../tools/companion/test_cloud_identity.py --source . --compiler g++ --cjson "$IDF_PATH/components/json/cJSON"
       - name: Collect public release images
         env:
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
