@@ -156,6 +156,11 @@ namespace app_shell {
     bool pressCurrent();
     void selectApp(int idx);  // jump straight to an app by index, no slide (e.g. forced setup at boot)
 
+    // One-shot return after a setting restarts the firmware. Settings remembers the
+    // last committed app, not the switcher's highlighted preview. Setup notices win.
+    void prepareSettingsRestart();
+    void restoreAfterSettingsRestart(bool allowed = true);
+
     // App-switcher overlay: turning shows a big app-name label over a live preview;
     // the first turn opens the switcher on the current app, further turns cycle apps,
     // and a push commits (hides the overlay) into the shown app.

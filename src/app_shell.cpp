@@ -1,7 +1,9 @@
 #include "app_shell.h"
+#include <cstring>
 #include "display.h"   // markInput — click-to-pixels timing
 #ifdef ARDUINO
 #include <Arduino.h>
+#include <Preferences.h>
 #else
 #include <cstdio>
 #include <chrono>
@@ -45,6 +47,7 @@ namespace {
     App  s_apps[MAX_APPS];
     int  s_count    = 0;
     int  s_cur      = 0;
+    int  s_settingsReturn = app_shell::APP_CLOCK;
     bool s_captured = false;
     // Monotonic "when was this app last looked at" clock. Not millis(): the ORDER is the
     // only thing eviction needs, and a counter cannot wrap into the past mid-session the
@@ -340,6 +343,8 @@ namespace {
         // decoded. Both this and onEnter now fire ONLY on a real app change (boot, a
         // committed switcher selection, or next()/prev()), never per switcher detent.
         if (idx != s_cur && s_count && s_apps[s_cur].onExit) s_apps[s_cur].onExit();
+        if (idx == app_shell::APP_SETTINGS && s_cur != app_shell::APP_SETTINGS)
+            s_settingsReturn = s_cur;
         s_cur = idx;
         s_apps[idx].lastUsed = ++s_useTick;
         s_captured = s_apps[idx].capture;   // menu apps grab the knob on entry
@@ -605,6 +610,74 @@ void app_shell::prev() {
 
 void app_shell::selectApp(int idx) {
     if (idx >= 0 && idx < s_count) load(idx, false, true);
+}
+
+namespace {
+    // Stable across build rosters and theme display-name changes.
+    const char *resumeKey(int idx) {
+        static const char *keys[] = {
+            "clock", "flight",
+#if !APPS_LAUNCH_ONE
+            "weather", "surveillance",
+#endif
+            "headlines",
+#if !APPS_LAUNCH_ONE
+            "ticker",
+#endif
+#if ORB_COMPANION
+            "printer",
+#endif
+            "settings"
+        };
+        static_assert(sizeof(keys) / sizeof(keys[0]) == app_shell::APP_COUNT,
+                      "Resume keys must match the app roster");
+        return idx >= 0 && idx < app_shell::APP_COUNT ? keys[idx] : "";
+    }
+}
+
+void app_shell::prepareSettingsRestart() {
+    if (!s_count) return;
+    const int target = s_cur == APP_SETTINGS ? s_settingsReturn : s_cur;
+    const char *key = resumeKey(target);
+#ifdef ARDUINO
+    Preferences p;
+    if (p.begin("capsuleradar", false)) {
+        p.putString("resumeApp", key);
+        p.end();
+    }
+#else
+    if (FILE *f = fopen("/tmp/orb_sim_resume_app", "w")) {
+        fprintf(f, "%s", key);
+        fclose(f);
+    }
+#endif
+}
+
+void app_shell::restoreAfterSettingsRestart(bool allowed) {
+    char key[24] = {};
+#ifdef ARDUINO
+    Preferences p;
+    if (p.begin("capsuleradar", false)) {
+        p.getString("resumeApp", key, sizeof(key));
+        p.remove("resumeApp");  // consume before entering an app, even if setup wins
+        p.end();
+    }
+#else
+    if (FILE *f = fopen("/tmp/orb_sim_resume_app", "r")) {
+        fgets(key, sizeof(key), f);
+        fclose(f);
+        remove("/tmp/orb_sim_resume_app");
+    }
+#endif
+    if (!allowed || !key[0]) return;
+    int fallback = -1;
+    for (int i = 0; i < s_count; ++i) {
+        if (i == APP_SETTINGS || hiddenAt(i)) continue;
+        if (fallback < 0) fallback = i;
+        if (strcmp(key, resumeKey(i)) == 0) { selectApp(i); return; }
+    }
+    // A new theme may hide the old app; use the first app it does offer.
+    if (fallback >= 0) selectApp(fallback);
 }
 
 int         app_shell::count() { return s_count; }

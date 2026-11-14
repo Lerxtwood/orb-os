@@ -1199,6 +1199,7 @@ void host_location_reset() {
 // instead, because nobody asked it for anything.
 void host_set_location(double lat, double lon) {
     persist_location(lat, lon);
+    app_shell::prepareSettingsRestart();
 
     if (g_holdWarning && g_holdWarningLbl) {
         lv_obj_clear_flag(g_holdWarning, LV_OBJ_FLAG_HIDDEN);
@@ -1706,6 +1707,7 @@ int host_wifi_connect_status() {
 // g_wm.setSaveConfigCallback() — same reasoning (clean web/mDNS start). Also clears the
 // post-Reset "needs setup" flag (see host_factory_reset()) so the next boot is normal.
 void host_wifi_connected_reboot() {
+    app_shell::prepareSettingsRestart();
     Preferences p;
     p.begin("capsuleradar", false);
     p.putBool("needsWifiSetup", false);
@@ -2228,6 +2230,7 @@ static void handleSave() {
     g_web.send(200, "text/html",
                "<meta http-equiv=refresh content='6;url=/'><body style='background:#06100a;"
                "color:#1dff86;font-family:sans-serif;padding:24px'>Saved. Restarting&hellip;</body>");
+    app_shell::prepareSettingsRestart();
     delay(400);
     ESP.restart();
 }
@@ -2394,6 +2397,7 @@ static void handleBigText() {   // accessibility: large fonts. Fonts are baked a
         p.begin("capsuleradar", false);
         p.putBool("bigtext", g_bigText);
         p.end();
+        app_shell::prepareSettingsRestart();
         g_rebootAtMs = millis() + 1200;   // let this response reach the browser first
     }
     g_web.send(200, "text/plain", "ok");
@@ -3382,6 +3386,7 @@ void setup() {
     // interface in non-blocking mode, so the config page is flaky until a fresh boot.
     g_wm.setSaveConfigCallback([]() {
         Serial.println("[wifi] new credentials saved -> rebooting for a clean web/mDNS start");
+        app_shell::prepareSettingsRestart();
         g_rebootAtMs = millis() + 2500;   // let the portal deliver its 'saved' page first
     });
     // DISABLED on purpose (2026-08-15). A secrets.h fallback used to run here and it was
@@ -3473,6 +3478,9 @@ void setup() {
         app_shell::setCaptured(true);   // Settings captures the knob on entry; match that
         settingsview::openWifiSetupPrompt();
     }
+
+    // Restore only after mandatory setup/card notices have had first refusal.
+    app_shell::restoreAfterSettingsRestart(sdcard::mounted() && !wantWifiSetup);
 
     // --- OTA ---------------------------------------------------------------
     // ArduinoOTA is started from loop() once WiFi connects (see otaUp there).

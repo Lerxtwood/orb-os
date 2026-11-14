@@ -981,6 +981,7 @@ int main(int argc, char **argv) {
     // the switcher/menu.
     if (interactive) app_shell::selectApp(app_shell::APP_FLIGHT);
 #endif
+    app_shell::restoreAfterSettingsRestart(interactive);
     if (interactive) build_updating_overlay();
     printf("[sim] The Orb OS simulator running (%dx%d) with 6 mock aircraft.\n", SIM_W, SIM_H);
     if (interactive)

@@ -1,4 +1,5 @@
 #include "app_theme.h"
+#include "app_shell.h"
 #ifdef ARDUINO
 #include <Arduino.h>
 #include <Preferences.h>
@@ -80,6 +81,7 @@ const AppPalette &palette() {
 
 void set(int t) {
     if (t < 0 || t >= APP_THEME_COUNT) return;
+    app_shell::prepareSettingsRestart();
 #ifdef ARDUINO
     Preferences p;
     p.begin("capsuleradar", false);

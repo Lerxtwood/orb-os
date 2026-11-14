@@ -1,4 +1,5 @@
 #include "theme_select.h"
+#include "app_shell.h"
 #include "theme_style.h"
 #include <string.h>
 #include <strings.h>   // strcasecmp — the theme list sorts on display names
@@ -120,6 +121,7 @@ const char *activeSlug() { return s_slug; }
 
 void set(const char *slug) {
     if (!slug) slug = "";
+    app_shell::prepareSettingsRestart();
 #ifdef ARDUINO
     Preferences p;
     p.begin("capsuleradar", false);
