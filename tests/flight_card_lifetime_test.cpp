@@ -110,15 +110,19 @@ int main() {
     assert(flight_display::parseSeconds("3600", seconds) && seconds == 3600);
     for (uint32_t duration : {1u, 10u, 3600u}) {
         for (double miles : {0.1, 5.0, 100.0}) {
-            for (unsigned flags = 0; flags < 8; ++flags) {
-                flight_display::Options o{duration, bool(flags & 1), bool(flags & 2), bool(flags & 4), miles};
+            for (unsigned flags = 0; flags < 16; ++flags) {
+                flight_display::Options o{duration, bool(flags & 1), bool(flags & 2), bool(flags & 4), miles, bool(flags & 8)};
                 const auto restored = flight_display::unpack(flight_display::pack(o));
                 assert(restored.seconds == o.seconds && restored.stayVisible == o.stayVisible);
                 assert(restored.arrivals == o.arrivals && restored.closePasses == o.closePasses);
                 assert(restored.miles == o.miles);
+                assert(restored.smallGa == o.smallGa);
             }
         }
     }
     assert(flight_display::unpack(0).seconds == flight_display::DefaultSeconds);
     assert(!flight_display::unpack(UINT32_MAX).stayVisible);
+    // Pre-option saves have no bit 25; keep all their choices and default GA on.
+    const auto legacy = flight_display::unpack(17u | (1u << 12) | (1000u << 15));
+    assert(legacy.smallGa && legacy.stayVisible && legacy.seconds == 17 && legacy.miles == 100);
 }

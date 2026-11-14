@@ -1897,7 +1897,7 @@ static void handleFlightOptions() {
         ".flight-display button{padding:10px 14px;font:inherit}"
         ".flight-display .override{padding:12px;border-radius:8px;background:#f5f5f4}"
         "</style><section class='card flight-display' aria-labelledby=flightDisplayTitle>"
-        "<h2 id=flightDisplayTitle>Flight cards &amp; automatic displays</h2>"
+        "<h2 id=flightDisplayTitle>Flight display options</h2>"
         "<form method=POST action=/flight-display-options>"
         "<fieldset><legend>How long cards stay visible</legend>"
         "<label><input type=radio name=cardMode value=timed "));
@@ -1940,7 +1940,14 @@ static void handleFlightOptions() {
         "<small>Distance from your current location, in ordinary miles (not nautical miles).</small>",
         radar::closePassMiles());
     g_web.sendContent(closePass, strlen(closePass));
-    g_web.sendContent_P(PSTR("</fieldset><p><button type=submit>Save flight display options</button></p>"
+    g_web.sendContent_P(PSTR("</fieldset><fieldset><legend>Aircraft images</legend>"
+        "<label><input type=checkbox name=smallGa value=1 aria-describedby=gaImageDescription "));
+    if (displayOptions.smallGa) g_web.sendContent_P(PSTR("checked "));
+    g_web.sendContent_P(PSTR("> Show GA aircraft images at 60% size</label>"
+        "<small id=gaImageDescription>Flights using registration-style callsigns use the same aircraft image at 60% of its full width and height. "
+        "Airline and operator callsigns keep the full-size image. Turn off to show all aircraft images at full size. "
+        "Applies immediately to designs that use aircraft images.</small>"
+        "</fieldset><p><button type=submit>Save flight display options</button></p>"
         "</form></section></body></html>"));
     g_web.sendContent("", 0);
 }
@@ -2526,7 +2533,8 @@ static void handleFlightDisplayOptions() {
         return;
     }
     if ((g_web.hasArg("arrivals") && g_web.arg("arrivals") != "1") ||
-        (g_web.hasArg("closePasses") && g_web.arg("closePasses") != "1")) {
+        (g_web.hasArg("closePasses") && g_web.arg("closePasses") != "1") ||
+        (g_web.hasArg("smallGa") && g_web.arg("smallGa") != "1")) {
         g_web.send(400, "text/plain", "Invalid automatic display option.");
         return;
     }
@@ -2540,6 +2548,7 @@ static void handleFlightDisplayOptions() {
     options.stayVisible = mode == "stay";
     options.arrivals = g_web.hasArg("arrivals");
     options.closePasses = g_web.hasArg("closePasses");
+    options.smallGa = g_web.hasArg("smallGa");
     saveFlightDisplayOptions(options);
 }
 

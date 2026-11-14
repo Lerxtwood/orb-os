@@ -44,6 +44,8 @@ jobs:
           /tmp/test_flight_auto_photo
           g++ -std=c++17 -O2 -UNDEBUG -Isrc tests/flight_card_lifetime_test.cpp -o /tmp/test_flight_card_lifetime
           /tmp/test_flight_card_lifetime
+          g++ -std=c++17 -O2 -UNDEBUG -Isrc tests/flight_icon_scale_test.cpp -o /tmp/test_flight_icon_scale
+          /tmp/test_flight_icon_scale
           python tools/test_flight_options.py
           python tools/test_timezone.py
           python tools/test_wifi_setup.py

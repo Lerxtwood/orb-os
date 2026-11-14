@@ -4,6 +4,7 @@
 //   THEME_ORB   : Orb scope: green gradient, square grid, the 7 nearest
 //                    aircraft as yellow balls (emitting waves) + off-range arrows.
 #include "radar_view.h"
+#include "flight_icon_scale.h"
 #include "flight_auto_photo.h"
 #include "flight_close_pass.h"
 #include "flight_card_lifetime.h"
@@ -298,6 +299,7 @@ static bool s_photoShown = false;
 static uint32_t s_photoStarted = 0;
 static bool s_autoPhotoEnabled = false;
 static bool s_autoArrivalCardEnabled = false;
+static bool s_smallGa = true;
 static FlightAutoPhoto s_autoPhoto;
 static FlightAutoPhoto s_visibleArrivals;
 static std::set<std::string> s_closePassNotified;
@@ -372,6 +374,7 @@ struct AcDraw {
     char       hex[8];
     char       call[12];
     char       type[8];
+    uint16_t   imageZoom = 256; // full size for commercial/operator, 60% for GA callsigns
     char       altTxt[12];
     float      altFt;
     bool       onGround;
@@ -1587,6 +1590,7 @@ static void draw_custom_ac(lv_draw_ctx_t *d) {
                 const int bpy = rs.blipPivotY >= 0 ? rs.blipPivotY : CUSTOM_RADAR_BLIP_PIVOT_Y;
                 idsc.pivot.x = bpx;
                 idsc.pivot.y = bpy;
+                idsc.zoom = s_smallGa ? ac.imageZoom : 256; // same heading/position pivot
                 idsc.opa = scale_opa(LV_OPA_COVER, ac.freshness);
                 idsc.antialias = (uint8_t)(s_blipAA ? 1 : 0);
                 // Selection style 2 (Recolor) forces the tint on for this one
@@ -2901,6 +2905,7 @@ void update(const std::vector<Aircraft> &aircraft, const RadarSettings &s) {
         snprintf(d.hex,  sizeof(d.hex),  "%s", ac.hex.c_str());
         snprintf(d.call, sizeof(d.call), "%s", ac.flight.c_str());
         snprintf(d.type, sizeof(d.type), "%s", ac.type.c_str());
+        d.imageZoom = flight_icon::imageZoom(ac.flight.c_str(), ac.registration.c_str(), ac.military);
         d.altFt = ac.altBaro;
         d.onGround = ac.onGround;
         d.vsFpm = ac.baroRate;
@@ -3540,7 +3545,7 @@ bool autoArrivalCard() { return s_autoArrivalCardEnabled; }
 
 flight_display::Options flightDisplayOptions() {
     return {s_cardLifetime.seconds(), s_cardLifetime.stayVisible(),
-            s_autoArrivalCardEnabled, s_autoPhotoEnabled, s_closePassMiles};
+            s_autoArrivalCardEnabled, s_autoPhotoEnabled, s_closePassMiles, s_smallGa};
 }
 
 void setFlightDisplayOptions(const flight_display::Options &options) {
@@ -3555,6 +3560,8 @@ void setFlightDisplayOptions(const flight_display::Options &options) {
     s_autoArrivalCardEnabled = options.arrivals;
     s_autoPhotoEnabled = options.closePasses;
     s_closePassMiles = options.miles;
+    s_smallGa = options.smallGa;
+    if (s_acLayer) lv_obj_invalidate(s_acLayer); // image size applies immediately
     s_closePassNotified.clear();
     refresh_visible_arrivals();
     refresh_custom_text();

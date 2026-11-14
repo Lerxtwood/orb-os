@@ -13,6 +13,7 @@ struct Options {
     bool arrivals = false;
     bool closePasses = false;
     double miles = flight_close_pass::DefaultMiles;
+    bool smallGa = true;
 };
 
 inline bool validSeconds(uint32_t seconds) { return seconds >= MinSeconds && seconds <= MaxSeconds; }
@@ -35,7 +36,8 @@ inline bool valid(const Options &o) { return validSeconds(o.seconds) && flight_c
 inline uint32_t pack(const Options &o) {
     return o.seconds | (o.stayVisible ? 1u << 12 : 0) |
            (o.arrivals ? 1u << 13 : 0) | (o.closePasses ? 1u << 14 : 0) |
-           (uint32_t(std::lround(o.miles * 10)) << 15);
+           (uint32_t(std::lround(o.miles * 10)) << 15) |
+           (!o.smallGa ? 1u << 25 : 0); // absent in older saves: smaller GA is on
 }
 inline Options unpack(uint32_t packed) {
     Options o;
@@ -43,7 +45,9 @@ inline Options unpack(uint32_t packed) {
     o.stayVisible = (packed & (1u << 12)) != 0;
     o.arrivals = (packed & (1u << 13)) != 0;
     o.closePasses = (packed & (1u << 14)) != 0;
-    o.miles = (packed >> 15) / 10.0;
+    o.miles = ((packed >> 15) & 0x3ffu) / 10.0;
+    o.smallGa = (packed & (1u << 25)) == 0;
+    if (packed & 0xfc000000u) return Options{}; // reserved bits / corrupt value
     return valid(o) ? o : Options{};
 }
 } // namespace flight_display

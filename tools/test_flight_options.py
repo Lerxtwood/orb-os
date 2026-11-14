@@ -71,20 +71,24 @@ int main() {
     auto request = [] {
         g_web = {};
         g_web.args = {{"cardMode","stay"},{"seconds","17"},{"arrivals","1"},
-                      {"closePasses","1"},{"miles","10.0"}};
+                      {"closePasses","1"},{"miles","10.0"},{"smallGa","1"}};
     };
     request(); handleFlightDisplayOptions();
     assert(g_web.status == 303 && g_web.location == "/flight-tracker-options");
     auto saved = flight_display::unpack(Preferences::stored);
     assert(saved.stayVisible && saved.seconds == 17 && saved.arrivals && saved.closePasses && saved.miles == 10);
+    assert(saved.smallGa && radar::options.smallGa);
     request(); g_web.args = {{"cardMode","timed"},{"seconds","3"},{"miles","0.1"}};
     handleFlightDisplayOptions();
     assert(g_web.status == 303);
     saved = flight_display::unpack(Preferences::stored);
     assert(!saved.stayVisible && saved.seconds == 3 && !saved.arrivals && !saved.closePasses && saved.miles == 0.1);
+    assert(!saved.smallGa && !radar::options.smallGa);
+    g_web = {}; handleFlightOptions();
+    assert(g_web.html.find("name=smallGa value=1 aria-describedby=gaImageDescription >") != std::string::npos);
     const auto previous = Preferences::stored;
     for (const auto &bad : std::map<std::string,std::string>{{"cardMode","other"},{"seconds","0"},
-             {"arrivals","true"},{"closePasses","false"},{"miles","nan"}}) {
+             {"arrivals","true"},{"closePasses","false"},{"smallGa","50"},{"miles","nan"}}) {
         request(); g_web.args[bad.first] = bad.second;
         const auto writes = Preferences::writes;
         handleFlightDisplayOptions();
@@ -99,11 +103,12 @@ int main() {
     assert(g_web.status == 500 && flight_display::pack(radar::options) == previous);
     Preferences::open = true;
     // Old URLs still update the same atomic options without discarding duration/pinning.
-    radar::options = {17, true, true, true, 10.0};
+    radar::options = {17, true, true, true, 10.0, false};
     g_web = {}; handleFlightArrivalCard();
     assert(g_web.status == 303 && !radar::options.arrivals && radar::options.stayVisible && radar::options.seconds == 17);
     g_web = {}; g_web.args = {{"miles","5.0"}}; handleFlightClosePass();
     assert(g_web.status == 303 && !radar::options.closePasses && radar::options.stayVisible && radar::options.seconds == 17);
+    assert(!radar::options.smallGa); // legacy handlers preserve the image-size choice
 }
 '''
 
@@ -184,10 +189,12 @@ def main():
                 assert form.count() == 1
                 assert form.locator('input[name=cardMode]:checked').input_value() == mode
                 assert form.locator('input[name=seconds]').input_value() == seconds
-                assert form.locator('fieldset').count() == 3
+                assert form.locator('fieldset').count() == 4
                 assert form.locator('button[type=submit]').count() == 1
                 assert form.locator('input[name=arrivals]').is_checked() == (mode == 'stay')
                 assert form.locator('input[name=closePasses]').is_checked() == (mode == 'stay')
+                assert form.locator('input[name=smallGa]').is_checked()
+                assert form.locator('label', has=form.locator('input[name=smallGa]')).inner_text() == 'Show GA aircraft images at 60% size'
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
                 page.screenshot(path=str(WORK / (name + '.png')), full_page=True)
             browser.close()

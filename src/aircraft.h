@@ -16,6 +16,7 @@
 struct Aircraft {
     String   hex;            // ICAO 24-bit id (stable key)
     String   flight;         // callsign
+    String   registration;   // feed's tail number, used to recognize GA-style callsigns
     String   type;           // e.g. "B738" (when available)
     double   lat = 0, lon = 0;
     float    altBaro = 0;    // ft (NAN if on ground)

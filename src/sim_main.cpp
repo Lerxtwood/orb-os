@@ -543,6 +543,7 @@ static void mock_init() {
     g_mockAcs.push_back(mk("RESCUE51", "306006",  3.0, 170.0,  1200,  20,  42, 7700));
     g_mockAcs.push_back(mk("IBE3174",  "301001",  5.0,  60.0,  6200, 250, 286, 4655));
     g_mockAcs.push_back(mk("EC-ABC",   "305005",  7.0, 200.0,  2800,  70,  96, 7000));
+    g_mockAcs.back().registration = "EC-ABC"; // GA image scale, alongside airline examples
     g_mockAcs.push_back(mk("VLG28PK",  "303003",  8.0,   0.0, 34000, 180, 448, 1000));
     g_mockAcs.push_back(mk("RYR4521",  "302002", 11.0, 135.0, 11025, 225, 412, 3421));
     // out of range (> 50 km) -> shown as rim arrows pointing their way

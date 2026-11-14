@@ -197,7 +197,7 @@ bool AdsbClient::fetchFrom(uint8_t provider, std::vector<Aircraft>& out) {
     // Only keep the fields we use -> much smaller parsed document.
     JsonDocument filter(&s_jsonPsram);
     const char* keys[] = { "ac", "aircraft" };
-    const char* flds[] = { "hex", "flight", "t", "lat", "lon", "alt_baro",
+    const char* flds[] = { "hex", "flight", "r", "t", "lat", "lon", "alt_baro",
                            "track", "true_heading", "gs", "baro_rate",
                            "squawk", "seen_pos", "dbFlags" };
     for (const char* k : keys)
@@ -268,6 +268,7 @@ bool AdsbClient::fetchFrom(uint8_t provider, std::vector<Aircraft>& out) {
         ac.hex = (const char*)(a["hex"] | "");
         if (ac.hex.length() == 0) continue;
         ac.flight = String((const char*)(a["flight"] | "")); ac.flight.trim();
+        ac.registration = (const char*)(a["r"] | "");
         ac.type   = (const char*)(a["t"] | "");
         ac.lat = lat; ac.lon = lon;
         ac.onGround = onGround;
